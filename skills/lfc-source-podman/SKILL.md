@@ -24,12 +24,14 @@ Install Podman, Lima, and SQL clients:
 brew install podman lima mysql postgresql mongodb-community-shell sqlplus sqlite
 ```
 
-Create and start the Lima Rosetta2 VM (supports x86_64 containers on Apple Silicon):
+Create and start the Lima VM with Rosetta and the rootful Podman template (it runs arm64 images natively and x86_64-only images under Rosetta), then register its Podman socket:
 
 ```bash
-limactl create --name=lfc-test-podman --vm-type=vz --rosetta
-limactl start lfc-test-podman
+limactl start --name lfc-test-podman --arch aarch64 --vm-type vz --rosetta template:podman-rootful
+podman system connection add lfc-test-podman "unix://$HOME/.lima/lfc-test-podman/sock/podman.sock"
 ```
+
+Without `template:podman-rootful` the VM has no Podman and no socket. An existing VM created this way under another name (for example `forgedb-lima-rosetta2-podman`) works the same: use its name.
 
 Verify:
 
@@ -46,10 +48,18 @@ limactl delete lfc-test-podman
 # Edit ~/.lima/lfc-test-podman/lima.yaml to adjust cpus + memory, then re-create
 ```
 
-**Why Lima Rosetta2?**
-- Podman on native Apple Silicon (arm64) cannot run x86_64-only engines like SQL Server, Db2, and Informix directly.
-- Lima VZ VM with Rosetta2 translation layer provides near-native performance for amd64 containers.
-- arm64-native images (most MySQL, PostgreSQL, Oracle) run natively on the host without translation.
+**Which image runs how on Apple Silicon.** Every engine runs in the Lima VM. Use the arm64 image wherever one exists, and Rosetta only for x86_64-only images:
+
+| Engine | Image on macOS | Runs as |
+|---|---|---|
+| PostgreSQL, MySQL, MariaDB, MongoDB | Docker Hub official images | arm64, native |
+| Oracle 23ai / 26ai Free | `docker.io/gvenzl/oracle-free:latest` (default), or `container-registry.oracle.com/database/free:latest` | arm64, native |
+| Oracle 19c Enterprise | `container-registry.oracle.com/database/enterprise:19.19.0.0` (needs `podman login`) | arm64, native |
+| Oracle 18c / 21c XE | `docker.io/gvenzl/oracle-xe:18` / `:21` | x86_64, Rosetta |
+| SQL Server 2017–2025 | `mcr.microsoft.com/mssql/server:<version>-latest` | x86_64, Rosetta (2025 needs a Lima kernel of 6.17 or later) |
+| Db2, Informix | `icr.io` images | x86_64, Rosetta |
+
+Don't run x86_64-only engines in Podman machine (`podman machine`): its Fedora CoreOS kernel (6.12) crashes SQL Server 2025 with an AVX signal-frame bug and has had Rosetta IPC bugs with Db2. The Lima VM's newer kernel doesn't.
 
 ### Linux
 
