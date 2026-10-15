@@ -70,20 +70,20 @@ sudo systemctl restart mysql
 **Fix:**
 ```bash
 # Increase timeout to 10 minutes
-podman pull --timeout 10m container-registry.oracle.com/database/free:latest
+sudo podman pull --timeout 10m container-registry.oracle.com/database/free:latest
 ```
 
 ## XFS formatting fails
 
-**Symptom:** `mkfs.xfs: /dev/sdb: No such file or directory`
+**Symptom:** the disk block in [disk-setup.md](disk-setup.md) stops with `no disk at ...`, `already has a ... filesystem`, or `FAIL: /var/lib/containers is not XFS`.
 
 **Check:**
-- Verify disk is attached: `lsblk -dn`
-- Ensure it's not already formatted: `sudo blkid /dev/sdb`
+- The disk is attached at the expected LUN or device name: `lsblk -o NAME,SIZE,TYPE,MOUNTPOINT`, `ls -l /dev/disk/azure/scsi1/` (Azure) or `ls -l /dev/disk/by-id/ | grep google-` (GCP).
+- What's on it: `sudo blkid "$(readlink -f <disk-path>)"`. The block never formats a disk that already has a filesystem. Don't wipe it unless the user confirms it holds nothing they need.
+- On Azure, `/dev/sdb` is usually the temporary resource disk. If an older run formatted that, the data was on a disk that's wiped on deallocate: rerun the block with the LUN path.
 
-**Fix:**
+**Fix (Azure, disk not attached):**
 ```bash
-# Re-attach the data disk (Azure)
 az vm disk attach \
   --resource-group "$RESOURCE_GROUP" \
   --vm-name "$VM_NAME" \
@@ -92,10 +92,9 @@ az vm disk attach \
   --size-gb 128 \
   --sku Premium_LRS \
   --lun 0
-
-# Reboot and retry formatting
-sudo reboot
 ```
+
+Then rerun the disk block; no reboot is needed.
 
 ## LFC CDC not capturing changes
 
@@ -129,17 +128,9 @@ sudo reboot
 
 **Symptom:** `podman run: permission denied: /var/lib/containers`
 
-**Cause:** Podman socket is rootful; user is non-root
+**Cause:** running `podman` without `sudo`. Rootless Podman can't use `/var/lib/containers`, and it would store data on the OS disk instead of the XFS disk.
 
-**Fix:**
-```bash
-# Add user to podman group
-sudo usermod -aG podman azureuser
-newgrp podman
-
-# Or run with sudo
-sudo podman run …
-```
+**Fix:** run every Podman command with `sudo` (`sudo podman run …`).
 
 ## VM disk fills up
 

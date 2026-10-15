@@ -27,9 +27,11 @@ Use it for testing and demos. For a customer's production database, the customer
 How to choose:
 
 - **The user names a cloud or service:** use it.
+- **Otherwise, match the workspace's cloud and region.** Lakeflow Connect reads the whole source on every snapshot and keeps reading for CDC, and that traffic is billed as network egress when it crosses clouds or regions. Find the workspace's cloud and region with `databricks metastores summary --profile <PROFILE> -o json` (`global_metastore_id` is `<cloud>:<region>:<id>`), then prefer a source there: a workspace on Azure means an Azure source, on AWS an AWS source, on GCP a GCP source, in the same region. Say so if the user picks another cloud or region, so they know it adds egress cost.
 - **The engine decides it:** Oracle on a managed service means RDS. Db2, Informix, and SQL Server Availability Groups need a cloud VM to be reachable from Databricks (local Podman is for testing the engine setup only).
 - **The Lakeflow Connect mode decides it:** CDC needs server settings that some tiers don't allow (for example SQL Server CDC on Azure SQL needs a tier that supports it; Postgres CDC needs logical replication). Each child skill says what its target supports.
-- **Nothing specified:** suggest **Azure** first: its firewalls hold the most Databricks serverless ranges (an Azure VM's NSG can take every region's, about 760 CIDRs), so one source can serve many workspaces. Then ask which cloud the user has an account in; don't create anything in a cloud they didn't confirm.
+- **One source shared by workspaces in many clouds or regions:** some reads will cross clouds whatever you pick, so pick by firewall capacity: an **Azure** VM's NSG can hold every region's serverless ranges (about 760 CIDRs). Put it in the cloud and region of the workspace that reads it most.
+- Ask which cloud the user has an account in before creating anything; don't create anything in a cloud they didn't confirm.
 
 Engine-specific database setup (users, grants, change tracking / CDC, replication, binlog) is the same on every target and lives in shared references, which each child skill links to:
 
@@ -52,7 +54,8 @@ Engine-specific database setup (users, grants, change tracking / CDC, replicatio
 5. **Azure resource group:** ask whether the user has a resource group of their own. If not, use the shared test group `forgedb-rg` (check it exists: `az group show -n forgedb-rg`); the user is free to choose a different one. Don't create a resource group without asking. Shared groups can run out of quota: if creation fails with a quota or limit error, ask for another group rather than removing other people's resources.
 6. **Tag everything** you create (owner, purpose `lfc-test`, and a creation date), so it can be found and cleaned up later.
 7. **Clean up when done**, or tell the user exactly what's still running and billing.
-8. **Shell and scripts:** ask every CLI for JSON and turn it into shell variables with `eval "$(<cli> ... -o json | yq -p json -o shell '{"NAME": (.path // "")}')"` (yq quotes the values, so `eval` is safe), not `--query ... -o tsv` or `awk`. Use the simplest tool per step: yq for one-input filters, plain shell for short list loops, and DuckDB SQL files (inputs via `getvariable()`, shared by shell and Python) only for IP-range math, joins across inputs, and ranking. See **shell-json-scripting** for the pattern and gotchas.
+8. **Large test databases (tens of GB and up):** populate once, keep the stopped data directory in object storage in the workspace's cloud and region, and clone it per test on a cloud VM's XFS disk instead of every user loading their own. See **lfc-source-cloud-vm** `references/master-snapshots.md`.
+9. **Shell and scripts:** ask every CLI for JSON and turn it into shell variables with `eval "$(<cli> ... -o json | yq -p json -o shell '{"NAME": (.path // "")}')"` (yq quotes the values, so `eval` is safe), not `--query ... -o tsv` or `awk`. Use the simplest tool per step: yq for one-input filters, plain shell for short list loops, and DuckDB SQL files (inputs via `getvariable()`, shared by shell and Python) only for IP-range math, joins across inputs, and ranking. See **shell-json-scripting** for the pattern and gotchas.
 
 ## Names
 

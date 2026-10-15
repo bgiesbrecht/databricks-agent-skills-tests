@@ -26,7 +26,7 @@ gcloud compute instances create "$VM_NAME" \
   --image-project=ubuntu-os-cloud \
   --boot-disk-size="${OS_DISK_GB}GB" \
   --boot-disk-type=pd-ssd \
-  --create-disk name="${VM_NAME}-data",size="${DATA_DISK_GB}GB",type=pd-ssd \
+  --create-disk name="${VM_NAME}-data",device-name=data,size="${DATA_DISK_GB}GB",type=pd-ssd \
   --scopes=https://www.googleapis.com/auth/cloud-platform
 
 # Get public IP
@@ -36,6 +36,8 @@ eval "$(gcloud compute instances describe "$VM_NAME" \
 
 echo "VM ready at: $GCP_PUBLIC_IP"
 ```
+
+Next, for Podman: format the data disk (`/dev/disk/by-id/google-data`) as XFS with the block in [disk-setup.md](disk-setup.md), before installing anything.
 
 ## Add labels
 

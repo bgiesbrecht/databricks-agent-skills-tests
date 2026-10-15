@@ -90,7 +90,8 @@ az vm create \
   --image Ubuntu2204 \
   --size "$VM_SIZE" \
   --admin-username azureuser \
-  --ssh-key-values ~/.ssh/lfc_test_rsa.pub
+  --ssh-key-values ~/.ssh/lfc_test_rsa.pub \
+  --data-disk-sizes-gb 128        # data disk at LUN 0: /dev/disk/azure/scsi1/lun0
 ```
 
 ### GCP
@@ -109,7 +110,8 @@ gcloud compute instances create "$VM_NAME" \
   --zone="$ZONE" \
   --machine-type="$VM_TYPE" \
   --image-family=ubuntu-2404-lts \
-  --image-project=ubuntu-os-cloud
+  --image-project=ubuntu-os-cloud \
+  --create-disk name="${VM_NAME}-data",device-name=data,size=128GB,type=pd-ssd   # /dev/disk/by-id/google-data
 ```
 
 ## Install the database
@@ -133,10 +135,9 @@ ssh -i ~/.ssh/lfc_test_rsa azureuser@<VM_IP>
 
 For complex engines or multiple database versions:
 
-See `references/install-podman.md` for:
-- Podman installation
-- XFS disk setup
-- Database container examples (Oracle, DB2, Informix, MySQL, PostgreSQL, SQL Server)
+1. **Format the data disk as XFS first**, mounted at `/var/lib/containers`: run the block in `references/disk-setup.md` right after the VM is created. It finds the disk by its stable path (not `/dev/sdb`, which on Azure is usually the temporary disk), never wipes a disk that already has a filesystem, and checks for XFS with `ftype=1`. Don't install Podman until it prints `OK`.
+2. Install Podman and run the containers with `sudo` (rootful), so images and volumes are stored on the XFS disk: see `references/install-podman.md` for container examples (Oracle, DB2, Informix, MySQL, PostgreSQL, SQL Server).
+3. **Large test databases:** don't populate one per person. Pull a shared master from object storage once, then clone it per test with XFS reflinks (instant), and throw the clone away or save it back: see `references/master-snapshots.md`.
 
 ## Configure for Lakeflow Connect
 
@@ -239,7 +240,7 @@ For more details, see `references/lifecycle.md`.
 
 3. **Podman image pull timeout**: Large images (Oracle ~5 GB) may timeout on slow networks. Increase timeout or use a mirror.
 
-4. **XFS formatting fails**: Verify data disk is attached and not already formatted. See `references/disk-setup.md`.
+4. **Podman data not on XFS**: format the data disk by its stable path (`/dev/disk/azure/scsi1/lun0`, `/dev/disk/by-id/google-data`), never `/dev/sdb`, and check `findmnt -no FSTYPE /var/lib/containers` says `xfs` before installing Podman. See `references/disk-setup.md`.
 
 5. **CDC/Change Tracking not capturing**: Verify replication mode enabled in database config and LFC user has required permissions. See parent skill `references/engine-*.md`.
 
@@ -248,6 +249,7 @@ For more details, see `references/lifecycle.md`.
 - **Parent skill**: [lfc-source-setup](../lfc-source-setup/SKILL.md) — engine-specific configuration
 - **VM creation**: [azure-vm.md](references/azure-vm.md), [gcp-vm.md](references/gcp-vm.md)
 - **Database install**: [install-native.md](references/install-native.md), [install-podman.md](references/install-podman.md)
+- **Reusable master database** (object storage + XFS clones): [master-snapshots.md](references/master-snapshots.md)
 - **Configuration**: [configure-lfc.md](references/configure-lfc.md)
 - **Lifecycle**: [lifecycle.md](references/lifecycle.md)
 - **Troubleshooting**: [troubleshooting.md](references/troubleshooting.md)

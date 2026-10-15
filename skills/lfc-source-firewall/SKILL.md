@@ -18,9 +18,11 @@ A source database has to accept connections from two places: **your laptop**, so
 
 Open only the database port, only to these addresses. Never open `0.0.0.0/0`.
 
-## Prefer Azure for shared sources
+## Which cloud: the workspace's first
 
-Firewall rule limits decide how many IPs a source can accept:
+Put the source in **the workspace's cloud and region** (Step 1 finds them as `CLOUD` and `REGION`). Lakeflow Connect's reads then stay in one region, so there's no cross-cloud or inter-region egress charge, and only that region's serverless ranges are needed, which fit every target below.
+
+Firewall rule limits matter only for a source shared by workspaces in many regions:
 
 | Target | Limit | Serverless list for one region | Every region (all clouds) |
 |---|---|---|---|
@@ -32,7 +34,7 @@ Firewall rule limits decide how many IPs a source can accept:
 | GCP Cloud SQL authorized networks | no published limit | fits (3 to 4) | test before relying on it |
 | GCP VM, VPC firewall | 5,000 per rule | fits | fits |
 
-Counts are from `ip-ranges.json` at the time of writing; recount with the commands below. For a source that serves **one workspace**, any target works. For a source shared by workspaces in **many regions**, prefer an Azure VM with an NSG, which can hold every serverless range. When the user hasn't picked a cloud, suggest Azure first.
+Counts are from `ip-ranges.json` at the time of writing; recount with the commands below. For a source that serves **one workspace**, any target in its cloud and region works. For a source shared by workspaces in **many regions**, an Azure VM with an NSG can hold every serverless range; reads from other clouds or regions are billed as egress either way.
 
 **On Azure, keep one shared NSG per region** and attach every test VM (and the subnets of the shared VNet) to it: the rules are synced once and every new VM reuses them, including all Podman engines on the VM's port range `30000-30063`. The NSG can't front a Flexible Server or Azure SQL that serverless must reach: those need public access and their own server firewall rules, synced from the same IP lists. See [references/azure.md](references/azure.md).
 

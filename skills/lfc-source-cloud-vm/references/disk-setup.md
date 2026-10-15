@@ -1,51 +1,54 @@
 # Disk Setup for Podman and Native Databases
 
-## For Podman: XFS Data Graphroot
+## For Podman: XFS data disk at `/var/lib/containers`
 
-Podman requires an XFS filesystem for its graphroot at `/var/lib/containers`. The data disk attached during VM creation must be formatted and mounted.
+**Every Podman VM puts its data on an XFS data disk**, mounted at `/var/lib/containers`, before Podman is installed. That's where rootful Podman keeps images, containers, and named volumes (the database files), so all of it lands on XFS. Format with `ftype=1` (required by the overlay driver) and `reflink=1` (cheap copies).
 
-### SSH into VM
+Find the disk by its **stable path**, never by `/dev/sdb`. On Azure, `/dev/sdb` is usually the VM's temporary resource disk (on sizes like `Standard_B4ms`), which is wiped when the VM is deallocated; device letters can also change between boots.
 
-```bash
-# Azure
-ssh -i ~/.ssh/lfc_test_rsa azureuser@${AZURE_PUBLIC_IP}
+| Cloud | Data disk path |
+|---|---|
+| Azure, disk at LUN 0 (`az vm disk attach --lun 0` or `--data-disk-sizes-gb`) | `/dev/disk/azure/scsi1/lun0` |
+| Azure, NVMe sizes (v6 and later) | `/dev/disk/azure/data/by-lun/0` |
+| GCP, created with `device-name=data` | `/dev/disk/by-id/google-data` |
 
-# GCP
-ssh -i ~/.ssh/lfc_test_rsa ubuntu@${GCP_PUBLIC_IP}
-```
-
-### Find the extra disk
+Run this from the laptop right after the VM is created. It's safe to rerun: it formats only a blank disk, keeps a disk that's already XFS, and stops on any other filesystem rather than wiping it.
 
 ```bash
-lsblk -dn -o NAME,SIZE,TYPE | grep -v sda1
+# Azure: USER_HOST=azureuser@$AZURE_PUBLIC_IP DISK=/dev/disk/azure/scsi1/lun0
+# GCP:   USER_HOST=ubuntu@$GCP_PUBLIC_IP     DISK=/dev/disk/by-id/google-data
+ssh -i ~/.ssh/lfc_test_rsa "$USER_HOST" DISK="$DISK" MNT=/var/lib/containers 'bash -s' <<'EOF'
+set -e
+[ -b "$DISK" ] || { echo "no disk at $DISK: check it's attached (lsblk)"; exit 1; }
+DEV=$(readlink -f "$DISK")
+case "$(sudo blkid -s TYPE -o value "$DEV" || true)" in
+  xfs) echo "$DEV is already XFS: keeping it" ;;
+  "")  command -v mkfs.xfs > /dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq xfsprogs; }
+       sudo mkfs.xfs -n ftype=1 -m reflink=1 "$DEV" ;;       # no -f: refuses a disk with a partition table
+  *)   echo "$DEV already has a $(sudo blkid -s TYPE -o value "$DEV") filesystem: not formatting it"; exit 1 ;;
+esac
+UUID=$(sudo blkid -s UUID -o value "$DEV")
+sudo mkdir -p "$MNT"
+grep -q "UUID=$UUID" /etc/fstab || echo "UUID=$UUID $MNT xfs defaults,nofail 0 2" | sudo tee -a /etc/fstab > /dev/null
+findmnt "$MNT" > /dev/null || sudo mount "$MNT"
+[ "$(findmnt -no FSTYPE "$MNT")" = xfs ] && sudo xfs_info "$MNT" | grep -q 'ftype=1' \
+  || { echo "FAIL: $MNT is not XFS with ftype=1"; exit 1; }
+echo "OK: $MNT is XFS (ftype=1) on $DEV"
+EOF
 ```
 
-Output should show `/dev/sdb` or similar (the data disk).
+If `/var/lib/containers` already has content on the OS disk (Podman was installed first), stop Podman, move it aside (`sudo mv /var/lib/containers /var/lib/containers.old`), then run the block, which mounts the XFS disk in its place.
 
-### Format XFS
+After installing Podman, confirm it's using that disk:
 
 ```bash
-DISK="/dev/sdb"  # Adjust if your disk has a different name
-
-# Install xfsprogs
-sudo apt-get update && sudo apt-get install -y xfsprogs
-
-# Format XFS (ftype=1 required for Podman overlay2 driver; reflink=1 for COW)
-sudo mkfs.xfs -f -n ftype=1 -m reflink=1 "$DISK"
-
-# Create mount directory
-sudo mkdir -p /var/lib/containers
-
-# Mount
-sudo mount "$DISK" /var/lib/containers
-
-# Make permanent via fstab
-UUID=$(sudo blkid -s UUID -o value "$DISK")
-echo "UUID=$UUID /var/lib/containers xfs defaults,nofail 0 2" | sudo tee -a /etc/fstab
-
-# Verify mount
-mount | grep containers
+ssh -i ~/.ssh/lfc_test_rsa "$USER_HOST" \
+  'sudo podman info --format "{{.Store.GraphRoot}} {{.Store.GraphDriverName}}"; findmnt -no FSTYPE --target /var/lib/containers/storage'
+# /var/lib/containers/storage overlay
+# xfs
 ```
+
+Always run Podman with `sudo`. Rootless Podman stores everything under `~/.local/share/containers`, on the OS disk, not on XFS.
 
 ## For Native Databases: Use OS Disk
 
@@ -59,17 +62,4 @@ The 64 GB OS disk allocated during VM creation should be sufficient for test dat
 
 ## Advanced: Separate data volume for native databases
 
-If you need to separate database files from the OS:
-
-```bash
-# Mount the data disk at /var/lib/mysql (for example)
-sudo mkdir -p /var/lib/mysql
-
-sudo mount /dev/sdb /var/lib/mysql
-
-# Ensure directory ownership (MySQL example)
-sudo chown mysql:mysql /var/lib/mysql
-sudo chmod 750 /var/lib/mysql
-```
-
-For production, consider ext4 or xfs with proper tuning. Test environments can use the default ext4.
+To keep a native database's files off the OS disk, use the same block with `MNT` set to the database's data directory (for example `MNT=/var/lib/mysql`), **before** installing the database package. Then set ownership after install (`sudo chown mysql:mysql /var/lib/mysql && sudo chmod 750 /var/lib/mysql`).

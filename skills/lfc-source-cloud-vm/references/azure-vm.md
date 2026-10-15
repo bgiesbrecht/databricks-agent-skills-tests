@@ -53,6 +53,8 @@ eval "$(az vm list-ip-addresses \
 echo "VM ready at: $AZURE_PUBLIC_IP"
 ```
 
+Next, for Podman: format the data disk (LUN 0, `/dev/disk/azure/scsi1/lun0`) as XFS with the block in [disk-setup.md](disk-setup.md), before installing anything. Don't use `/dev/sdb`: on this size it's the temporary disk.
+
 ## Add labels
 
 ```bash

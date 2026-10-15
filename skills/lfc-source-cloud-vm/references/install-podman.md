@@ -2,36 +2,7 @@
 
 ## Disk setup for Podman (XFS)
 
-Podman uses an XFS filesystem at `/var/lib/containers` for its graphroot.
-
-```bash
-ssh -i ~/.ssh/lfc_test_rsa azureuser@${AZURE_PUBLIC_IP}
-
-# Find the data disk (not /dev/sda1)
-lsblk -dn -o NAME,SIZE,TYPE | grep -v sda1
-
-# Assume it's /dev/sdb; adjust if different
-DISK="/dev/sdb"
-
-# Install xfsprogs
-sudo apt-get update && sudo apt-get install -y xfsprogs
-
-# Format XFS (ftype=1 required for Podman overlay, reflink=1 for COW)
-sudo mkfs.xfs -f -n ftype=1 -m reflink=1 "$DISK"
-
-# Create mount directory
-sudo mkdir -p /var/lib/containers
-
-# Mount
-sudo mount "$DISK" /var/lib/containers
-
-# Make permanent via fstab
-UUID=$(sudo blkid -s UUID -o value "$DISK")
-echo "UUID=$UUID /var/lib/containers xfs defaults,nofail 0 2" | sudo tee -a /etc/fstab
-
-# Verify
-mount | grep containers
-```
+**Do this first, before installing Podman.** Format the data disk as XFS and mount it at `/var/lib/containers`, using the block in [disk-setup.md](disk-setup.md). It finds the disk by its stable path, not `/dev/sdb` (on Azure that's usually the temporary disk), and checks the result. Don't continue unless it prints `OK: /var/lib/containers is XFS`.
 
 ## Install Podman
 
@@ -39,13 +10,10 @@ mount | grep containers
 sudo apt-get update
 sudo apt-get install -y podman
 
-# Enable rootful mode (required for databases)
-sudo usermod -aG podman azureuser
-newgrp podman
-
-# Verify
-podman --version
-podman ps
+# Rootful Podman (always sudo): images, containers, and volumes go to /var/lib/containers, on the XFS disk
+sudo podman --version
+sudo podman info --format '{{.Store.GraphRoot}} {{.Store.GraphDriverName}}'   # /var/lib/containers/storage overlay
+findmnt -no FSTYPE --target /var/lib/containers/storage                        # xfs
 ```
 
 ## Run database containers
@@ -62,7 +30,7 @@ echo 'set-oracle-password-here' > /tmp/podman-secrets/oracle_pwd
 ### MySQL 8.0
 
 ```bash
-podman pull docker.io/library/mysql:8.0
+sudo podman pull docker.io/library/mysql:8.0
 
 sudo podman run -d \
   --name jane-doe-mysql-8.0-dockerhub-remote-1779207800 \
@@ -79,7 +47,7 @@ sudo podman exec jane-doe-mysql-8.0-dockerhub-remote-1779207800 \
 ### PostgreSQL 16
 
 ```bash
-podman pull docker.io/library/postgres:16
+sudo podman pull docker.io/library/postgres:16
 
 sudo podman run -d \
   --name jane-doe-postgres-16-dockerhub-remote-1779207800 \
@@ -98,13 +66,14 @@ unset PGPASSWORD
 ### SQL Server 2022
 
 ```bash
-podman pull mcr.microsoft.com/mssql/server:2022-latest
+sudo podman pull mcr.microsoft.com/mssql/server:2022-latest
 
 sudo podman run -d \
   --name jane-doe-mssql-2022-mcr-remote-1779207800 \
   -e ACCEPT_EULA=Y \
   -e SA_PASSWORD=$(cat /tmp/podman-secrets/mssql_pwd) \
   -p 1433:1433 \
+  -v mssql-data:/var/opt/mssql \
   mcr.microsoft.com/mssql/server:2022-latest
 
 # Verify (wait ~30 seconds for startup)
@@ -118,7 +87,7 @@ unset SQLCMDPASSWORD
 
 ```bash
 # Large image (~5 GB); may take time to pull
-podman pull container-registry.oracle.com/database/free:latest
+sudo podman pull container-registry.oracle.com/database/free:latest
 
 sudo podman run -d \
   --name jane-doe-ora-23ai-oci-remote-1779207800 \
