@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copy to env.local.sh (gitignored) and fill in. env.sh sources it.
+# Copy to env.<name>.local.sh (gitignored), fill in, then: LFC_ENV=<name> source env.sh
 # Prompts in prompts/lfc-matrix/ use these as ${VAR} placeholders.
 
 # export SKILLS_REPO=~/github/databricks-agent-skills
@@ -21,4 +21,7 @@ export LFC_SQLSERVER_SCHEMA=<sqlserver-schema>
 
 # Lakebase demo (created by the qbc-lakebase test)
 export LFC_LAKEBASE_PROJECT=lfc-demo
+export LFC_LAKEBASE_CONNECTION=lfc_demo_pg_conn          # created by the qbc-lakebase test
+export LFC_NAME_PREFIX=<firstname><lastname>                 # pipeline name prefix for fixture pipelines
+export LFC_SHAPES_CONNECTION=lfc_shapes_pg_conn        # created by fixtures/lakebase-shapes
 export LFC_LAKEBASE_PIPELINE=<firstname><lastname>-lfc_demo_pg_conn

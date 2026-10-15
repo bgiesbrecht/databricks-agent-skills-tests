@@ -1,0 +1,168 @@
+{
+ "name": "${LFC_NAME_PREFIX}-${LFC_SHAPES_CONNECTION}",
+ "catalog": "${LFC_CATALOG}",
+ "schema": "shapes_scd1",
+ "serverless": true,
+ "ingestion_definition": {
+  "connection_name": "${LFC_SHAPES_CONNECTION}",
+  "objects": [
+   {
+    "table": {
+     "source_catalog": "databricks_postgres",
+     "source_schema": "lfc_shapes",
+     "source_table": "pk_ts",
+     "destination_catalog": "${LFC_CATALOG}",
+     "destination_schema": "shapes_scd1",
+     "table_configuration": {
+      "scd_type": "SCD_TYPE_1",
+      "primary_keys": [
+       "id"
+      ],
+      "query_based_connector_config": {
+       "cursor_columns": [
+        "updated_at"
+       ],
+       "deletion_condition": "is_deleted = true"
+      }
+     }
+    }
+   },
+   {
+    "table": {
+     "source_catalog": "databricks_postgres",
+     "source_schema": "lfc_shapes",
+     "source_table": "pk_num",
+     "destination_catalog": "${LFC_CATALOG}",
+     "destination_schema": "shapes_scd1",
+     "table_configuration": {
+      "scd_type": "SCD_TYPE_1",
+      "primary_keys": [
+       "id"
+      ],
+      "query_based_connector_config": {
+       "cursor_columns": [
+        "ver"
+       ]
+      }
+     }
+    }
+   },
+   {
+    "table": {
+     "source_catalog": "databricks_postgres",
+     "source_schema": "lfc_shapes",
+     "source_table": "uk_only",
+     "destination_catalog": "${LFC_CATALOG}",
+     "destination_schema": "shapes_scd1",
+     "table_configuration": {
+      "scd_type": "SCD_TYPE_1",
+      "primary_keys": [
+       "code"
+      ],
+      "query_based_connector_config": {
+       "cursor_columns": [
+        "updated_at"
+       ]
+      }
+     }
+    }
+   },
+   {
+    "table": {
+     "source_catalog": "databricks_postgres",
+     "source_schema": "lfc_shapes",
+     "source_table": "null_cursor",
+     "destination_catalog": "${LFC_CATALOG}",
+     "destination_schema": "shapes_scd1",
+     "table_configuration": {
+      "scd_type": "SCD_TYPE_1",
+      "primary_keys": [
+       "id"
+      ],
+      "query_based_connector_config": {
+       "cursor_columns": [
+        "updated_at"
+       ]
+      }
+     }
+    }
+   },
+   {
+    "table": {
+     "source_catalog": "databricks_postgres",
+     "source_schema": "lfc_shapes",
+     "source_table": "fake_pk",
+     "destination_catalog": "${LFC_CATALOG}",
+     "destination_schema": "shapes_scd1",
+     "table_configuration": {
+      "scd_type": "SCD_TYPE_1",
+      "primary_keys": [
+       "id"
+      ],
+      "query_based_connector_config": {
+       "cursor_columns": [
+        "updated_at"
+       ]
+      }
+     }
+    }
+   },
+   {
+    "table": {
+     "source_catalog": "databricks_postgres",
+     "source_schema": "lfc_shapes",
+     "source_table": "insert_only_cursor",
+     "destination_catalog": "${LFC_CATALOG}",
+     "destination_schema": "shapes_scd1",
+     "table_configuration": {
+      "scd_type": "SCD_TYPE_1",
+      "primary_keys": [
+       "id"
+      ],
+      "query_based_connector_config": {
+       "cursor_columns": [
+        "updated_at"
+       ]
+      }
+     }
+    }
+   },
+   {
+    "table": {
+     "source_catalog": "databricks_postgres",
+     "source_schema": "lfc_shapes",
+     "source_table": "pk_hard",
+     "destination_catalog": "${LFC_CATALOG}",
+     "destination_schema": "shapes_scd1",
+     "table_configuration": {
+      "scd_type": "SCD_TYPE_1",
+      "primary_keys": [
+       "id"
+      ],
+      "query_based_connector_config": {
+       "cursor_columns": [
+        "updated_at"
+       ],
+       "hard_deletion_sync_min_interval_in_seconds": 60
+      }
+     }
+    }
+   },
+   {
+    "table": {
+     "source_catalog": "databricks_postgres",
+     "source_schema": "lfc_shapes",
+     "source_table": "pk_nocursor",
+     "destination_catalog": "${LFC_CATALOG}",
+     "destination_schema": "shapes_scd1",
+     "table_configuration": {
+      "scd_type": "SCD_TYPE_1",
+      "primary_keys": [
+       "id"
+      ]
+     }
+    }
+   }
+  ]
+ }
+}

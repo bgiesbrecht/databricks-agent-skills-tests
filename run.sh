@@ -37,7 +37,7 @@ if [ ! -d "$REPO_DIR/skills" ]; then
   exit 1
 fi
 PROMPTS_ARG="${2:-prompts/lakeflow-connect.txt}"
-WORK_DIR="${WORK_DIR:-/tmp/$(basename "${2:-lakeflow-connect}" .txt)-work}"
+WORK_DIR="${WORK_DIR:-${RESULTS_ROOT:-/tmp}/$(basename "${2:-lakeflow-connect}" .txt)-work}"
 mkdir -p "$WORK_DIR"
 WORK_DIR="$(cd "$WORK_DIR" && pwd)"
 
@@ -55,7 +55,7 @@ fi
 
 # Derive results dir from the prompts file name (e.g. lakeflow-connect -> /tmp/lakeflow-connect-results)
 SKILL_NAME=$(basename "$PROMPTS" .txt)
-RESULTS_DIR="/tmp/${SKILL_NAME}-results"
+RESULTS_DIR="${RESULTS_ROOT:-/tmp}/${SKILL_NAME}-results"
 mkdir -p "$RESULTS_DIR"
 
 echo "=== Skill Test Runner ==="

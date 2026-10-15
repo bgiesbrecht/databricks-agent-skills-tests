@@ -1,0 +1,28 @@
+{
+ "name": "${LFC_NAME_PREFIX}-${LFC_SHAPES_CONNECTION}-4",
+ "catalog": "${LFC_CATALOG}",
+ "schema": "shapes_probe",
+ "serverless": true,
+ "ingestion_definition": {
+  "connection_name": "${LFC_SHAPES_CONNECTION}",
+  "objects": [
+   {
+    "table": {
+     "source_catalog": "databricks_postgres",
+     "source_schema": "lfc_shapes",
+     "source_table": "nokey_cursor",
+     "destination_catalog": "${LFC_CATALOG}",
+     "destination_schema": "shapes_probe",
+     "table_configuration": {
+      "scd_type": "SCD_TYPE_1",
+      "query_based_connector_config": {
+       "cursor_columns": [
+        "updated_at"
+       ]
+      }
+     }
+    }
+   }
+  ]
+ }
+}
