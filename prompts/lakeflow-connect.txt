@@ -1,0 +1,6 @@
+p1|Set up a Lakeflow Connect pipeline to ingest from a Postgres database using query-based ingestion. Show me the DAB YAML.
+p2|Demo Lakeflow Connect Postgres with Lakebase as the source. Plan only.
+p3|What is the difference between query-based connectors and CDC gateway connectors in Lakeflow Connect?
+p4|My query-based pipeline runs but updates at the source never appear in the destination. What's wrong?
+p5|I want to get Lakebase data into Unity Catalog. What should I use?
+p6|Set up Postgres CDC with logical replication for Lakeflow Connect. Show the source SQL and DAB pipeline.

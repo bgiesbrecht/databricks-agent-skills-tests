@@ -1,0 +1,1 @@
+p1|Set up Lakeflow Connect integrated CDC from the existing connection ${LFC_PG_CONNECTION} in the workspace for Databricks CLI profile ${PIPELINE_WS}.

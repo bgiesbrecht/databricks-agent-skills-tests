@@ -1,0 +1,2 @@
+p1|set up a lakeflow connect demo in the workspace for Databricks CLI profile ${PIPELINE_WS}
+p1+|Yes. Create the new Lakebase project ${LFC_LAKEBASE_PROJECT} and use the default demo schema lfc_demo. Target catalog ${LFC_CATALOG}, target schema lakebase_qbc_raw. No schedule. Bundle in the current directory, with scratch files kept out of the bundle upload. Create everything, run it, run the mutate script and run it again, then show the rows per table per run report.

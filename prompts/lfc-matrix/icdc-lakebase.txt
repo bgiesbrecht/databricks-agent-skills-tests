@@ -1,0 +1,1 @@
+p1|Set up a Lakeflow Connect integrated CDC demo with Lakebase as the Postgres source in the workspace for Databricks CLI profile ${PIPELINE_WS}.

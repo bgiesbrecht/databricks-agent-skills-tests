@@ -1,0 +1,2 @@
+p1|Set up a Lakeflow Connect standard CDC demo, the two-pipeline setup with a gateway, with Lakebase as the Postgres source in the workspace for Databricks CLI profile ${PIPELINE_WS}.
+p1+|Use the Lakebase project ${LFC_LAKEBASE_PROJECT} and its lfc_demo schema. Target catalog ${LFC_CATALOG}, new schema lakebase_scdc_raw, gateway staging schema lakebase_scdc_stg. No schedule. Yes, go ahead. If CDC can't run on this Lakebase, tell me why and stop without creating a query-based pipeline, and leave nothing behind.
