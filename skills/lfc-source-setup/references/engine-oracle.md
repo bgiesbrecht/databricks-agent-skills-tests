@@ -1,0 +1,392 @@
+# Oracle Source Configuration for Lakeflow Connect
+
+This guide documents the database configuration required for Lakeflow Connect (LFC) query-based ingestion and CDC (LogMiner-based) on Oracle 11g through 23c instances.
+
+## Quick Reference
+
+| Requirement | Query-Based | CDC (LogMiner) |
+|---|---|---|
+| **Database Mode** | Normal | ARCHIVELOG (required) |
+| **Supplemental Logging** | None | PRIMARY KEY columns minimum |
+| **User Type** | PDB-local | CDB common (C##) or PDB-local (RDS) |
+| **User Privilege** | `SELECT` | + `LOGMINING`, `SELECT ANY TRANSACTION` |
+| **Cursor Column** | Any `TIMESTAMP` | Not needed; LogMiner tracks LSN/SCN |
+
+## Overview
+
+Oracle uses **LogMiner** for CDC, which reads redo logs to capture DML and DDL changes. Requirements:
+1. Database in ARCHIVELOG mode (not NOARCHIVELOG)
+2. Supplemental logging enabled (PRIMARY KEY columns minimum)
+3. For CDB/PDB (Oracle 12c+): Common user (C##) at CDB$ROOT for LogMiner; local user in PDB for seed tables
+
+### Platform-Specific Strategies
+
+| Platform | User Location | Notes |
+|----------|---|---|
+| Self-Managed / Podman | C## common user at CDB$ROOT | UC connection string is CDB listener |
+| RDS Oracle | PDB-local user | No common users; uses rdsadmin procedures |
+
+## Prerequisites for Query-Based Ingestion
+
+### Database Mode: ARCHIVELOG
+
+Oracle must be in ARCHIVELOG mode to retain redo logs for LogMiner. In NOARCHIVELOG mode, logs are overwritten after checkpoint.
+
+```sql
+-- Check current mode
+SELECT LOG_MODE FROM V$DATABASE;
+-- Should return 'ARCHIVELOG' (not 'NOARCHIVELOG')
+```
+
+### Enable ARCHIVELOG (if Needed)
+
+This requires the database to be in MOUNT mode (not OPEN). Plan for downtime.
+
+**Self-Managed / Podman:**
+
+```sql
+-- Connect as SYSDBA
+SHUTDOWN IMMEDIATE;
+STARTUP MOUNT;
+ALTER DATABASE ARCHIVELOG;
+ALTER DATABASE OPEN;
+SELECT LOG_MODE FROM V$DATABASE;  -- Verify
+```
+
+Or via `rman`:
+
+```bash
+rman target / <<EOF
+  SHUTDOWN IMMEDIATE;
+  STARTUP MOUNT;
+  SQL 'ALTER DATABASE ARCHIVELOG';
+  SQL 'ALTER DATABASE OPEN';
+  SQL 'SELECT LOG_MODE FROM V$DATABASE';
+  EXIT;
+EOF
+```
+
+**RDS Oracle:**
+
+RDS automatically enables ARCHIVELOG when you set the backup retention window. No manual action needed.
+
+### Archive Log Retention (Flash Recovery Area)
+
+LFC requires archive logs available for ≥48 hours. Set in FRA:
+
+**Self-Managed / Podman:**
+
+```sql
+-- Connect as SYSDBA
+ALTER SYSTEM SET db_recovery_file_dest = '/opt/oracle/oradata/fra' SCOPE=BOTH;
+ALTER SYSTEM SET db_recovery_file_dest_size = 10G SCOPE=BOTH;
+ALTER SYSTEM SET db_flashback_retention_target = 2880 SCOPE=BOTH;  -- 2 days
+
+-- Pin LogMiner dictionary into redo
+BEGIN DBMS_LOGMNR_D.BUILD(OPTIONS => DBMS_LOGMNR_D.STORE_IN_REDO_LOGS); END;
+/
+ALTER SYSTEM SWITCH LOGFILE;
+ALTER SYSTEM SWITCH LOGFILE;
+```
+
+**RDS Oracle:**
+
+```sql
+-- RDS manages FRA automatically; set retention via rdsadmin
+BEGIN
+  rdsadmin.rdsadmin_util.set_configuration(
+    name => 'archivelog retention hours',
+    value => '48'
+  );
+END;
+/
+```
+
+## LFC User Setup
+
+### Platform-Specific User Strategies
+
+#### Self-Managed / Podman: Common User (CDB$ROOT)
+
+LogMiner must run as a **common user** (prefixed `C##`) at CDB$ROOT, not in PDB:
+
+```sql
+-- Connect as SYSDBA to CDB$ROOT
+
+-- Create common LFC user
+CREATE USER C##<lfc_user> IDENTIFIED BY "<password-from-file>" CONTAINER=ALL;
+ALTER USER C##<lfc_user> IDENTIFIED BY "<password-from-file>" CONTAINER=ALL;
+
+-- Grant basic privileges
+GRANT CONNECT, RESOURCE, CREATE TABLE, CREATE VIEW, CREATE SEQUENCE, UNLIMITED TABLESPACE TO C##<lfc_user> CONTAINER=ALL;
+
+-- Grant CDC / LogMiner privileges
+GRANT CREATE SESSION, SELECT ANY TRANSACTION, EXECUTE_CATALOG_ROLE, SELECT ANY DICTIONARY, LOGMINING, FLASHBACK ANY TABLE, SELECT ANY TABLE TO C##<lfc_user> CONTAINER=ALL;
+GRANT SELECT ON V_$DATABASE TO C##<lfc_user> CONTAINER=ALL;
+GRANT SELECT ON GV_$DATABASE TO C##<lfc_user> CONTAINER=ALL;
+GRANT SELECT ON GV_$TRANSACTION TO C##<lfc_user> CONTAINER=ALL;
+GRANT SELECT ON GV_$LOGMNR_CONTENTS TO C##<lfc_user> CONTAINER=ALL;
+
+-- Multi-PDB access (optional):
+ALTER USER C##<lfc_user> SET CONTAINER_DATA=ALL CONTAINER=CURRENT;
+GRANT SET CONTAINER TO C##<lfc_user> CONTAINER=ALL;
+```
+
+#### RDS Oracle: PDB-Local User
+
+RDS does not allow common users. Use a **PDB-local user** and rdsadmin procedures:
+
+```sql
+-- Connect as admin (rdsadmin) in the PDB
+
+-- Create PDB-local user
+CREATE USER <lfc_user> IDENTIFIED BY "<password-from-file>";
+ALTER USER <lfc_user> IDENTIFIED BY "<password-from-file>";
+
+-- Grant basic privileges
+GRANT CONNECT, RESOURCE TO <lfc_user>;
+GRANT CREATE TABLE, CREATE VIEW, CREATE SEQUENCE, CREATE PROCEDURE TO <lfc_user>;
+GRANT UNLIMITED TABLESPACE TO <lfc_user>;
+
+-- Grant CDC / LogMiner privileges
+GRANT CREATE SESSION, SELECT ANY TRANSACTION, SELECT ANY DICTIONARY, LOGMINING, FLASHBACK ANY TABLE, SELECT ANY TABLE TO <lfc_user>;
+GRANT EXECUTE_CATALOG_ROLE TO <lfc_user>;
+
+-- Grant V$ access via rdsadmin (repeat for other required V$ views)
+BEGIN
+  rdsadmin.rdsadmin_util.grant_sys_object(p_grantee => UPPER('<lfc_user>'), p_privilege => 'SELECT', p_obj_name => 'V_$DATABASE');
+  rdsadmin.rdsadmin_util.grant_sys_object(p_grantee => UPPER('<lfc_user>'), p_privilege => 'SELECT', p_obj_name => 'V_$TRANSACTION');
+  rdsadmin.rdsadmin_util.grant_sys_object(p_grantee => UPPER('<lfc_user>'), p_privilege => 'SELECT', p_obj_name => 'GV_$LOGMNR_CONTENTS');
+END;
+/
+```
+
+### Verify LFC User
+
+```sql
+-- For common user (CDB$ROOT):
+-- Connect as C##<lfc_user> to CDB service
+SELECT * FROM DUAL;
+SELECT DBMS_LOGMNR_D.BUILD(OPTIONS => DBMS_LOGMNR_D.STORE_IN_REDO_LOGS) FROM DUAL;
+
+-- For PDB-local user:
+-- Connect as <lfc_user> to PDB service
+SELECT * FROM DUAL;
+```
+
+## Seed Tables for Demo/Testing
+
+LFC uses seed tables in the **PDB** (not CDB; LogMiner connects to CDB). Run as <lfc_user>:
+
+```sql
+-- Connect as <lfc_user> to the PDB
+
+-- intpk: integer PK for query-based ingestion
+CREATE TABLE intpk (
+  pk  NUMBER PRIMARY KEY,
+  dt  TIMESTAMP DEFAULT SYSTIMESTAMP,
+  ops VARCHAR2(255) DEFAULT 'insert'
+);
+CREATE INDEX idx_intpk_dt ON intpk (dt);
+
+-- dtix: no PK, for CDC/LogMiner testing
+CREATE TABLE dtix (
+  pk  NUMBER,
+  dt  TIMESTAMP DEFAULT SYSTIMESTAMP,
+  ops VARCHAR2(255) DEFAULT 'insert'
+);
+CREATE INDEX idx_dtix_dt ON dtix (dt);
+
+-- Seed 10 rows
+INSERT INTO intpk (pk, dt) SELECT LEVEL, SYSTIMESTAMP FROM DUAL CONNECT BY LEVEL <= 10;
+INSERT INTO dtix (pk, dt) SELECT LEVEL, SYSTIMESTAMP FROM DUAL CONNECT BY LEVEL <= 10;
+COMMIT;
+```
+
+> **Note:** Oracle does not support IDENTITY; use NUMBER PRIMARY KEY or SEQUENCE.
+
+## Supplemental Logging Configuration
+
+Supplemental logging captures redo log data for LogMiner. Three levels are available:
+
+| Level | Impact | Use Case |
+|-------|--------|----------|
+| Minimal | Smallest overhead | Tables with PKs only |
+| PRIMARY KEY | Medium overhead | **Recommended**: PK + unique key columns |
+| ALL | Large overhead | Needed for non-PK tables in LogMiner |
+
+**Self-Managed / Podman (CDB$ROOT):**
+
+```sql
+-- Connect as SYSDBA to CDB$ROOT
+ALTER DATABASE ADD SUPPLEMENTAL LOG DATA;
+ALTER DATABASE ADD SUPPLEMENTAL LOG DATA (PRIMARY KEY) COLUMNS;
+
+-- Verify
+SELECT SUPPLEMENTAL_LOG_DATA_MIN, SUPPLEMENTAL_LOG_DATA_PK FROM V$DATABASE;
+```
+
+**RDS Oracle (via rdsadmin):**
+
+```sql
+BEGIN
+  rdsadmin.rdsadmin_util.alter_supplemental_logging('ADD');
+  rdsadmin.rdsadmin_util.alter_supplemental_logging('ADD', 'PRIMARY KEY');
+END;
+/
+```
+
+**Table-Level (if database-level unavailable):**
+
+```sql
+ALTER TABLE <owner>.intpk ADD SUPPLEMENTAL LOG DATA (PRIMARY KEY) COLUMNS;
+ALTER TABLE <owner>.dtix ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS;
+```
+
+## CDC via LogMiner
+
+### Open LogMiner and Query Changes
+
+LogMiner must be opened to query changes from redo logs:
+
+```sql
+-- Connect as C##<lfc_user> to CDB$ROOT (self-managed/Podman) or PDB (RDS)
+
+BEGIN
+  DBMS_LOGMNR.ADD_LOGFILE(
+    LOGFILENAME => '<path-to-archive-log>',
+    OPTIONS => DBMS_LOGMNR.NEW
+  );
+  DBMS_LOGMNR.START_LOGMNR(OPTIONS => DBMS_LOGMNR.DICT_FROM_REDO_LOGS);
+END;
+/
+
+-- Query changes
+SELECT TIMESTAMP, OPERATION, SQL_REDO FROM V$LOGMNR_CONTENTS
+  WHERE TABLE_NAME IN ('INTPK', 'DTIX')
+  ORDER BY TIMESTAMP;
+
+-- Close when done
+BEGIN DBMS_LOGMNR.END_LOGMNR; END;
+/
+```
+
+### Get Current SCN
+
+```sql
+SELECT DBMS_FLASHBACK.GET_SYSTEM_CHANGE_NUMBER AS current_scn FROM DUAL;
+```
+
+
+## Password Rotation
+
+```sql
+-- Rotate LFC user password
+-- Connect as SYSDBA or user with ALTER USER privilege
+
+ALTER USER <lfc_user> IDENTIFIED BY "<new-password>" [CONTAINER=ALL];
+
+-- For common user:
+ALTER USER C##<lfc_user> IDENTIFIED BY "<new-password>" CONTAINER=ALL;
+
+-- Verify by connecting as LFC user:
+sqlplus <lfc_user>/"<new-password>"@<service_name>
+SELECT 1 FROM DUAL;
+```
+
+## Troubleshooting
+
+### Database Not in ARCHIVELOG Mode
+
+**Symptom:** LogMiner cannot find archive logs; `NOARCHIVELOG` in V$DATABASE.
+
+**Fix:** Enable ARCHIVELOG (requires downtime):
+```sql
+SHUTDOWN IMMEDIATE;
+STARTUP MOUNT;
+ALTER DATABASE ARCHIVELOG;
+ALTER DATABASE OPEN;
+```
+
+### Cannot Create Common User (RDS)
+
+**Symptom:** `CREATE USER C##...` fails; "Not a valid common user domain".
+
+**Fix:** Use PDB-local user (RDS does not allow common users):
+```sql
+CREATE USER <lfc_user> IDENTIFIED BY "<password>";
+```
+
+### LogMiner Dictionary Stale
+
+**Symptom:** V$LOGMNR_CONTENTS returns NULL or wrong OPERATION names.
+
+**Fix:** Build dictionary into redo (self-managed):
+```sql
+BEGIN
+  DBMS_LOGMNR_D.BUILD(OPTIONS => DBMS_LOGMNR_D.STORE_IN_REDO_LOGS);
+END;
+/
+ALTER SYSTEM SWITCH LOGFILE;
+ALTER SYSTEM SWITCH LOGFILE;
+```
+
+### Insufficient Privileges for LogMining
+
+**Symptom:** V$LOGMNR_CONTENTS query returns 0 rows.
+
+**Fix:** Ensure LOGMINING privilege is granted:
+```sql
+GRANT LOGMINING TO C##<lfc_user> CONTAINER=ALL;
+GRANT SELECT ON GV_$LOGMNR_CONTENTS TO C##<lfc_user> CONTAINER=ALL;
+```
+
+### Supplemental Logging Not Enabled
+
+**Symptom:** LogMiner returns missing SQL_REDO.
+
+**Fix:** Enable supplemental logging:
+```sql
+ALTER DATABASE ADD SUPPLEMENTAL LOG DATA (PRIMARY KEY) COLUMNS;
+ALTER SYSTEM SWITCH LOGFILE;
+```
+
+### Archive Logs Deleted Too Quickly
+
+**Symptom:** "Specified Log not in dictionary" error.
+
+**Fix:** Increase FRA retention:
+```sql
+ALTER SYSTEM SET db_recovery_file_dest_size = 50G SCOPE=BOTH;
+ALTER SYSTEM SET db_flashback_retention_target = 2880 SCOPE=BOTH;
+```
+
+## Verification Checklist
+
+Before starting LFC ingestion:
+
+1. **Database in ARCHIVELOG mode:**
+   ```sql
+   SELECT LOG_MODE FROM V$DATABASE;  -- Should return 'ARCHIVELOG'
+   ```
+
+2. **Archive logs available:**
+   ```sql
+   SELECT COUNT(*) FROM V$ARCHIVED_LOG WHERE STATUS = 'A';
+   ```
+
+3. **Supplemental logging enabled:**
+   ```sql
+   SELECT SUPPLEMENTAL_LOG_DATA_MIN, SUPPLEMENTAL_LOG_DATA_PK FROM V$DATABASE;  -- Should be YES, YES
+   ```
+
+4. **Seed tables populated:**
+   ```sql
+   SELECT COUNT(*) FROM intpk, dtix;  -- Both should have 10 rows
+   ```
+
+5. **LFC user can connect and has LogMiner privileges:**
+   ```sql
+   SELECT rolname FROM dba_roles WHERE rolname = 'LOGMINING';
+   ```
+
