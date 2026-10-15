@@ -17,6 +17,7 @@ Loading 100 GB from a laptop or a notebook means pushing 100 GB over the network
 - **Key order and column data don't have to be sequential.** Each INSERT adds its keys in `random` (default), `asc`, or `desc` order; the range is still exactly max + 1 … max + need, so resume and rows = max − min + 1 still hold. Non-key columns are `seq` (plain `n`), `scramble` (a non-linear function of `n` with a random multiplier and start per column, fixed when the SQL is planned, so a rerun regenerates the same rows), or `random` (one per-row random value, scrambled per column). Key and `UNIQUE` columns always keep plain `n`.
 - **Plain values can be audited from the key alone.** Every cast with plain `n` can be decoded back: text starts with the zero-padded `n` (and, from 38 characters, ends with it, at the exact column length), binary starts with `n`'s 8 bytes (and ends with them from 16 bytes), a uuid holds `n` in its last 16 hex digits, dates and timestamps count days or seconds from 1970, and so on. So a row whose columns hold plain values can be checked on its own: decode each column and compare it with the key. `plain_every = k` with `block = B` keeps every k-th block of B keys plain while the rest are scrambled or random, so a mixed dataset still has rows to audit; the audit planner checks exactly those blocks. Scrambled and random rows can't be audited.
 - **Foreign keys stay valid, dimension first.** A one-column foreign key to a parent's primary key gets `parent_min + scramble(n) mod (parent_max − parent_min + 1)`, cast to the parent key's type, with the parent's range probed when the statement runs: since a key range is always contiguous, every value is an existing key. The planners order tables by level (dimensions 0, a table referencing them one higher; each statement is tagged `/* lfc level N */`): inserts fill the dimensions before the facts, and before a delete trims a dimension's head or tail, it re-points the fact rows that reference those keys into the range that stays (an UPDATE of a non-key column, so the facts' own key ranges don't change). A delete never empties a table, so a dimension always has keys left to point at.
+- **Spec formulas, composite keys, and tables without a key** are described by comment tags, not code: a column's `lfc:v={...}` gives its value as an integer formula in `n` (a sparse key, a value range, a key that follows another table's), a table's `lfc:n={...}` gives `n` back from a row, `lfc:by={...}` names the column `n` rises with, and a column's `lfc:len={L}` sets its string length (a source's average width instead of the declared maximum). That's how the TPC schemas ([references/tpc.md](references/tpc.md)) and copies shaped from a customer's statistics (**lfc-source-statschema**) are built.
 - **A table's target row count lives in its comment** (`lfc:rows=500000`). The planner's `fill` mode tops every table up to its target, at most `rows` per statement, so rerunning it until nothing is left to add finishes the load.
 
 ## Why generated values instead of realistic fake data
@@ -33,6 +34,8 @@ Where realism matters (non-sequential keys, values with no visible pattern), use
 ## Make a dataset
 
 A typical request: *"Create 100 tables, rows uniformly distributed up to 1 million, with a variety of data types."*
+
+**If the user doesn't know what schema they want, offer a standard one**: TPC-B (4 tables, the banking schema pgbench uses, including a table with no primary key) or TPC-H (8 tables, composite keys and foreign keys, 8.66M rows at scale factor 1), with the spec's sizes, keys, foreign keys, and constraints. See [references/tpc.md](references/tpc.md); TPC-C, TPC-DS, and others are planned there. **If they have a database of their own but can't share its data**, build a copy with its shape from its statistics: **lfc-source-statschema**. Otherwise:
 
 | Choice | Default | Options |
 |---|---|---|
@@ -52,6 +55,41 @@ A typical request: *"Create 100 tables, rows uniformly distributed up to 1 milli
 5. **Fill:** plan with `mode=fill` (and the key order and column data asked for), then **run the levels in order**, each split across the calibrated number of sessions (4 on Postgres, 2 on MySQL, for 4 vCPUs), and **rerun until status shows every table at its target.** Measured on 4 vCPUs: 50.5M rows in 2 min 48 s on Postgres.
 6. **Report** the status: each table's min, max, rows, and the total. Run the **audit** on the source too: it should show 0 bad rows.
 7. **After the pipeline has run** (snapshot and CDC), audit the target the same way: decode each plain-block column from the key. The checks are in each engine's `cast` file (`lfc_check` / `chk`); the target's Databricks SQL forms depend on how Lakeflow Connect maps each type and aren't written yet.
+
+### Fill level by level
+
+When columns have formulas that point at a parent (`lfc:v`), the parent must be complete before its children start. `fill.sh` fills one level at a time and moves on only when every table of the level is at its target; it re-plans every round, so a rerun resumes. It reads the planner files from the directory the engine reference creates them in.
+
+```bash
+cat > fill.sh <<'FILL_EOF'
+# fill.sh <pg|my> <schema>: fill every table of the schema to its target (lfc:rows), one level at a time: a level starts
+# only when every table of the level before is complete, which formulas that point at a parent (lfc:v) need. At most
+# ROWS per statement and SESSIONS tables at once; it re-plans every round, so a rerun resumes.
+# The planner files are in DIR (default: this directory), as postgres.md / mysql.md create them; the client is PSQL or
+# MYSQL (default psql / mysql, connection from the usual environment: PGHOST... or MYSQL_HOST, MYSQL_PWD...).
+E=$1; D=$2; DIR=${DIR:-.}; SESSIONS=${SESSIONS:-4}
+if [ "$E" = pg ]; then
+  ROWS=${ROWS:-1000000}; SQL="${PSQL:-psql} -X -At -q -v ON_ERROR_STOP=1"; T="$D.%s"
+  plan() { cat "$DIR/cast.sql" "$DIR/plan-insert.sql" | $SQL -v schema=$D -v rows=$ROWS -v src=seed -v mode=fill -v order=${ORDER:-random} -v data=scramble -v plain_every=4; }
+  status() { $SQL -v schema=$D < "$DIR/plan-status.sql" | $SQL; }
+else
+  ROWS=${ROWS:-100000}; SQL="${MYSQL:-mysql} -N -B -r $D"; T="\`$D\`.\`%s\`"
+  plan() { { echo "SET @db='$D', @rows=$ROWS, @src='seed', @mode='fill', @order='${ORDER:-random}', @data='scramble', @plain_every=4;"; cat "$DIR/cast.sql" "$DIR/plan-insert.sql"; } | $SQL; }
+  status() { { echo "SET @db='$D';"; cat "$DIR/plan-status.sql"; } | $SQL | $SQL | tr '\t' '|'; }
+fi
+for l in $(plan | grep -o '^/\* lfc level [0-9]*' | awk '{ print $4 }' | sort -un); do
+  while :; do
+    todo=$(status | awk -F'|' '$5 != "" && $4 < $5 { print $1 }')        # tables below target; their statements at this level
+    plan | grep "^/\* lfc level $l \*/" | grep -F "$(printf "INSERT INTO $T (\n" $todo)" > run.sql || break
+    split -n r/$SESSIONS run.sql part-; pids=
+    for f in part-*; do $SQL < $f & pids="$pids $!"; done; wait $pids; rm -f part-*
+  done
+done
+status
+FILL_EOF
+DIR=pg bash fill.sh pg tpch                                    # Postgres: psql, connection from PGHOST, PGUSER, ...
+DIR=my MYSQL="mysql -h db.example.com -u lfc" bash fill.sh my tpch   # MySQL: password from MYSQL_PWD
+```
 
 ## Random values per row
 
@@ -126,7 +164,7 @@ Answer from this table; don't look the docs up. ✓ = tested on the engine (Post
 
 ## Rules
 
-- **Tables need a one-column primary key** that maps back to `n`: an integer, an integer-valued `numeric`, a text key of at least 19 characters, or a `uuid` on Postgres. The planner skips other tables; the engine's "skipped tables" query lists them.
+- **Tables need a one-column primary key** that maps back to `n` (an integer, an integer-valued `numeric`, a text key of at least 19 characters, or a `uuid` on Postgres), **or an `lfc:n` tag** for a composite key or no key at all. The planner skips other tables; the engine's "skipped tables" query lists them. Keyless tables stay keyless; on Postgres, CDC needs `REPLICA IDENTITY FULL` for them.
 - **Only plain values can be audited.** Use `seq`, or keep `plain_every` blocks, if the target's values must be checked after CDC.
 - **Run the levels in order.** A fact's INSERT probes its dimensions' ranges; if a dimension is still empty, a `NOT NULL` foreign key fails. Run delete files in one session, in order: each dimension's re-point UPDATEs come before its DELETE.
 - **Foreign keys that aren't one column referencing the parent's primary key** (composite foreign keys, or ones referencing a non-key unique column) get the column's ordinary cast, and the database may reject the rows. Postgres needs an index on each foreign-key column for the re-point UPDATEs to be fast (`make-dataset` creates them; InnoDB always does).

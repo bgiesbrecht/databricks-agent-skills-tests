@@ -7,7 +7,7 @@ Each engine and version has its own best statement size (rows per `INSERT ... SE
 | Engine | Best rows per statement | Best sessions | Throughput | Bottleneck |
 |---|---|---|---|---|
 | PostgreSQL 16 | **1M–2M** (≈112k rows/s in one session; 4M dips slightly) | **4** (242,542 rows/s); 8 is 28% slower | CPU: run queue ≈ CPUs, disk util ≈ 20% | One core per INSERT |
-| MySQL 8.4 | **100k** (33,383 rows/s; 25k: 14,529; 50k: 24,181; 250k: 27,353; 500k into a 4M-row table: 11,651) | **1–2**: 1, 2, and 4 sessions all ran about 30k rows/s (30,180; 29,849; 30,720) | ≈30k rows/s with 100k-row statements | Disk: from 1 to 4 sessions iowait rose 8% → 31% and util 23% → 57% with no gain; larger statements raise iowait too |
+| MySQL 8.4 | **100k** (33,383 rows/s; 25k: 14,529; 50k: 24,181; 250k: 27,353; 500k into a 4M-row table: 11,651) | **1–2**: 1, 2, and 4 sessions all ran about 30k rows/s (30,180; 29,849; 30,720); 8 dropped to 21,014 | ≈30k rows/s with 100k-row statements | Disk: from 1 to 8 sessions iowait rose 8% → 42% and util 23% → 67%, with no gain up to 4 and a 32% loss at 8; larger statements raise iowait too |
 
 **MySQL slows down as the table grows**: 250k-row statements ran at 27,353 rows/s while the table stayed under 1M rows, and at 16,055 rows/s up to 4M rows (iowait 17% → 23%), once the table and its random-order key index outgrew the buffer pool. Calibrate with a table near the size the load will reach, not an empty one.
 

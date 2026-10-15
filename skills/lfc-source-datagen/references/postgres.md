@@ -62,9 +62,9 @@ SELECT CASE
     -- strings: 19-digit zero-padded n first (so a key maps back to n), then MD5 filler, cut to the length
     WHEN 'character varying' THEN pg_temp.lfc_str(m)
     WHEN 'character' THEN pg_temp.lfc_str(m)
-    WHEN 'text'      THEN pg_temp.lfc_str(-1)
+    WHEN 'text'      THEN pg_temp.lfc_str(m)                                   -- m = -1 unless lfc:len sets it
     WHEN 'name'      THEN pg_temp.lfc_str(67)
-    WHEN 'bytea'     THEN pg_temp.lfc_bin(current_setting('lfc.lob_len')::int)
+    WHEN 'bytea'     THEN pg_temp.lfc_bin(pg_temp.lfc_len(m))
     -- date/time: epoch plus n days or seconds, wrapped to stay at or before 9999-12-31
     WHEN 'date'      THEN '(date ''1970-01-01'' + (x.n % 2932896)::int)'
     WHEN 'timestamp without time zone' THEN '(timestamp ''1970-01-01'' + (x.n % 253402300800) * interval ''1 second'')'
@@ -148,9 +148,9 @@ SELECT CASE
     -- n should be counts as a mismatch, not an error
     WHEN 'character varying' THEN pg_temp.lfc_strchk(pg_temp.lfc_len(m), col, k)
     WHEN 'character' THEN pg_temp.lfc_strchk(pg_temp.lfc_len(m), col, k)
-    WHEN 'text'      THEN pg_temp.lfc_strchk(pg_temp.lfc_len(-1), col, k)
+    WHEN 'text'      THEN pg_temp.lfc_strchk(pg_temp.lfc_len(m), col, k)
     WHEN 'bytea'     THEN format('(''x'' || encode(substr(%1$s, 1, 8), ''hex''))::bit(64)::bigint = %2$s AND (''x'' || encode(substr(%1$s, length(%1$s) - 7, 8), ''hex''))::bit(64)::bigint = %2$s AND length(%1$s) = %3$s',
-                                 col, k, current_setting('lfc.lob_len'))
+                                 col, k, pg_temp.lfc_len(m))
     WHEN 'date'      THEN format('%s - date ''1970-01-01'' = %s %% 2932896', col, k)
     WHEN 'timestamp without time zone' THEN format('extract(epoch from %s)::bigint = %s %% 253402300800', col, k)
     WHEN 'timestamp with time zone'    THEN format('extract(epoch from %s)::bigint = %s %% 253402300800', col, k)
@@ -173,6 +173,17 @@ SELECT CASE WHEN l < 19 THEN format('CASE WHEN %1$s ~ ''^[0-9]+$'' THEN %1$s::bi
             -- column was widened valid; shorter strings must have the exact length
             WHEN l >= 38 THEN format('CASE WHEN left(%1$s, 19) ~ ''^[0-9]{19}$'' THEN left(%1$s, 19)::bigint END = %2$s AND right(%1$s, 19) = lpad((%2$s)::text, 19, ''0'')', col, k)
             ELSE format('CASE WHEN left(%1$s, 19) ~ ''^[0-9]{19}$'' THEN left(%1$s, 19)::bigint END = %2$s AND length(%1$s) = %3$s', col, k, l) END
+$f$;
+-- Tags in comments, in braces: a column's lfc:v={integer expression in x.n} replaces n in its cast (spec formulas: sparse
+-- keys, composite keys, value ranges); a table's lfc:n={expression of its columns} gives n back from a row, for composite
+-- keys or tables without a primary key, and lfc:by={column} names the column n rises with (default: the first key column).
+-- A column's lfc:len={L} makes its strings or binaries L long instead of the declared length (or :lob_len), for a source's
+-- average width; lfc_mod gives the typmod the casts and checks use.
+CREATE OR REPLACE FUNCTION pg_temp.lfc_mod(rel oid, att int2, m int) RETURNS int LANGUAGE sql STABLE AS $f$
+SELECT coalesce(substring(col_description(rel, att) from 'lfc:len=\{([0-9]+)\}')::int + 4, m)
+$f$;
+CREATE OR REPLACE FUNCTION pg_temp.lfc_tag(c text, tag text) RETURNS text LANGUAGE sql IMMUTABLE AS $f$
+SELECT substring(c from 'lfc:' || tag || '=\{([^}]*)\}')
 $f$;
 EOF
 ```
@@ -197,6 +208,8 @@ cat > plan-insert.sql <<'EOF'
 -- Each INSERT reads the table's min and max key itself, so rerunning it never duplicates rows.
 -- Foreign keys (one column, to the parent's primary key) get parent_min + scramble(n) % (parent_max - parent_min + 1), cast
 -- to the parent key's type, with the parent's range probed when the statement runs: every value is an existing key.
+-- Tables with a composite key or none qualify when their comment has lfc:n={...} (see cast.sql); a column's lfc:v={...}
+-- replaces n in its cast. Each INSERT then probes the max of n among the rows with the highest lfc:by column.
 -- Each statement starts with /* lfc level N */: parents are level 0, a table referencing them is one level higher.
 -- Run the levels in order (tables within a level can run in parallel).
 \if :{?mode} \else \set mode append \endif
@@ -206,18 +219,21 @@ cat > plan-insert.sql <<'EOF'
 \if :{?data} \else \set data seq \endif
 WITH c AS (
   SELECT r.oid AS rel, s.nspname, r.relname, a.attnum, a.attname, a.attidentity <> '' AS ident,
-         pk.conkey[1] = a.attnum AS is_pk,
-         CASE WHEN fk.confrelid IS NOT NULL AND pk.conkey[1] <> a.attnum THEN   -- foreign key: inside the parent's current key range
+         coalesce(a.attnum = ANY (pk.conkey), false) AS is_pk, array_position(pk.conkey, a.attnum) AS kpos,
+         pg_temp.lfc_tag(obj_description(r.oid, 'pg_class'), 'n') AS nkey, pg_temp.lfc_tag(obj_description(r.oid, 'pg_class'), 'by') AS byc,
+         CASE WHEN pg_temp.lfc_tag(col_description(r.oid, a.attnum), 'v') IS NOT NULL THEN            -- a spec formula for this column
+           replace(pg_temp.lfc_cast(a.atttypid, pg_temp.lfc_mod(r.oid, a.attnum, a.atttypmod)), 'x.n', '(' || pg_temp.lfc_tag(col_description(r.oid, a.attnum), 'v') || ')')
+              WHEN fk.confrelid IS NOT NULL AND NOT coalesce(a.attnum = ANY (pk.conkey), false) THEN   -- foreign key: inside the parent's current key range
            replace(pg_temp.lfc_cast(fk.ptyp, fk.pmod), 'x.n', format(
              '((SELECT %1$s FROM %3$I.%4$I ORDER BY %2$I LIMIT 1) + ((((%5$s %% 2147483647) * ((%5$s %% 2147483647 + %6$s) %% 2147483647)) %% 2147483647 + %7$s) %% 2147483647) %% ((SELECT %1$s FROM %3$I.%4$I ORDER BY %2$I DESC LIMIT 1) - (SELECT %1$s FROM %3$I.%4$I ORDER BY %2$I LIMIT 1) + 1))',
              pg_temp.lfc_to_int(fk.ptyp, fk.pmod, quote_ident(fk.pcol)), fk.pcol, fk.pns, fk.prel,
              CASE :'data' WHEN 'random' THEN 'x.r' ELSE 'x.n' END, 1 + floor(random() * 2147483645)::bigint, floor(random() * 2147483647)::bigint))
-              WHEN :'data' = 'seq' OR EXISTS (SELECT 1 FROM pg_index u WHERE u.indrelid = r.oid AND u.indisunique AND u.indnkeyatts = 1
+              WHEN :'data' = 'seq' OR coalesce(a.attnum = ANY (pk.conkey), false) OR EXISTS (SELECT 1 FROM pg_index u WHERE u.indrelid = r.oid AND u.indisunique AND u.indnkeyatts = 1
                                                   AND u.indkey[0] = a.attnum)          -- key and UNIQUE columns keep plain n
-              THEN pg_temp.lfc_cast(a.atttypid, a.atttypmod)
+              THEN pg_temp.lfc_cast(a.atttypid, pg_temp.lfc_mod(r.oid, a.attnum, a.atttypmod))
               ELSE format(CASE WHEN :plain_every > 0 THEN format('CASE WHEN (x.n - 1) / %s %%%% %s = 0 THEN %%s ELSE %%s END', :block, :plain_every)
-                               ELSE '%2$s' END, pg_temp.lfc_cast(a.atttypid, a.atttypmod),
-                   replace(pg_temp.lfc_cast(a.atttypid, a.atttypmod), 'x.n',
+                               ELSE '%2$s' END, pg_temp.lfc_cast(a.atttypid, pg_temp.lfc_mod(r.oid, a.attnum, a.atttypmod)),
+                   replace(pg_temp.lfc_cast(a.atttypid, pg_temp.lfc_mod(r.oid, a.attnum, a.atttypmod)), 'x.n',
                            format('((((%1$s %% 2147483647) * ((%1$s %% 2147483647 + %2$s) %% 2147483647)) %% 2147483647 + %3$s) %% 2147483647 + 1)',
                                   CASE :'data' WHEN 'random' THEN 'x.r' ELSE 'x.n' END,
                                   1 + floor(random() * 2147483645)::bigint, floor(random() * 2147483647)::bigint))) END AS expr,
@@ -225,7 +241,7 @@ WITH c AS (
   FROM pg_attribute a
   JOIN pg_class r ON r.oid = a.attrelid AND r.relkind = 'r'
   JOIN pg_namespace s ON s.oid = r.relnamespace AND s.nspname = :'schema'
-  JOIN pg_constraint pk ON pk.conrelid = r.oid AND pk.contype = 'p' AND cardinality(pk.conkey) = 1
+  LEFT JOIN pg_constraint pk ON pk.conrelid = r.oid AND pk.contype = 'p'
   LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum      -- non-key identity and serial columns: the database numbers them
   LEFT JOIN LATERAL (                                                           -- a one-column foreign key to the parent's primary key
     SELECT f.confrelid, pa.attname AS pcol, pa.atttypid AS ptyp, pa.atttypmod AS pmod, ps.nspname AS pns, pr.relname AS prel
@@ -235,7 +251,7 @@ WITH c AS (
     JOIN pg_class pr ON pr.oid = f.confrelid JOIN pg_namespace ps ON ps.oid = pr.relnamespace
     WHERE f.conrelid = r.oid AND f.contype = 'f' AND cardinality(f.conkey) = 1 AND f.conkey[1] = a.attnum LIMIT 1) fk ON true
   WHERE a.attnum > 0 AND NOT a.attisdropped AND a.attgenerated = ''
-    AND (pk.conkey[1] = a.attnum OR (a.attidentity = '' AND NOT coalesce(pg_get_expr(d.adbin, d.adrelid) LIKE 'nextval(%', false)))
+    AND (coalesce(a.attnum = ANY (pk.conkey), false) OR (a.attidentity = '' AND NOT coalesce(pg_get_expr(d.adbin, d.adrelid) LIKE 'nextval(%', false)))
 ), lv AS (                                                                       -- level: 0 for tables no FK points from, else 1 + parent's
   WITH RECURSIVE e AS (SELECT DISTINCT f.conrelid AS child, f.confrelid AS parent FROM pg_constraint f
                        JOIN pg_class r ON r.oid = f.conrelid JOIN pg_namespace s ON s.oid = r.relnamespace AND s.nspname = :'schema'
@@ -248,24 +264,31 @@ WITH c AS (
          string_agg(quote_ident(attname), ', ' ORDER BY attnum) AS cols,
          CASE WHEN bool_or(ident) THEN ' OVERRIDING SYSTEM VALUE' ELSE '' END AS ovr,
          string_agg(coalesce(expr, 'NULL'), ', ' ORDER BY attnum) AS exprs,
-         max(to_int) FILTER (WHERE is_pk) AS pk_int, max(attname) FILTER (WHERE is_pk) AS pk,
+         CASE WHEN max(nkey) IS NOT NULL THEN max(nkey) WHEN count(*) FILTER (WHERE is_pk) = 1 THEN max(to_int) FILTER (WHERE is_pk) END AS pk_int,
+         max(nkey) AS nkey, quote_ident(coalesce(max(byc), max(attname) FILTER (WHERE kpos = 1))) AS byc,
+         max(attname) FILTER (WHERE is_pk) AS pk,
          substring(obj_description(c.rel, 'pg_class') from 'lfc:rows=([0-9]+)')::bigint AS target
   FROM c JOIN lv ON lv.rel = c.rel GROUP BY c.rel, nspname, relname
-  HAVING max(to_int) FILTER (WHERE is_pk) IS NOT NULL
+  HAVING max(nkey) IS NOT NULL OR (count(*) FILTER (WHERE is_pk) = 1 AND max(to_int) FILTER (WHERE is_pk) IS NOT NULL)
+), pr AS (                                                                       -- the max and min of n: two index probes
+  SELECT tb.*, CASE WHEN nkey IS NULL THEN format('(SELECT %s FROM %I.%I ORDER BY %I DESC LIMIT 1)', pk_int, nspname, relname, pk)
+                    ELSE format('(SELECT max(%1$s) FROM %2$I.%3$I WHERE %4$s = (SELECT %4$s FROM %2$I.%3$I ORDER BY %4$s DESC LIMIT 1))', nkey, nspname, relname, byc) END AS hi_q,
+               CASE WHEN nkey IS NULL THEN format('(SELECT %s FROM %I.%I ORDER BY %I LIMIT 1)', pk_int, nspname, relname, pk)
+                    ELSE format('(SELECT min(%1$s) FROM %2$I.%3$I WHERE %4$s = (SELECT %4$s FROM %2$I.%3$I ORDER BY %4$s LIMIT 1))', nkey, nspname, relname, byc) END AS lo_q
+  FROM tb
 )
 SELECT format('/* lfc level %s */ INSERT INTO %I.%I (%s)%s SELECT %s FROM (SELECT b.base + g.%s AS n%s FROM '
-              '(SELECT coalesce(hi, 0) AS base, %s AS need FROM (SELECT (SELECT %s FROM %I.%I ORDER BY %I DESC LIMIT 1) AS hi, '
-              '(SELECT %s FROM %I.%I ORDER BY %I LIMIT 1) AS lo) m) b, %s%s OFFSET 0) x;',
+              '(SELECT coalesce(hi, 0) AS base, %s AS need FROM (SELECT %s AS hi, %s AS lo) m) b, %s%s OFFSET 0) x;',
          lvl, nspname, relname, cols, ovr, exprs,
          CASE WHEN :'order' = 'random' AND :'src' = 'seed' THEN 'r' ELSE 'i' END,
          CASE :'data' WHEN 'random' THEN ', floor(random() * 2147483647)::bigint AS r' ELSE '' END,
          CASE :'mode' WHEN 'fill' THEN format('least(%s, greatest(%s - coalesce(hi - lo + 1, 0), 0))', :rows, target) ELSE :'rows' END,
-         pk_int, nspname, relname, pk, pk_int, nspname, relname, pk,
+         hi_q, lo_q,
          CASE WHEN :'src' <> 'seed' THEN 'generate_series(1, b.need) g(i)'
               WHEN :'order' = 'random' THEN 'lfc_seed.seed g WHERE g.r <= b.need' ELSE 'lfc_seed.seed g WHERE g.i <= b.need' END,
          CASE :'order' WHEN 'asc' THEN ' ORDER BY g.i' WHEN 'desc' THEN ' ORDER BY g.i DESC'
                        ELSE CASE WHEN :'src' <> 'seed' THEN ' ORDER BY random()' ELSE '' END END)
-FROM tb
+FROM pr
 WHERE :'mode' <> 'fill' OR target IS NOT NULL
 ORDER BY lvl, relname;
 EOF
@@ -281,23 +304,26 @@ cat > plan-audit.sql <<'EOF'
 \if :{?plain_every} \else \set plain_every 0 \endif
 \if :{?block} \else \set block 1000 \endif
 WITH c AS (
-  SELECT s.nspname, r.relname, a.attnum, a.attname, pk.conkey[1] = a.attnum AS is_pk,
-         pg_temp.lfc_to_int(a.atttypid, a.atttypmod, quote_ident(a.attname)) AS to_int, a.atttypid, a.atttypmod
+  SELECT s.nspname, r.relname, a.attnum, a.attname, coalesce(a.attnum = ANY (pk.conkey), false) AS is_pk,
+         pg_temp.lfc_tag(obj_description(r.oid, 'pg_class'), 'n') AS nkey, pg_temp.lfc_tag(col_description(r.oid, a.attnum), 'v') AS v,
+         pg_temp.lfc_to_int(a.atttypid, a.atttypmod, quote_ident(a.attname)) AS to_int, a.atttypid, pg_temp.lfc_mod(r.oid, a.attnum, a.atttypmod) AS atttypmod
   FROM pg_attribute a
   JOIN pg_class r ON r.oid = a.attrelid AND r.relkind = 'r'
   JOIN pg_namespace s ON s.oid = r.relnamespace AND s.nspname = :'schema'
-  JOIN pg_constraint pk ON pk.conrelid = r.oid AND pk.contype = 'p' AND cardinality(pk.conkey) = 1
+  LEFT JOIN pg_constraint pk ON pk.conrelid = r.oid AND pk.contype = 'p'
   LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
   WHERE a.attnum > 0 AND NOT a.attisdropped AND a.attgenerated = ''              -- the same columns plan-insert.sql fills
-    AND (pk.conkey[1] = a.attnum OR (a.attidentity = '' AND NOT coalesce(pg_get_expr(d.adbin, d.adrelid) LIKE 'nextval(%', false)))
-    AND (pk.conkey[1] = a.attnum OR NOT EXISTS (SELECT 1 FROM pg_constraint f WHERE f.conrelid = r.oid AND f.contype = 'f'
-                                                  AND a.attnum = ANY (f.conkey)))      -- FK values depend on the parent, not the key
-), k AS (SELECT nspname, relname, max(to_int) FILTER (WHERE is_pk) AS key FROM c GROUP BY 1, 2 HAVING max(to_int) FILTER (WHERE is_pk) IS NOT NULL),
-ch AS (SELECT c.nspname, c.relname, c.attnum,
+    AND (coalesce(a.attnum = ANY (pk.conkey), false) OR (a.attidentity = '' AND NOT coalesce(pg_get_expr(d.adbin, d.adrelid) LIKE 'nextval(%', false)))
+    AND (coalesce(a.attnum = ANY (pk.conkey), false) OR pg_temp.lfc_tag(col_description(r.oid, a.attnum), 'v') IS NOT NULL OR NOT EXISTS (SELECT 1 FROM pg_constraint f WHERE f.conrelid = r.oid AND f.contype = 'f'
+                                                  AND a.attnum = ANY (f.conkey)))      -- FK values depend on the parent, unless a formula
+), k AS (SELECT nspname, relname, CASE WHEN max(nkey) IS NOT NULL THEN max(nkey) WHEN count(*) FILTER (WHERE is_pk) = 1 THEN max(to_int) FILTER (WHERE is_pk) END AS key
+         FROM c GROUP BY 1, 2
+         HAVING max(nkey) IS NOT NULL OR (count(*) FILTER (WHERE is_pk) = 1 AND max(to_int) FILTER (WHERE is_pk) IS NOT NULL)),
+ch AS (SELECT c.nspname, c.relname, c.attnum,   -- a column with a formula (lfc:v) is checked against the formula at n
               -- a column added after rows existed (tagged 'lfc:added' by plan-ddl.sql) may be NULL in the older rows
               CASE WHEN col_description(format('%I.%I', c.nspname, c.relname)::regclass, c.attnum) LIKE '%lfc:added%'
-                   THEN format('(%I IS NULL OR %s)', c.attname, pg_temp.lfc_check(c.atttypid, c.atttypmod, quote_ident(c.attname), '(' || k.key || ')'))
-                   ELSE pg_temp.lfc_check(c.atttypid, c.atttypmod, quote_ident(c.attname), '(' || k.key || ')') END AS chk
+                   THEN format('(%I IS NULL OR %s)', c.attname, pg_temp.lfc_check(c.atttypid, c.atttypmod, quote_ident(c.attname), '(' || coalesce(replace(c.v, 'x.n', '(' || k.key || ')::bigint'), k.key) || ')'))
+                   ELSE pg_temp.lfc_check(c.atttypid, c.atttypmod, quote_ident(c.attname), '(' || coalesce(replace(c.v, 'x.n', '(' || k.key || ')::bigint'), k.key) || ')') END AS chk
        FROM c JOIN k USING (nspname, relname) WHERE NOT c.is_pk)
 SELECT format('SELECT %L, count(*), count(*) FILTER (WHERE NOT (%s)), %s FROM %I.%I%s;',
               relname, string_agg('coalesce(' || chk || ', false)', ' AND ' ORDER BY attnum), count(*), nspname, relname,
@@ -315,6 +341,8 @@ cat > plan-delete.sql <<'EOF'
 -- never the last rows: it deletes the keys before the (:rows + 1)-th, so a table with :rows rows or fewer is left alone.
 -- Dimension first: before a table loses keys, every one-column foreign key that points at them is re-pointed into the
 -- range that stays (an UPDATE of a non-key column, so the child's key range doesn't change). Tables go in level order.
+-- Skipped: tables whose key comes from a formula (lfc:n), and parents of a foreign key that is part of the child's key or
+-- has a formula (lfc:v), since re-pointing those would change a key or break the formula.
 WITH RECURSIVE e AS (SELECT DISTINCT f.conrelid AS child, f.confrelid AS parent FROM pg_constraint f
                      JOIN pg_class r ON r.oid = f.conrelid JOIN pg_namespace s ON s.oid = r.relnamespace AND s.nspname = :'schema'
                      WHERE f.contype = 'f' AND f.conrelid <> f.confrelid),
@@ -329,6 +357,11 @@ t AS (                                                         -- tables with a 
   FROM pg_constraint pk JOIN pg_class r ON r.oid = pk.conrelid JOIN pg_namespace s ON s.oid = r.relnamespace AND s.nspname = :'schema'
   JOIN pg_attribute a ON a.attrelid = r.oid AND a.attnum = pk.conkey[1]
   WHERE pk.contype = 'p' AND cardinality(pk.conkey) = 1
+    AND coalesce(obj_description(r.oid, 'pg_class'), '') NOT LIKE '%lfc:n={%'      -- spec-formula keys (TPC schemas): not yet
+    AND NOT EXISTS (SELECT 1 FROM pg_constraint f JOIN pg_attribute ca ON ca.attrelid = f.conrelid AND ca.attnum = ANY (f.conkey)
+                    LEFT JOIN pg_constraint cpk ON cpk.conrelid = f.conrelid AND cpk.contype = 'p'
+                    WHERE f.contype = 'f' AND f.confrelid = r.oid      -- a child that can't be re-pointed: the FK is part of its key,
+                      AND (ca.attnum = ANY (cpk.conkey) OR coalesce(col_description(f.conrelid, ca.attnum), '') LIKE '%lfc:v={%'))  -- or a formula
 ),
 fk AS (                                                        -- one-column foreign keys to those tables' keys
   SELECT f.confrelid AS parent, cs.nspname AS cns, cr.relname AS crel, ca.attname AS ccol
@@ -366,18 +399,23 @@ cat > plan-status.sql <<'EOF'
 -- psql -v schema=lfc -At -f pg-plan-status.sql > status.sql; psql -At -f status.sql
 -- Emits SELECTs (500 tables each) returning table|min key|max key|rows|target (from 'lfc:rows=', if set). Keys only ever change at the
 -- ends, so rows = max - min + 1 without COUNT(*); each min and max is one index probe.
-WITH t AS (
+WITH t AS (                                                    -- a one-column key, or a key formula (lfc:n={...}, see cast.sql)
   SELECT s.nspname, r.relname, a.attname, a.atttypid::regtype::text AS ty,
          coalesce(substring(obj_description(r.oid, 'pg_class') from 'lfc:rows=([0-9]+)'), '') AS target,
+         substring(obj_description(r.oid, 'pg_class') from 'lfc:n=\{([^}]*)\}') AS nkey,
+         coalesce(substring(obj_description(r.oid, 'pg_class') from 'lfc:by=\{([^}]*)\}'), quote_ident(a.attname)) AS byc,
          row_number() OVER (ORDER BY r.relname) - 1 AS k
-  FROM pg_constraint pk
-  JOIN pg_class r ON r.oid = pk.conrelid
+  FROM pg_class r
   JOIN pg_namespace s ON s.oid = r.relnamespace AND s.nspname = :'schema'
-  JOIN pg_attribute a ON a.attrelid = r.oid AND a.attnum = pk.conkey[1]
-  WHERE pk.contype = 'p' AND cardinality(pk.conkey) = 1
+  LEFT JOIN pg_constraint pk ON pk.conrelid = r.oid AND pk.contype = 'p'
+  LEFT JOIN pg_attribute a ON a.attrelid = r.oid AND a.attnum = pk.conkey[1]
+  WHERE r.relkind = 'r' AND (cardinality(pk.conkey) = 1 OR obj_description(r.oid, 'pg_class') LIKE '%lfc:n={%')
 ), q AS (
-  SELECT k / 500 AS chunk, format('SELECT %L, lo, hi, coalesce(hi - lo + 1, 0), %L FROM (SELECT (SELECT %s FROM %I.%I ORDER BY %I LIMIT 1) lo, (SELECT %s FROM %I.%I ORDER BY %I DESC LIMIT 1) hi) m',
-           relname, target, i, nspname, relname, attname, i, nspname, relname, attname) AS sel
+  SELECT k / 500 AS chunk, format('SELECT %L, lo, hi, coalesce(hi - lo + 1, 0), %L FROM (SELECT %s lo, %s hi) m', relname, target,
+           CASE WHEN nkey IS NULL THEN format('(SELECT %s FROM %I.%I ORDER BY %I LIMIT 1)', i, nspname, relname, attname)
+                ELSE format('(SELECT min(%1$s) FROM %2$I.%3$I WHERE %4$s = (SELECT %4$s FROM %2$I.%3$I ORDER BY %4$s LIMIT 1))', nkey, nspname, relname, byc) END,
+           CASE WHEN nkey IS NULL THEN format('(SELECT %s FROM %I.%I ORDER BY %I DESC LIMIT 1)', i, nspname, relname, attname)
+                ELSE format('(SELECT max(%1$s) FROM %2$I.%3$I WHERE %4$s = (SELECT %4$s FROM %2$I.%3$I ORDER BY %4$s DESC LIMIT 1))', nkey, nspname, relname, byc) END) AS sel
   FROM (SELECT *, CASE ty WHEN 'uuid' THEN format('(''x'' || right(replace(%I::text, ''-'', ''''), 16))::bit(64)::bigint', attname)
                           WHEN 'character varying' THEN format('left(%I, 19)::bigint', attname)
                           WHEN 'character' THEN format('left(%I, 19)::bigint', attname)
@@ -482,14 +520,15 @@ EOF
 
 ```bash
 cat > skipped.sql <<'EOF'
--- Tables the planner skips: no primary key, a composite key, or a text key shorter than 19 characters.
+-- Tables the planner skips: no primary key, a composite key, or a text key shorter than 19 characters, unless the table
+-- has a key formula (lfc:n={...} in its comment).
 SELECT r.relname, CASE WHEN pk.oid IS NULL THEN 'no primary key' WHEN cardinality(pk.conkey) > 1 THEN 'composite key'
                        ELSE 'key type ' || format_type(a.atttypid, a.atttypmod) END AS reason
 FROM pg_class r
 JOIN pg_namespace s ON s.oid = r.relnamespace AND s.nspname = :'schema'
 LEFT JOIN pg_constraint pk ON pk.conrelid = r.oid AND pk.contype = 'p'
 LEFT JOIN pg_attribute a ON a.attrelid = r.oid AND a.attnum = pk.conkey[1] AND cardinality(pk.conkey) = 1
-WHERE r.relkind = 'r'
+WHERE r.relkind = 'r' AND coalesce(obj_description(r.oid, 'pg_class'), '') NOT LIKE '%lfc:n={%'     -- lfc:n: a key formula
   AND (pk.oid IS NULL OR cardinality(pk.conkey) > 1
        OR NOT (a.atttypid IN ('smallint'::regtype, 'integer'::regtype, 'bigint'::regtype, 'numeric'::regtype, 'uuid'::regtype, 'text'::regtype)
                OR (a.atttypid IN ('varchar'::regtype, 'bpchar'::regtype) AND (a.atttypmod = -1 OR a.atttypmod - 4 >= 19))))

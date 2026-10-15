@@ -22,6 +22,7 @@ Use it for testing and demos. For a customer's production database, the customer
 | Google Cloud SQL | **lfc-source-gcp-cloudsql** | MySQL, PostgreSQL, SQL Server | Stop/start via activation policy |
 | Cloud VM (Azure, GCP) | **lfc-source-cloud-vm** | MySQL, PostgreSQL, SQL Server (native); more via Podman on the VM | Full control of versions and CDC settings |
 | Test data for any of the above | **lfc-source-datagen** | PostgreSQL, MySQL (SQL Server, Oracle planned) | Generated inside the database from `generate_series` or a seed table; resumable; fast min/max across 10,000+ tables |
+| A copy shaped like a customer's database, from their statistics only | **lfc-source-statschema** | PostgreSQL, MySQL, either direction | Collects catalog statistics (no table scans, data values only if allowed), builds a scaled-down schema, fills it with lfc-source-datagen, and checks its statistics |
 | Firewall rules for any of the above | **lfc-source-firewall** | — | Laptop IP + workspace serverless egress (+ classic egress when known) |
 | Local Podman (Lima on macOS) | **lfc-source-podman** | MySQL, MariaDB, PostgreSQL, SQL Server (incl. Availability Groups), Oracle, Db2, Informix, MongoDB | **Local testing only:** Databricks serverless can't reach a laptop container, and an SSH tunnel doesn't change that. To ingest from Databricks, use a managed service or a cloud VM |
 
@@ -75,7 +76,7 @@ The Unity Catalog connection follows the pipeline naming rule in **databricks-la
 ## After the database exists
 
 1. **Configure the engine** for the ingestion mode (engine reference above): the Lakeflow Connect user, grants, and CDC / change tracking / replication where needed.
-   To fill it with test data, use **lfc-source-datagen**: rows are generated inside the database, so none cross the network.
+   To fill it with test data, use **lfc-source-datagen**: rows are generated inside the database, so none cross the network. If the customer can't share data but can share statistics, use **lfc-source-statschema** to build a copy with their shape.
 2. **Register the UC connection** from a request body in a private file, then delete it:
 
    ```bash

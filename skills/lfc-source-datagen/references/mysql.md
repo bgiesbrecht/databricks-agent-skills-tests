@@ -22,11 +22,25 @@ cat > cast.sql <<'EOF'
 -- Non-key AUTO_INCREMENT and generated columns are left out; is_unique marks columns that must keep plain n.
 -- The insert, status, and boundary queries all read lfc_cols; it disappears when the session ends.
 SET SESSION group_concat_max_len = 16777216;
+-- Tags in comments, in braces: a column's lfc:v={integer expression in x.n} replaces n in its cast (spec formulas: sparse
+-- keys, composite keys, value ranges); a table's lfc:n={expression of its columns} gives n back from a row, for composite
+-- keys or tables without a primary key, and lfc:by={column} names the column n rises with (default: the first key column).
+-- lfc_tabs: the tables that qualify (a one-column primary key, or lfc:n), with their key formula.
+DROP TEMPORARY TABLE IF EXISTS lfc_tabs;
+CREATE TEMPORARY TABLE lfc_tabs AS
+SELECT t.table_schema AS db, t.table_name AS tbl, REGEXP_SUBSTR(t.table_comment, '(?<=lfc:n=\\{)[^}]*') AS nkey,
+       REGEXP_SUBSTR(t.table_comment, '(?<=lfc:by=\\{)[^}]*') AS byc,
+       (SELECT COUNT(*) FROM information_schema.statistics s WHERE s.table_schema = t.table_schema AND s.table_name = t.table_name
+          AND s.index_name = 'PRIMARY') AS npk,
+       (SELECT s.column_name FROM information_schema.statistics s WHERE s.table_schema = t.table_schema AND s.table_name = t.table_name
+          AND s.index_name = 'PRIMARY' AND s.seq_in_index = 1) AS pk1
+FROM information_schema.tables t WHERE t.table_schema = @db AND t.table_type = 'BASE TABLE'
+HAVING npk = 1 OR nkey IS NOT NULL;
 DROP TEMPORARY TABLE IF EXISTS lfc_cols;
 CREATE TEMPORARY TABLE lfc_cols AS
 SELECT c.table_schema AS db, c.table_name AS tbl, c.column_name AS col, c.ordinal_position AS pos, c.column_key = 'PRI' AS is_pk,
   c.column_key IN ('PRI', 'UNI') AS is_unique, fk.referenced_table_schema AS fk_db, fk.referenced_table_name AS fk_tbl,
-  c.column_comment LIKE '%lfc:added%' AS added,
+  c.column_comment LIKE '%lfc:added%' AS added, REGEXP_SUBSTR(c.column_comment, '(?<=lfc:v=\\{)[^}]*') AS v,
   CASE c.data_type
     -- integers (signed / unsigned)
     WHEN 'tinyint'   THEN IF(c.column_type LIKE '%unsigned%', 'x.n % 255', 'x.n % 127')
@@ -92,15 +106,15 @@ SELECT c.table_schema AS db, c.table_name AS tbl, c.column_name AS col, c.ordina
     END
   END AS chk,
   -- length to generate: the declared length, or @lob_len (default 100) for text and blob types, capped at the type's max
-  CASE WHEN c.data_type IN ('char', 'varchar', 'binary', 'varbinary') THEN c.character_maximum_length
-       ELSE LEAST(GREATEST(COALESCE(@lob_len, 100), 38), c.character_maximum_length) END AS len,
+  -- (or the column's lfc:len={L}, for a source's average width)
+  COALESCE(CAST(REGEXP_SUBSTR(c.column_comment, '(?<=lfc:len=\\{)[0-9]+') AS UNSIGNED),
+           CASE WHEN c.data_type IN ('char', 'varchar', 'binary', 'varbinary') THEN c.character_maximum_length
+                ELSE LEAST(GREATEST(COALESCE(@lob_len, 100), 38), c.character_maximum_length) END) AS len,
   CASE WHEN c.data_type IN ('tinyint', 'smallint', 'mediumint', 'int', 'bigint') THEN CONCAT('`', c.column_name, '`')
        WHEN c.data_type IN ('char', 'varchar') AND c.character_maximum_length >= 19 THEN CONCAT('CAST(LEFT(`', c.column_name, '`, 19) AS UNSIGNED)')
   END AS to_int
 FROM information_schema.columns c
-JOIN (SELECT table_schema, table_name FROM information_schema.statistics
-      WHERE table_schema = @db AND index_name = 'PRIMARY' GROUP BY table_schema, table_name HAVING COUNT(*) = 1) pk
-  ON pk.table_schema = c.table_schema AND pk.table_name = c.table_name
+JOIN lfc_tabs tb ON tb.db = c.table_schema AND tb.tbl = c.table_name
 LEFT JOIN (SELECT table_schema, table_name, column_name, MAX(referenced_table_schema) AS referenced_table_schema,     -- one-column FKs
                   MAX(referenced_table_name) AS referenced_table_name
            FROM information_schema.key_column_usage k
@@ -133,13 +147,20 @@ UPDATE lfc_cols SET
 WHERE expr0 = 'b';
 -- a column added after rows existed (tagged 'lfc:added' by plan-ddl.sql) may be NULL in the older rows
 UPDATE lfc_cols SET chk = CONCAT('(`', col, '` IS NULL OR ', chk, ')') WHERE added AND chk IS NOT NULL;
--- each table's key: its column, the key decoded to n, and the cast from n (a temporary table can't appear twice in one
--- MySQL query, so the FK, audit, and delete queries join this copy)
+-- a column with a formula (lfc:v): its cast of the formula, checked against the formula at n
+UPDATE lfc_cols SET expr0 = REPLACE(expr0, 'x.n', CONCAT('(', v, ')')), chk = REPLACE(chk, '{k}', CONCAT('(', REPLACE(v, 'x.n', '{k}'), ')'))
+WHERE v IS NOT NULL;
+-- each table's key: the column to probe, n from a row (the key decoded, or lfc:n), and the cast from n for a one-column key
+-- (a temporary table can't appear twice in one MySQL query, so the FK, audit, and delete queries join this copy)
 DROP TEMPORARY TABLE IF EXISTS lfc_keys;
-CREATE TEMPORARY TABLE lfc_keys AS SELECT db, tbl, col AS pk, to_int AS pk_int, expr0 AS pk_expr FROM lfc_cols WHERE is_pk AND to_int IS NOT NULL;
+CREATE TEMPORARY TABLE lfc_keys AS
+SELECT tb.db, tb.tbl, COALESCE(tb.byc, tb.pk1) AS pk, COALESCE(tb.nkey, c.to_int) AS pk_int, IF(tb.npk = 1, c.expr0, NULL) AS pk_expr,
+       tb.nkey IS NOT NULL AS has_n
+FROM lfc_tabs tb LEFT JOIN lfc_cols c ON c.db = tb.db AND c.tbl = tb.tbl AND c.col = tb.pk1
+WHERE tb.nkey IS NOT NULL OR c.to_int IS NOT NULL;
 -- foreign keys: parent_min + scramble(n) % (parent_max - parent_min + 1), cast to the parent key's type, with the parent's
 -- range probed when the INSERT runs, so every value is an existing key (NULL while the parent is empty)
-UPDATE lfc_cols c JOIN lfc_keys k ON k.db = c.fk_db AND k.tbl = c.fk_tbl
+UPDATE lfc_cols c JOIN lfc_keys k ON k.db = c.fk_db AND k.tbl = c.fk_tbl AND k.pk_expr IS NOT NULL AND c.v IS NULL
 SET c.expr0 = REPLACE(k.pk_expr, 'x.n', CONCAT(
       '((SELECT ', k.pk_int, ' FROM `', k.db, '`.`', k.tbl, '` ORDER BY `', k.pk, '` LIMIT 1) + ((((x.n % 2147483647) * ((x.n % 2147483647 + ',
       FLOOR(1 + RAND() * 2147483645), ') % 2147483647)) % 2147483647 + ', FLOOR(RAND() * 2147483647), ') % 2147483647) % ((SELECT ', k.pk_int,
@@ -164,6 +185,8 @@ cat > plan-insert.sql <<'EOF'
 --   value per row, scrambled per column. Unset @data means 'seq'. Key and UNIQUE columns always use plain n.
 -- Foreign keys (cast.sql) take values inside the parent's current key range. Each statement starts with /* lfc level N */:
 --   parents are level 0, a table referencing them is one level higher; run the levels in order.
+-- Tables with a composite key or none qualify when their comment has lfc:n={...}, and a column's lfc:v={...} replaces n in
+--   its cast (cast.sql); each INSERT then probes the max of n among the rows with the highest lfc:by column.
 -- @plain_every=k, @block=B (unset or 0 is off): every k-th block of B keys ((n - 1) DIV B % k = 0) keeps plain values in
 --   every column whatever @data is, so those rows can be audited from the key alone (plan-audit.sql).
 WITH RECURSIVE e AS (SELECT DISTINCT table_name AS child, referenced_table_name AS parent FROM information_schema.key_column_usage
@@ -178,21 +201,25 @@ SELECT CONCAT('/* lfc level ', lv.lvl, ' */ ', IF(@src = 'seed', '', CONCAT('SET
          IF(@data = 'random', ', FLOOR(RAND() * 2147483647) AS r', ''), ' FROM ',
          '(SELECT COALESCE(hi, 0) AS base, ',
          IF(@mode = 'fill', CONCAT('LEAST(', @rows, ', GREATEST(', t.target, ' - COALESCE(hi - lo + 1, 0), 0))'), @rows), ' AS need FROM ',
-         '(SELECT (SELECT ', k.pk_int, ' FROM `', k.db, '`.`', k.tbl, '` ORDER BY `', k.pk, '` DESC LIMIT 1) AS hi, ',
-         '(SELECT ', k.pk_int, ' FROM `', k.db, '`.`', k.tbl, '` ORDER BY `', k.pk, '` LIMIT 1) AS lo) m) b, ',
+         IF(kk.has_n,
+            CONCAT('(SELECT (SELECT MAX(', kk.pk_int, ') FROM `', k.db, '`.`', k.tbl, '` WHERE `', kk.pk, '` = (SELECT `', kk.pk, '` FROM `', k.db, '`.`', k.tbl,
+                   '` ORDER BY `', kk.pk, '` DESC LIMIT 1)) AS hi, (SELECT MIN(', kk.pk_int, ') FROM `', k.db, '`.`', k.tbl, '` WHERE `', kk.pk, '` = (SELECT `',
+                   kk.pk, '` FROM `', k.db, '`.`', k.tbl, '` ORDER BY `', kk.pk, '` LIMIT 1)) AS lo) m) b, '),
+            CONCAT('(SELECT (SELECT ', kk.pk_int, ' FROM `', k.db, '`.`', k.tbl, '` ORDER BY `', kk.pk, '` DESC LIMIT 1) AS hi, ',
+                   '(SELECT ', kk.pk_int, ' FROM `', k.db, '`.`', k.tbl, '` ORDER BY `', kk.pk, '` LIMIT 1) AS lo) m) b, ')),
          IF(@src = 'seed', 'lfc_seed.seed g', 'g'), ' WHERE g.', IF(COALESCE(@order, 'random') = 'random' AND @src = 'seed', 'r', 'i'), ' <= b.need',
          CASE COALESCE(@order, 'random') WHEN 'asc' THEN ' ORDER BY g.i' WHEN 'desc' THEN ' ORDER BY g.i DESC'
               ELSE IF(@src <> 'seed', ' ORDER BY RAND()', '') END, ') x;')
 FROM (SELECT db, tbl, GROUP_CONCAT(CONCAT('`', col, '`') ORDER BY pos SEPARATOR ', ') AS cols,
-             GROUP_CONCAT(COALESCE(IF(is_unique OR fk_tbl IS NOT NULL OR COALESCE(@data, 'seq') = 'seq', expr0,
+             GROUP_CONCAT(COALESCE(IF(is_unique OR fk_tbl IS NOT NULL OR v IS NOT NULL OR COALESCE(@data, 'seq') = 'seq', expr0,
                  CONCAT(IF(COALESCE(@plain_every, 0) > 0, CONCAT('CASE WHEN (x.n - 1) DIV ', COALESCE(@block, 1000), ' % ', @plain_every,
                                                                  ' = 0 THEN ', expr0, ' ELSE '), ''),
                  REPLACE(expr0, 'x.n', CONCAT('((((', @v := IF(@data = 'random', 'x.r', 'x.n'), ' % 2147483647) * ((', @v, ' % 2147483647 + ',
                    FLOOR(1 + RAND() * 2147483645), ') % 2147483647)) % 2147483647 + ', FLOOR(RAND() * 2147483647), ') % 2147483647 + 1)')),
                  IF(COALESCE(@plain_every, 0) > 0, ' END', ''))), 'NULL')
-                 ORDER BY pos SEPARATOR ', ') AS exprs,
-             MAX(IF(is_pk, to_int, NULL)) AS pk_int, MAX(IF(is_pk, col, NULL)) AS pk
-      FROM lfc_cols GROUP BY db, tbl HAVING MAX(IF(is_pk, to_int, NULL)) IS NOT NULL) k
+                 ORDER BY pos SEPARATOR ', ') AS exprs
+      FROM lfc_cols GROUP BY db, tbl) k
+JOIN lfc_keys kk ON kk.db = k.db AND kk.tbl = k.tbl
 JOIN (SELECT table_schema, table_name, CAST(REGEXP_SUBSTR(table_comment, '(?<=lfc:rows=)[0-9]+') AS UNSIGNED) AS target
       FROM information_schema.tables WHERE table_schema = @db) t ON t.table_schema = k.db AND t.table_name = k.tbl
 JOIN lv ON lv.tbl = k.tbl
@@ -228,6 +255,8 @@ cat > plan-delete.sql <<'EOF'
 -- Dimension first: before a table loses keys, every one-column foreign key that points at them is re-pointed into the
 -- range that stays (an UPDATE of a non-key column). Every probe is a LIMIT-ed derived table, which MySQL materializes, so
 -- a statement can read the table it changes. Tables go in level order.
+-- Skipped: tables whose key comes from a formula (lfc:n), and parents of a foreign key that is part of the child's key or
+-- has a formula (lfc:v), since re-pointing those would change a key or break the formula.
 WITH RECURSIVE e AS (SELECT DISTINCT table_name AS child, referenced_table_name AS parent FROM information_schema.key_column_usage
                      WHERE table_schema = @db AND referenced_table_schema = @db AND referenced_table_name <> table_name),
 l (tbl, lvl) AS (SELECT table_name, 0 FROM information_schema.tables WHERE table_schema = @db
@@ -241,7 +270,12 @@ t AS (SELECT k.*, lv.lvl,
                     IF(@end = 'tail', 'ASC LIMIT 1', CONCAT('ASC LIMIT 1 OFFSET ', @rows)), ') d)') AS lo,
              CONCAT('(SELECT v FROM (SELECT ', k.pk_int, ' AS v FROM `', k.db, '`.`', k.tbl, '` ORDER BY `', k.pk, '` ',
                     IF(@end = 'tail', CONCAT('DESC LIMIT 1 OFFSET ', @rows), 'DESC LIMIT 1'), ') d)') AS hi
-      FROM lfc_keys k JOIN lv ON lv.tbl = k.tbl WHERE k.db = @db),
+      FROM lfc_keys k JOIN lv ON lv.tbl = k.tbl WHERE k.db = @db
+        AND NOT k.has_n                                           -- spec-formula keys (TPC schemas): not yet
+        AND NOT EXISTS (SELECT 1 FROM information_schema.key_column_usage u JOIN information_schema.columns c
+                          ON c.table_schema = u.table_schema AND c.table_name = u.table_name AND c.column_name = u.column_name
+                        WHERE u.table_schema = @db AND u.referenced_table_name = k.tbl      -- a child that can't be re-pointed: the
+                          AND (c.column_key = 'PRI' OR c.column_comment LIKE '%lfc:v={%'))),  -- FK is part of its key, or a formula
 fk AS (SELECT table_name AS ctbl, column_name AS ccol, referenced_table_name AS ptbl FROM information_schema.key_column_usage u
        WHERE table_schema = @db AND referenced_table_schema = @db
          AND (SELECT COUNT(*) FROM information_schema.key_column_usage u2 WHERE u2.constraint_schema = u.constraint_schema
@@ -268,14 +302,24 @@ cat > plan-status.sql <<'EOF'
 SET SESSION group_concat_max_len = 16777216;
 SELECT CONCAT(GROUP_CONCAT(sel ORDER BY k SEPARATOR ' UNION ALL '), ';') FROM (
   SELECT ROW_NUMBER() OVER (ORDER BY s.table_name) - 1 AS k,
-         CONCAT('SELECT ''', s.table_name, ''', lo, hi, COALESCE(hi - lo + 1, 0), ''',
-                COALESCE((SELECT REGEXP_SUBSTR(t.table_comment, '(?<=lfc:rows=)[0-9]+') FROM information_schema.tables t
-                          WHERE t.table_schema = s.table_schema AND t.table_name = s.table_name), ''), ''' FROM (SELECT (SELECT ', i, ' FROM `', s.table_schema, '`.`', s.table_name,
-                '` ORDER BY `', s.column_name, '` LIMIT 1) lo, (SELECT ', i, ' FROM `', s.table_schema, '`.`', s.table_name,
-                '` ORDER BY `', s.column_name, '` DESC LIMIT 1) hi) m') AS sel
-  FROM (SELECT table_schema, table_name, MAX(column_name) AS column_name FROM information_schema.statistics
-        WHERE table_schema = @db AND index_name = 'PRIMARY' GROUP BY table_schema, table_name HAVING COUNT(*) = 1) s
-  JOIN information_schema.columns c ON c.table_schema = s.table_schema AND c.table_name = s.table_name AND c.column_name = s.column_name
+         CONCAT('SELECT ''', s.table_name, ''', lo, hi, COALESCE(hi - lo + 1, 0), ''', COALESCE(REGEXP_SUBSTR(s.cm, '(?<=lfc:rows=)[0-9]+'), ''),
+                ''' FROM (SELECT ', IF(s.nkey IS NULL,
+                  CONCAT('(SELECT ', i, ' FROM `', s.table_schema, '`.`', s.table_name, '` ORDER BY `', s.column_name, '` LIMIT 1) lo, (SELECT ', i,
+                         ' FROM `', s.table_schema, '`.`', s.table_name, '` ORDER BY `', s.column_name, '` DESC LIMIT 1) hi'),
+                  CONCAT('(SELECT MIN(', s.nkey, ') FROM `', s.table_schema, '`.`', s.table_name, '` WHERE `', s.byc, '` = (SELECT `', s.byc, '` FROM `',
+                         s.table_schema, '`.`', s.table_name, '` ORDER BY `', s.byc, '` LIMIT 1)) lo, (SELECT MAX(', s.nkey, ') FROM `', s.table_schema, '`.`',
+                         s.table_name, '` WHERE `', s.byc, '` = (SELECT `', s.byc, '` FROM `', s.table_schema, '`.`', s.table_name, '` ORDER BY `', s.byc,
+                         '` DESC LIMIT 1)) hi')), ') m') AS sel
+  FROM (SELECT t.table_schema, t.table_name, t.table_comment AS cm, p.column_name, p.npk,           -- a one-column key, or a key formula
+               REGEXP_SUBSTR(t.table_comment, '(?<=lfc:n=\\{)[^}]*') AS nkey,
+               COALESCE(REGEXP_SUBSTR(t.table_comment, '(?<=lfc:by=\\{)[^}]*'), p.column_name) AS byc
+        FROM information_schema.tables t
+        LEFT JOIN (SELECT table_schema, table_name, MAX(IF(seq_in_index = 1, column_name, NULL)) AS column_name, COUNT(*) AS npk
+                   FROM information_schema.statistics WHERE table_schema = @db AND index_name = 'PRIMARY' GROUP BY table_schema, table_name) p
+          ON p.table_schema = t.table_schema AND p.table_name = t.table_name
+        WHERE t.table_schema = @db AND t.table_type = 'BASE TABLE'
+          AND (p.npk = 1 OR t.table_comment LIKE '%lfc:n={%')) s
+  LEFT JOIN information_schema.columns c ON c.table_schema = s.table_schema AND c.table_name = s.table_name AND c.column_name = s.column_name
   JOIN LATERAL (SELECT IF(c.data_type IN ('char', 'varchar'), CONCAT('CAST(LEFT(`', c.column_name, '`, 19) AS UNSIGNED)'),
                           CONCAT('`', c.column_name, '`')) AS i) x ON TRUE
 ) q GROUP BY k DIV 500 ORDER BY k DIV 500;
@@ -380,13 +424,14 @@ EOF
 
 ```bash
 cat > skipped.sql <<'EOF'
--- Tables the planner skips: no primary key, a composite key, or a key that can't be turned back into n.
+-- Tables the planner skips: no primary key, a composite key, or a key that can't be turned back into n, unless the table
+-- has a key formula (lfc:n={...} in its comment).
 SELECT t.table_name, CASE WHEN k.n IS NULL THEN 'no primary key' WHEN k.n > 1 THEN 'composite key' ELSE CONCAT('key type ', c.column_type) END
 FROM information_schema.tables t
 LEFT JOIN (SELECT table_name, COUNT(*) AS n, MAX(column_name) AS col FROM information_schema.statistics
            WHERE table_schema = @db AND index_name = 'PRIMARY' GROUP BY table_name) k ON k.table_name = t.table_name
 LEFT JOIN information_schema.columns c ON c.table_schema = @db AND c.table_name = t.table_name AND c.column_name = k.col
-WHERE t.table_schema = @db AND t.table_type = 'BASE TABLE'
+WHERE t.table_schema = @db AND t.table_type = 'BASE TABLE' AND t.table_comment NOT LIKE '%lfc:n={%'     -- lfc:n: a key formula
   AND (k.n IS NULL OR k.n > 1 OR NOT (c.data_type IN ('tinyint', 'smallint', 'mediumint', 'int', 'bigint')
                                       OR (c.data_type IN ('char', 'varchar') AND c.character_maximum_length >= 19)))
 ORDER BY 1;
