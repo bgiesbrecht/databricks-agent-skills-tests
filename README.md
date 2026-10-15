@@ -8,6 +8,10 @@ actually work in a workspace.
 Kept separate from the skills repo so test scripts, prompts, and results don't clutter it. The
 skills repo keeps its own hook unit tests (`tests/*_test.py`).
 
+Each skills-repo PR that these tests back has a summary in [pr-notes/](pr-notes/), for example
+[lfc-query-based-lakebase-demo](pr-notes/lfc-query-based-lakebase-demo.md), with the full test
+matrix and results.
+
 ## Layout
 
 ```
@@ -18,6 +22,7 @@ env.example.sh         # copy to env.local.sh (gitignored) and fill in
 sync.sh                # workspace file bridge for sandboxes without git push
 bin/run_batch.sh       # run several prompt files in parallel, each in its own scratch dir
 bin/stop_after.sh      # stop pipeline updates that run past N minutes
+pr-notes/              # PR descriptions with the test matrix, one per skills-repo branch
 prompts/
   lakeflow-connect.txt # routing / guidance prompts (no resources created)
   lfc-matrix/          # Lakeflow Connect deploy tests: 4 sources x 3 modes, plus DML
