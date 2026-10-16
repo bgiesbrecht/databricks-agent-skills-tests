@@ -7,8 +7,9 @@ Tested on Postgres 16 (Podman, arm64). The planners use `pg_catalog` only, so no
 Every command pipes SQL into `$SQL`, a `psql` session to the source database. Only SQL text goes over it.
 
 ```bash
-SQL="psql -h <host> -U <user> -d <database> -At -q -v ON_ERROR_STOP=1"      # password via PGPASSWORD from a umask 077 file
-# Local Podman: SQL="podman exec -i <container> psql -U postgres -d <database> -At -q -v ON_ERROR_STOP=1"
+PG="psql -h <host> -U <user> -d <database>"                    # password via PGPASSWORD from a umask 077 file
+# Local Podman: PG="podman exec -i <container> psql -U postgres -d <database>"
+SQL="$PG -At -q -v ON_ERROR_STOP=1"
 ```
 
 ## Files
@@ -62,15 +63,8 @@ $SQL -v schema=$S < $D/skipped.sql                                              
 echo "CREATE SCHEMA IF NOT EXISTS lfc_seed; DROP TABLE IF EXISTS lfc_seed.seed;
 CREATE TABLE lfc_seed.seed (i bigint PRIMARY KEY, r bigint NOT NULL);           -- r: a random permutation of i, for shuffled keys
 INSERT INTO lfc_seed.seed SELECT i, r FROM (SELECT i, row_number() OVER (ORDER BY random()) AS r FROM generate_series(1, 1000000) i) q ORDER BY i;" | $SQL
-for round in $(seq 1 50); do                      # fill until done: re-plan every round, so DDL and failed INSERTs are picked up
-  cat $D/cast.sql $D/plan-insert.sql | $SQL -v schema=$S -v rows=1000000 -v src=seed -v mode=fill -v order=random -v data=scramble -v plain_every=4 -v block=1000 -v lob_len=100 > inserts.sql
-  for l in $(grep -o '^/\* lfc level [0-9]*' inserts.sql | awk '{ print $4 }' | sort -un); do   # levels in order, 4 sessions each
-    grep "^/\* lfc level $l \*/" inserts.sql | awk -v n=4 '{ print > ("part-" NR % n ".sql") }'
-    for f in part-*.sql; do $SQL < "$f" > /dev/null 2>> fill.err & done; wait; rm -f part-*.sql
-  done
-  $SQL -v schema=$S < $D/plan-status.sql > status.sql && $SQL < status.sql > status.out    # table|min|max|rows|target
-  awk -F'|' '$5 != "" && $4 < $5 { n++ } END { exit n > 0 }' status.out && break
-done
+PSQL="$PG" DIR=$D SESSIONS=4 bash $D/../fill.sh pg $S          # fill until done, level by level (see the skill's "Fill level by level")
+$SQL -v schema=$S < $D/plan-status.sql > status.sql && $SQL < status.sql > status.out    # table|min|max|rows|target
 awk -F'|' '{ t += $4 } END { print NR " tables, " t " rows" }' status.out
 cat $D/cast.sql $D/plan-audit.sql | $SQL -v schema=$S -v plain_every=4 -v block=1000 -v lob_len=100 > audit.sql && $SQL < audit.sql   # same lob_len; bad must be 0
 ```

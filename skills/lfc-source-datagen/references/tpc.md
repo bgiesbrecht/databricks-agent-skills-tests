@@ -49,7 +49,6 @@ Where it differs from the spec:
 
 - [`scripts/tpc/tpc-schema.sh`](../scripts/tpc/tpc-schema.sh): The workloads as MySQL DDL with the tags; `bash tpc-schema.sh tpch 10` for scale factor 10.
 
-- [`scripts/tpc/tpc-ddl.py`](../scripts/tpc/tpc-ddl.py): MySQL DDL to Postgres with sqlglot.
 
 - [`scripts/tpc/tpcb-verify.sql`](../scripts/tpc/tpcb-verify.sql): TPC-B checks.
 
@@ -57,15 +56,18 @@ Where it differs from the spec:
 
 ## Run
 
-`tpc-schema.sh` writes a workload's tables as MySQL DDL, with the tags in the column and table comments; for Postgres, `tpc-ddl.py` transpiles it with [sqlglot](https://github.com/tobymao/sqlglot) (each `CREATE TABLE`, and each formula, so `DIV` stays integer division) and moves the comments to `COMMENT ON`. Then `fill.sh` (in the skill's "Fill level by level") fills it with the engine's planners, one level at a time, and the verify file checks the spec's rules on the data.
+`tpc-schema.sh` writes a workload's tables as MySQL DDL, with the tags in the column and table comments. **lfc-source-statschema**'s `ddl-to-schema.py` turns that into its canonical `schema.yaml` (keeping the tags and the checks), and its `ddl.py` writes the DDL for any engine, transpiling the formulas with [sqlglot](https://github.com/tobymao/sqlglot) (`DIV` stays integer division). Then `fill.sh` (in the skill's "Fill level by level") fills it with the engine's planners, one level at a time, and the verify file checks the spec's rules on the data.
 
 ```bash
-# Postgres: schema tpch at scale factor 1 (8.66M rows)
-{ echo "CREATE SCHEMA tpch; SET search_path = tpch;"; bash scripts/tpc/tpc-schema.sh tpch 1 | uv run -q --no-project --with sqlglot python3 scripts/tpc/tpc-ddl.py; } | psql -v ON_ERROR_STOP=1
+SS=../lfc-source-statschema/scripts                                      # from this skill's directory
+bash scripts/tpc/tpc-schema.sh tpch 1 | uv run $SS/ddl-to-schema.py --dialect mysql > tpch.yaml   # scale factor 1: 8.66M rows
+# Postgres: schema tpch
+{ echo "CREATE SCHEMA tpch; SET search_path = tpch;"; uv run $SS/ddl.py tpch.yaml --dialect postgres; } | psql -v ON_ERROR_STOP=1
 DIR=scripts/postgres bash scripts/fill.sh pg tpch
 { echo "SET search_path = tpch;"; sed -E 's/DATEDIFF\(([^,]+), ([^)]+)\)/(\1 - \2)/g' scripts/tpc/tpch-verify.sql; } | psql -At
 # MySQL: database tpch
-{ echo "CREATE DATABASE tpch; USE tpch;"; bash scripts/tpc/tpc-schema.sh tpch 1; } | mysql
+{ echo "CREATE DATABASE tpch; USE tpch;"; uv run $SS/ddl.py tpch.yaml --dialect mysql; } | mysql
+# Any other engine's DDL: uv run $SS/ddl.py tpch.yaml --dialect tsql (or oracle, databricks)
 DIR=scripts/mysql bash scripts/fill.sh my tpch
 mysql -N tpch < scripts/tpc/tpch-verify.sql
 ```

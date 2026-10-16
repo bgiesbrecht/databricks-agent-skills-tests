@@ -1,4 +1,8 @@
-# uv run --no-project --with pyyaml python3 validate.py schema.yaml [stats.yaml] [queries.yaml]
+#!/usr/bin/env -S uv run --script
+# /// script
+# dependencies = ["pyyaml"]
+# ///
+# uv run validate.py schema.yaml [stats.yaml] [queries.yaml]
 # Load each file with statschema's own model (the package next to this script), so a file this skill writes stays
 # statschema's canonical format: schema.yaml (tables, columns, keys, foreign keys, generation rules), stats.yaml (column,
 # index, and foreign-key statistics), queries.yaml (the top queries).

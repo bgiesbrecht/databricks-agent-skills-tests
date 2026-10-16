@@ -16,13 +16,14 @@ If you need SQL Server Always On Availability Groups, Db2, Informix, or specific
 
 ### macOS
 
-**Prerequisites:** Homebrew installed. If missing, see [brew.sh](https://brew.sh).
-
-Install Podman, Lima, and SQL clients:
+**Tools:** Podman, Lima, and the SQL clients; see **lfc-source-setup** "Tools" (`bash scripts/check-tools.sh local` and `clients` there). In short:
 
 ```bash
-brew install podman lima mysql postgresql mongodb-community-shell sqlplus sqlite
+brew install podman lima libpq mysql-client sqlcmd mongosh
+export PATH="$(brew --prefix libpq)/bin:$(brew --prefix mysql-client)/bin:$PATH"     # both are keg-only
 ```
+
+Oracle's `sqlplus` isn't in Homebrew: use the one inside the container (`podman exec -it <container> sqlplus ...`).
 
 Create and start the Lima VM with Rosetta and the rootful Podman template (it runs arm64 images natively and x86_64-only images under Rosetta), then register its Podman socket:
 
@@ -252,6 +253,8 @@ databricks connections delete --name owner-engine-podman --profile DEFAULT
 1. **Container name too long:** Names must be ≤ 63 characters. Use a shorter prefix (e.g., `jd` instead of `jane-doe-test`).
 
 2. **Oracle hostname validation:** Oracle may reject underscores in container hostnames. Container names use hyphens only.
+
+3. **The VM's disk fills up**: every row loaded is also written to the engine's change log (MySQL binary logs, Postgres WAL), which CDC needs and so is kept: 25 GB of binary logs filled a 50 GB `podman machine` in testing, and Podman itself then fails (`no space left`). Check with `podman machine ssh df -h /`. Without a CDC reader on the container, purge them (`PURGE BINARY LOGS BEFORE NOW()`, or `SET PERSIST binlog_expire_logs_seconds = 86400`); with one, give the VM more disk (`podman machine init --disk-size`) instead.
 
 3. **Port already in use:** If port `30001` is already bound, pick a free port ≥30000. Check with `podman port {container-name}` or `ss -tlnp | grep 30001`.
 

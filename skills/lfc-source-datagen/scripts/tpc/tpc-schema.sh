@@ -1,7 +1,8 @@
 # tpc-schema.sh <tpcb|tpch> [SF]: prints the workload's tables as MySQL DDL, with the lfc tags in the comments
 # (cast.sql): lfc:rows= target, lfc:v={...} a column's value as an integer formula in x.n, lfc:n={...} n from a row (for
 # composite keys, key formulas, and tables without a key), lfc:by={...} the column n rises with. Keys, foreign keys, and
-# checks are the spec's; a table the spec gives no primary key has none. tpc-ddl.py turns it into Postgres DDL.
+# checks are the spec's; a table the spec gives no primary key has none. lfc-source-statschema's ddl-to-schema.py turns
+# it into schema.yaml, and its ddl.py into any engine's DDL.
 # Formulas use only integer arithmetic, DIV, %, and CASE, which transpile exactly.
 W=$1; SF=${2:-1}
 calc() { awk "BEGIN { printf \"%d\", $1 }"; }
@@ -29,6 +30,8 @@ EOF
   ;;
 tpch)   # clause 1.4 layouts, 1.4.2 constraints, 4.2.3 population; LINEITEM has 4 lines per order (the spec: 1 to 7, random)
   S=$(calc "$SF * 10000"); P=$(calc "$SF * 200000"); C=$(calc "$SF * 150000"); O=$(calc "$SF * 1500000")
+  # partsupp's key is read back from the spec's supplier formula, which needs 3 * (S/4 + 19) < S: at least 230 suppliers
+  [ "$S" -ge 230 ] || { echo "tpc-schema.sh: TPC-H needs scale factor 0.03 or more (230 suppliers); got $SF" >&2; exit 1; }
   ok="(x.n - 1) DIV 4 + 1"                                              # a line's order number
   odate="8035 + $(h "$ok" 11) % 2406"                                   # 1992-01-01 .. 1998-08-02 (ENDDATE - 151)
   lpk="(1 + $(h x.n 13) % $P)"

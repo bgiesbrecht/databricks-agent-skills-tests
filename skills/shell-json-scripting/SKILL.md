@@ -20,7 +20,7 @@ Plain set operations on strings (lists of IDs or names, not IP ranges) are yq, n
 
 Avoid `--query ... -o tsv`, `--format="value(...)"`, `awk`, `cut`, and `read` on CLI output: they split on whitespace, lose `null` vs empty, and break when a field order or a value changes.
 
-Needs [`yq`](https://github.com/mikefarah/yq) v4 (the Go one, not the Python wrapper) and `duckdb`: `brew install yq duckdb`. For Python: `pip install duckdb`.
+Needs [`yq`](https://github.com/mikefarah/yq) v4 (the Go one, not the Python wrapper) and `duckdb`: `brew install yq duckdb` (see **lfc-source-setup** "Tools"). For Python, run the script with uv instead of installing into a shared Python: `uv run --no-project --with duckdb python3 q.py`.
 
 ## Values into shell variables: `yq -o shell` + `eval`
 
@@ -58,37 +58,9 @@ Each step is a `.sql` file that:
 - reads JSON files with `read_json('<file>', columns = {...})`,
 - and returns **exactly one row**, whose columns become shell variables.
 
-A runner fills every `getvariable('NAME')` from the env var of the same name and prints the row as shell assignments. Write it once:
+A runner fills every `getvariable('NAME')` from the env var of the same name and prints the row as shell assignments: [`scripts/q.sh`](scripts/q.sh). It first runs `lib.sql` from the query's own directory, if there is one, for shared macros (`CREATE MACRO ...`). Use it as `eval "$(scripts/q.sh dir/step.sql | tee -a state.env)"`.
 
-```bash
-cat > q.sh <<'EOF'
-#!/bin/bash
-# ./q.sh <query.sql>: run lib.sql + the query in DuckDB, filling each getvariable('X') from env var X,
-# and print the query's single result row as shell assignments for eval.
-set -eo pipefail
-vars=$(cat lib.sql "$1" | grep -o "getvariable('[A-Za-z_][A-Za-z0-9_]*')" | sed "s/getvariable('\(.*\)')/\1/" | sort -u)
-out=$({ for v in $vars; do echo "SET VARIABLE $v = getenv('$v');"; done; cat lib.sql "$1"; } | duckdb -bail -json)
-[ -n "$out" ] || { echo "q.sh: $1 returned no row" >&2; exit 1; }
-yq -p json -o shell '.[0]' <<< "$out"
-EOF
-chmod +x q.sh
-```
-
-It also prepends `lib.sql`, a file of shared macros (`CREATE MACRO ...`); create an empty one if you have none (`touch lib.sql`). Use it as `eval "$(./q.sh step.sql | tee -a state.env)"`.
-
-The same files from Python. `getenv()` exists only in the DuckDB CLI, which is why the SQL uses `getvariable()`:
-
-```python
-import duckdb, os, re
-
-def run(path):
-    sql = open("lib.sql").read() + open(path).read()
-    con = duckdb.connect()
-    for v in sorted(set(re.findall(r"getvariable\('(\w+)'\)", sql))):
-        con.execute(f"SET VARIABLE {v} = ?", [os.environ.get(v, "")])
-    r = con.execute(sql)                                  # runs every statement, returns the last result
-    return dict(zip([d[0] for d in r.description], r.fetchone()))
-```
+The same files from Python: [`scripts/q.py`](scripts/q.py) (`uv run scripts/q.py dir/step.sql`, or `import q; q.run("dir/step.sql")` for a dict). Its first lines declare its one package (`duckdb`, as PEP 723 script metadata), so `uv run` builds the environment itself. `getenv()` exists only in the DuckDB CLI, which is why the SQL uses `getvariable()`.
 
 ### Example: the same job at each level
 
@@ -124,7 +96,7 @@ SELECT coalesce(string_agg(w, ' '), '') AS MISSING FROM unnest(words(getvariable
 WHERE NOT EXISTS (SELECT 1 FROM unnest(words(getvariable('HAVE'))) h(h) WHERE covers(h, w));
 EOF
 set -a; WANT="10.0.0.0/28 10.9.0.0/24"; HAVE="10.0.0.0/16"
-eval "$(./q.sh missing.sql)"; echo "$MISSING"       # 10.9.0.0/24
+eval "$(scripts/q.sh missing.sql)"; echo "$MISSING"       # 10.9.0.0/24
 ```
 
 The `inet` extension's `<<=` also works for plain CIDRs, but it has to be installed for each DuckDB version (CLI and Python are often different); the integer macros need nothing.

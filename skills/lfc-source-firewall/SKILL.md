@@ -65,64 +65,13 @@ These follow **shell-json-scripting**. The agent's shell doesn't keep variables 
 
 - **Lists are space-separated** variables (`SERVERLESS`, `CLASSIC`, `WANT`, `HAVE`, `MISSING`): CIDRs never contain spaces, and `for c in $MISSING` just works.
 - **Use the simplest tool for each step.** A filter or reshape of one JSON input is a yq expression. A loop or membership test over a short list is plain shell. Only the steps that need IP-range math, joins across inputs, or ranking are DuckDB SQL: coverage (`missing.sql`, and the per-cloud cover queries), the rule plan (`plan.sql`), and the AWS group pick.
-- **DuckDB steps** are `.sql` files that read inputs with `getvariable('NAME')` and JSON files with `read_json`, and return one row. `q.sh` fills every `getvariable` from the env var of the same name and prints the row as shell assignments: `eval "$(./q.sh <step>.sql | tee -a fw.env)"`. `q.py` does the same when the caller is Python, so the SQL files are shared.
+- **DuckDB steps** are `.sql` files that read inputs with `getvariable('NAME')` and JSON files with `read_json`, and return one row. `q.sh` fills every `getvariable` from the env var of the same name and prints the row as shell assignments: `eval "$($Q $FW/<step>.sql | tee -a fw.env)"`. `q.py` does the same when the caller is Python (`uv run q.py`), so the SQL files are shared.
 - **Never put passwords in `fw.env`:** it holds IPs and resource names only.
 
-Write the library and the two runners once per working directory:
+The DuckDB steps are files in [`scripts/`](scripts/): [`lib.sql`](scripts/lib.sql) (the IPv4 and port macros every step uses), [`missing.sql`](scripts/missing.sql), [`plan.sql`](scripts/plan.sql), and the per-cloud [`sg_pick.sql`](scripts/sg_pick.sql), [`nsg_cover.sql`](scripts/nsg_cover.sql), [`fw_cover.sql`](scripts/fw_cover.sql). They run with **shell-json-scripting**'s runner, `q.sh` (or `q.py` from Python), which reads `lib.sql` from the query's directory:
 
 ```bash
-cat > lib.sql <<'EOF'
--- IPv4 helpers. Inputs are read with getvariable('NAME'); lists are space-separated.
-CREATE MACRO words(s) AS [x FOR x IN string_split(coalesce(s, ''), ' ') IF x <> ''];
-CREATE MACRO ip2n(ip) AS (split_part(ip, '.', 1)::BIGINT << 24) + (split_part(ip, '.', 2)::BIGINT << 16)
-                       + (split_part(ip, '.', 3)::BIGINT << 8) + split_part(ip, '.', 4)::BIGINT;
-CREATE MACRO n2ip(n) AS concat_ws('.', (n >> 24) & 255, (n >> 16) & 255, (n >> 8) & 255, n & 255);
-CREATE MACRO is_ip(s) AS regexp_full_match(s, '[0-9]+(\.[0-9]+){3}(/[0-9]+|-[0-9]+(\.[0-9]+){3})?');
--- "a.b.c.d/n", "a.b.c.d", or a range "a.b.c.d-e.f.g.h" -> first and last address as integers
-CREATE MACRO size(s) AS (1::BIGINT << (32 - coalesce(TRY_CAST(nullif(split_part(s, '/', 2), '') AS INT), 32)));
-CREATE MACRO lo(s) AS CASE WHEN NOT is_ip(s) THEN NULL WHEN contains(s, '-') THEN ip2n(split_part(s, '-', 1))
-                          ELSE ip2n(split_part(s, '/', 1)) // size(s) * size(s) END;
-CREATE MACRO hi(s) AS CASE WHEN NOT is_ip(s) THEN NULL WHEN contains(s, '-') THEN ip2n(split_part(s, '-', 2)) ELSE lo(s) + size(s) - 1 END;
-CREATE MACRO covers(h, w) AS coalesce(lo(h) <= lo(w) AND hi(w) <= hi(h), false);
-CREATE MACRO open_to_all(s) AS s IN ('*', 'Any', 'Internet') OR coalesce(lo(s) = 0 AND hi(s) = 4294967295, false);
--- What a wanted CIDR is for, and a stable rule name for it: lfc-serverless-198-51-100-0-28
-CREATE MACRO purpose(c) AS CASE WHEN c = getvariable('MYIP') || '/32' THEN 'myip'
-                                WHEN list_contains(words(getvariable('CLASSIC')), c) THEN 'classic' ELSE 'serverless' END;
-CREATE MACRO rule_name(c) AS 'lfc-' || purpose(c) || '-' || regexp_replace(c, '[./]', '-', 'g');
--- Does a port spec ("5432", "30000-30063", "*", or NULL for all ports) include every port in getvariable('PORTS')?
-CREATE MACRO port_lo(r) AS TRY_CAST(split_part(r, '-', 1) AS INT);
-CREATE MACRO port_hi(r) AS coalesce(TRY_CAST(nullif(split_part(r, '-', 2), '') AS INT), port_lo(r));
-CREATE MACRO opens(r) AS r IS NULL OR r = '*'
-  OR coalesce(port_lo(r) <= port_lo(getvariable('PORTS')) AND port_hi(getvariable('PORTS')) <= port_hi(r), false);
-EOF
-cat > q.sh <<'EOF'
-#!/bin/bash
-# ./q.sh <query.sql>: run lib.sql + the query in DuckDB, filling each getvariable('X') from env var X,
-# and print the query's single result row as shell assignments for eval.
-set -eo pipefail
-vars=$(cat lib.sql "$1" | grep -o "getvariable('[A-Za-z_][A-Za-z0-9_]*')" | sed "s/getvariable('\(.*\)')/\1/" | sort -u)
-out=$({ for v in $vars; do echo "SET VARIABLE $v = getenv('$v');"; done; cat lib.sql "$1"; } | duckdb -bail -json)
-[ -n "$out" ] || { echo "q.sh: $1 returned no row" >&2; exit 1; }
-yq -p json -o shell '.[0]' <<< "$out"
-EOF
-chmod +x q.sh
-cat > q.py <<'EOF'
-#!/usr/bin/env python3
-"""python3 q.py <query.sql>: same as q.sh. Or import q and call q.run("<query.sql>") for a dict."""
-import duckdb, os, re, shlex, sys
-
-def run(path):
-    sql = open("lib.sql").read() + open(path).read()
-    con = duckdb.connect()
-    for v in sorted(set(re.findall(r"getvariable\('(\w+)'\)", sql))):
-        con.execute(f"SET VARIABLE {v} = ?", [os.environ.get(v, "")])
-    r = con.execute(sql)
-    return dict(zip([d[0] for d in r.description], r.fetchone()))
-
-if __name__ == "__main__":
-    for k, v in run(sys.argv[1]).items():
-        print(f"{k}={shlex.quote('' if v is None else str(v))}")
-EOF
+Q=skills/shell-json-scripting/scripts/q.sh; FW=skills/lfc-source-firewall/scripts     # adjust to where the skills are
 ```
 
 ## Step 1: collect the IPs
@@ -179,13 +128,8 @@ echo "WANT='$MYIP/32 $SERVERLESS ${CLASSIC:-}'" >> fw.env
 Shared test accounts usually already have security groups, firewall rules, or NSGs that allow a workspace's serverless ranges and some laptops. **Search for them before creating anything**, especially on AWS, where rule and security-group limits are tight. Each cloud reference shows how to set `HAVE` (the CIDRs or `start-end` ranges existing rules already allow on the database port); then:
 
 ```bash
-cat > missing.sql <<'EOF'
-SELECT coalesce(string_agg(w, ' '), '') AS MISSING
-FROM unnest(words(getvariable('WANT'))) t(w)
-WHERE NOT EXISTS (SELECT 1 FROM unnest(words(getvariable('HAVE'))) h(h) WHERE NOT open_to_all(h) AND covers(h, w));
-EOF
 set -a; . ./fw.env
-eval "$(./q.sh missing.sql | tee -a fw.env)"
+eval "$($Q $FW/missing.sql | tee -a fw.env)"
 echo "missing: $(echo $MISSING | wc -w)"      # 0 means existing rules already cover everything
 ```
 
@@ -198,17 +142,8 @@ A CIDR counts as covered when it falls inside an existing allowed range. Rules o
 Add only `MISSING`. Every rule you create gets an `lfc-` name (or description, on AWS) so it can be found, updated, and removed without touching anyone else's. Where a rule holds one CIDR, `rule_name` in `lib.sql` gives a stable name from its purpose and value (`lfc-myip-203-0-113-7-32`, `lfc-serverless-198-51-100-0-28`), so reruns are idempotent. Compare against your existing `lfc-` rules (`LFC_RULES`, as `<name>` or `<rule-id>=<name>`) to get what to add and what to drop:
 
 ```bash
-cat > plan.sql <<'EOF'
--- Env: MISSING, LFC_RULES ("<name>" or "<rule-id>=<name>"). Out: TO_ADD (cidrs), TO_ADD_SPEC (cidr,name,start,end), TO_DROP (ids)
-WITH m AS (SELECT w, rule_name(w) AS name FROM unnest(words(getvariable('MISSING'))) t(w)),
-     h AS (SELECT split_part(e, '=', 1) AS id, list_last(string_split(e, '=')) AS name FROM unnest(words(getvariable('LFC_RULES'))) t(e)),
-     a AS (SELECT * FROM m WHERE name NOT IN (SELECT name FROM h))
-SELECT coalesce((SELECT string_agg(w, ' ') FROM a), '') AS TO_ADD,
-       coalesce((SELECT string_agg(concat_ws(',', w, name, n2ip(lo(w)), n2ip(hi(w))), ' ') FROM a), '') AS TO_ADD_SPEC,
-       coalesce((SELECT string_agg(id, ' ') FROM h WHERE name NOT IN (SELECT name FROM m)), '') AS TO_DROP;
-EOF
 set -a; . ./fw.env
-eval "$(./q.sh plan.sql | tee -a fw.env)"
+eval "$($Q $FW/plan.sql | tee -a fw.env)"
 ```
 
 `TO_ADD_SPEC` gives each new rule as `<cidr>,<name>,<first-ip>,<last-ip>`, for clouds that want names or IP ranges: `for s in $TO_ADD_SPEC; do IFS=, read -r cidr name first last <<< "$s"; ...; done`.

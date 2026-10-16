@@ -43,7 +43,7 @@ az network nsg rule create \
 umask 077
 openssl rand -hex 24 > admin.pw
 
-az sql mi create \
+az sql mi create --no-wait \
   --resource-group <resource_group> \
   --name <pfx>-mssql-mi-<location>-<epoch> \
   --location <location> \
@@ -61,15 +61,21 @@ az sql mi create \
 echo "Admin password stored in: $(pwd)/admin.pw"
 ```
 
-**Monitor progress:**
+**Monitor progress** in the background, often at first and then less often (**watch-progress**): the create returns at once (`--no-wait`), and the operation's percent complete is the progress signal, so a stalled create shows up early instead of after hours:
 
 ```bash
-# Poll until provisioning completes (check every 60 seconds; total timeout ~6 hours)
-az sql mi show \
-  --resource-group <resource_group> \
-  --name <pfx>-mssql-mi-<location>-<epoch> \
-  --query "provisioningState" -o tsv
+MI=<pfx>-mssql-mi-<location>-<epoch>; RG=<resource_group>
+for wait in 60 120 300 600 900 1800 1800 1800 1800 1800 1800 1800 1800 1800; do   # about 6.5 hours in all
+  sleep $wait
+  state=$(az sql mi show -g "$RG" -n "$MI" --query provisioningState -o tsv 2>/dev/null)
+  pct=$(az sql mi op list -g "$RG" --mi "$MI" --query "[0].percentComplete" -o tsv 2>/dev/null)
+  echo "$(date +%T) $state ${pct:-?}%"
+  case $state in Succeeded) exit 0 ;; Failed|Canceled) exit 1 ;; esac
+done
+echo "still provisioning: check the portal's deployment details, don't delete and retry"; exit 2
 ```
+
+Run it with the agent's background-task option (or `&` and a log file) and look at each line as it comes.
 
 Expected states: `Created` → `Accepted` → `Running` → `Succeeded`.
 

@@ -1,6 +1,6 @@
 # Azure firewall rules
 
-Uses `fw.env`, `lib.sql`, `q.sh`, `missing.sql`, and `plan.sql` from the parent skill. Start every block with `set -a; . ./fw.env`. Also needed: the resource group (`RG`) and the server or NSG.
+Uses `fw.env` and the parent skill's `$Q` and `$FW` (its Step 0). Start every block with `set -a; . ./fw.env`. Also needed: the resource group (`RG`) and the server or NSG.
 
 **Resource group:** ask whether the user has their own. If not, use the shared test group `forgedb-rg` (`az group show -n forgedb-rg`); the user is free to choose a different one. Shared groups can hit quota or resource limits: if a create fails with a quota error there, ask for another group instead of removing other people's resources.
 
@@ -35,20 +35,8 @@ PRIO_BASE=300
 EOF
 set -a; . ./fw.env
 az network nsg rule list -g "$RG" --nsg-name "$NSG" -o json > nsg.json
-cat > nsg_cover.sql <<'EOF'
--- Input: nsg.json (az network nsg rule list). Env: WANT, PORTS. Out: HAVE, your lfc- rules, other rules' priorities.
-CREATE TEMP TABLE r AS SELECT *, list_distinct([x FOR x IN [sourceAddressPrefix] IF x IS NOT NULL] || coalesce(sourceAddressPrefixes, [])) AS src,
-    [x FOR x IN [destinationPortRange] IF x IS NOT NULL] || coalesce(destinationPortRanges, []) AS dst
-  FROM read_json('nsg.json', columns = {name: 'VARCHAR', priority: 'INT', direction: 'VARCHAR', access: 'VARCHAR', protocol: 'VARCHAR',
-    sourceAddressPrefix: 'VARCHAR', sourceAddressPrefixes: 'VARCHAR[]', destinationPortRange: 'VARCHAR', destinationPortRanges: 'VARCHAR[]'});
-SELECT coalesce((SELECT string_agg(DISTINCT c, ' ') FROM (SELECT unnest(src) AS c FROM r
-         WHERE direction = 'Inbound' AND access = 'Allow' AND protocol IN ('Tcp', '*') AND NOT starts_with(name, 'lfc-')
-           AND list_bool_or([opens(p) FOR p IN dst]) AND NOT list_bool_or([open_to_all(c) FOR c IN src])) WHERE is_ip(c)), '') AS HAVE,
-       coalesce((SELECT string_agg(name, ' ') FROM r WHERE starts_with(name, 'lfc-')), '') AS LFC_RULES,
-       coalesce((SELECT string_agg(priority::VARCHAR, ' ' ORDER BY priority) FROM r WHERE NOT starts_with(name, 'lfc-')), '') AS USED_PRIOS;
-EOF
-eval "$(./q.sh nsg_cover.sql | tee -a fw.env)"
-eval "$(./q.sh missing.sql | tee -a fw.env)"
+eval "$($Q $FW/nsg_cover.sql | tee -a fw.env)"
+eval "$($Q $FW/missing.sql | tee -a fw.env)"
 echo "missing: $(echo $MISSING | wc -w); other rules' priorities: $USED_PRIOS"
 ```
 
@@ -132,8 +120,8 @@ eval "$($FW list -g "$RG" $SRV "$S" -o json \
   | yq -p json -o shell '{"HAVE": ([.[] | select(.name | test("^lfc-") | not) | .startIpAddress + "-" + .endIpAddress] | join(" ")),
                           "LFC_RULES": ([.[] | select(.name | test("^lfc-")) | .name] | join(" "))}' \
   | tee -a fw.env)"
-eval "$(./q.sh missing.sql | tee -a fw.env)"
-eval "$(./q.sh plan.sql | tee -a fw.env)"
+eval "$($Q $FW/missing.sql | tee -a fw.env)"
+eval "$($Q $FW/plan.sql | tee -a fw.env)"
 echo "add: $TO_ADD"; echo "drop: $TO_DROP"
 ```
 

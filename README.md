@@ -22,6 +22,8 @@ env.example.sh         # copy to env.local.sh (gitignored) and fill in
 sync.sh                # workspace file bridge for sandboxes without git push
 bin/run_batch.sh       # run several prompt files in parallel, each in its own scratch dir
 bin/stop_after.sh      # stop pipeline updates that run past N minutes
+bin/test_scripts.sh    # regression tests for the skills' scripts (offline, or on Postgres and MySQL)
+bin/check_links.py     # every relative link in every skill
 pr-notes/              # PR descriptions with the test matrix, one per skills-repo branch
 prompts/
   lakeflow-connect.txt # routing / guidance prompts (no resources created)
@@ -45,6 +47,18 @@ source env.sh
 `run.sh` copies the skills repo's `skills/` into the Claude plugin cache before each run, so
 sessions test your local edits. Sessions run in a scratch `WORK_DIR` under `/tmp`, outside both
 repos, so skills load from the plugin cache and generated bundles stay out of git.
+
+## Script tests
+
+The skills' scripts (planners, `fill.sh`, the statschema pipeline, the firewall DuckDB queries) have their own regression tests:
+
+```bash
+bin/test_scripts.sh                    # offline: syntax, links, the six TPC schemas through shape.py and ddl.py, round trips
+PSQL="podman exec -i dg-pg psql -U postgres" MYSQL="podman exec -i dg-my mysql -uroot" bin/test_scripts.sh   # and fill on both engines
+bin/check_links.py                     # every relative link in every skill
+```
+
+With databases, it fills TPC-C and the TPC-H spec schema on each engine (schemas named `test_*`) and checks every table's target, the spec's rules, and the audit. Run it after changing a skill's scripts.
 
 ## Guidance tests
 

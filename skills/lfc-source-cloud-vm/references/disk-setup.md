@@ -12,32 +12,15 @@ Find the disk by its **stable path**, never by `/dev/sdb`. On Azure, `/dev/sdb` 
 | Azure, NVMe sizes (v6 and later) | `/dev/disk/azure/data/by-lun/0` |
 | GCP, created with `device-name=data` | `/dev/disk/by-id/google-data` |
 
-Run this from the laptop right after the VM is created. It's safe to rerun: it formats only a blank disk, keeps a disk that's already XFS, and stops on any other filesystem rather than wiping it.
+Run [`scripts/disk-setup.sh`](../scripts/disk-setup.sh) from the laptop right after the VM is created. It's safe to rerun: it formats only a blank disk, keeps a disk that's already XFS, and stops on any other filesystem rather than wiping it.
 
 ```bash
 # Azure: USER_HOST=azureuser@$AZURE_PUBLIC_IP DISK=/dev/disk/azure/scsi1/lun0
 # GCP:   USER_HOST=ubuntu@$GCP_PUBLIC_IP     DISK=/dev/disk/by-id/google-data
-ssh -i ~/.ssh/lfc_test_rsa "$USER_HOST" DISK="$DISK" MNT=/var/lib/containers 'bash -s' <<'EOF'
-set -e
-[ -b "$DISK" ] || { echo "no disk at $DISK: check it's attached (lsblk)"; exit 1; }
-DEV=$(readlink -f "$DISK")
-case "$(sudo blkid -s TYPE -o value "$DEV" || true)" in
-  xfs) echo "$DEV is already XFS: keeping it" ;;
-  "")  command -v mkfs.xfs > /dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq xfsprogs; }
-       sudo mkfs.xfs -n ftype=1 -m reflink=1 "$DEV" ;;       # no -f: refuses a disk with a partition table
-  *)   echo "$DEV already has a $(sudo blkid -s TYPE -o value "$DEV") filesystem: not formatting it"; exit 1 ;;
-esac
-UUID=$(sudo blkid -s UUID -o value "$DEV")
-sudo mkdir -p "$MNT"
-grep -q "UUID=$UUID" /etc/fstab || echo "UUID=$UUID $MNT xfs defaults,nofail 0 2" | sudo tee -a /etc/fstab > /dev/null
-findmnt "$MNT" > /dev/null || sudo mount "$MNT"
-[ "$(findmnt -no FSTYPE "$MNT")" = xfs ] && sudo xfs_info "$MNT" | grep -q 'ftype=1' \
-  || { echo "FAIL: $MNT is not XFS with ftype=1"; exit 1; }
-echo "OK: $MNT is XFS (ftype=1) on $DEV"
-EOF
+ssh -i ~/.ssh/lfc_test_rsa "$USER_HOST" DISK="$DISK" MNT=/var/lib/containers 'bash -s' < skills/lfc-source-cloud-vm/scripts/disk-setup.sh
 ```
 
-If `/var/lib/containers` already has content on the OS disk (Podman was installed first), stop Podman, move it aside (`sudo mv /var/lib/containers /var/lib/containers.old`), then run the block, which mounts the XFS disk in its place.
+If `/var/lib/containers` already has content on the OS disk (Podman was installed first), stop Podman, move it aside (`sudo mv /var/lib/containers /var/lib/containers.old`), then run the script, which mounts the XFS disk in its place.
 
 After installing Podman, confirm it's using that disk:
 

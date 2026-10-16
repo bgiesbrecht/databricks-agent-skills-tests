@@ -1,40 +1,26 @@
-# uv run --no-project --with pyyaml --with sqlglot python3 to-canonical.py raw.json schema.yaml stats.yaml
+#!/usr/bin/env -S uv run --script
+# /// script
+# dependencies = ["pyyaml", "sqlglot"]
+# ///
+# uv run to-canonical.py raw.json schema.yaml stats.yaml
 # A collector's output (collect-postgres.sql, or collect-mysql.sql through mysql-normalize.jq) -> statschema's canonical schema.yaml and stats.yaml, the format every other step reads and writes.
-# Types become statschema's canonical types (integer, long, decimal, string, date, ...), with the source's own type kept as
+# Types become statschema's canonical types (canon.py: integer, long, decimal, string, char, date, ...), with the source's own type kept as
 # native_type. Most-common-value frequencies become fractions of the non-null rows (statschema's convention; Postgres and
 # MySQL store fractions of all rows). Hidden values (values=none) stay null, and the file says which values it holds.
-import json, sys
-import sqlglot, yaml
-from sqlglot import exp
+import json, os, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import yaml
+from canon import canon
 
 raw = json.load(open(sys.argv[1]))
 src = raw["source_dialect"]
-T = exp.DataType.Type
-CANON = {T.TINYINT: "integer", T.SMALLINT: "integer", T.MEDIUMINT: "integer", T.INT: "integer", T.UTINYINT: "integer",
-         T.USMALLINT: "integer", T.UMEDIUMINT: "integer", T.UINT: "integer", T.BIGINT: "long", T.UBIGINT: "long",
-         T.FLOAT: "float", T.DOUBLE: "double", T.DECIMAL: "decimal", T.MONEY: "decimal", T.BOOLEAN: "boolean",
-         T.DATE: "date", T.DATETIME: "timestamp", T.TIMESTAMP: "timestamp", T.TIMESTAMPTZ: "timestamptz",
-         T.TIME: "time", T.TIMETZ: "timetz", T.BINARY: "binary", T.VARBINARY: "binary", T.BLOB: "binary",
-         T.MEDIUMBLOB: "binary", T.LONGBLOB: "binary", T.TINYBLOB: "binary"}
-
-def canon(native):
-    d = exp.DataType.build(native, dialect=src)
-    args = [int(e.name) for e in d.expressions if e.name.isdigit()]
-    c = {"type": CANON.get(d.this, "string")}                  # text, char, json, uuid, enum, ... are strings
-    if d.this.name.startswith("U"): c["unsigned"] = True
-    if c["type"] == "decimal" and args: c["precision"], c["scale"] = args[0], (args[1] if len(args) > 1 else 0)
-    if c["type"] in ("string", "binary") and args and d.this.name in ("CHAR", "VARCHAR", "NCHAR", "NVARCHAR", "BINARY", "VARBINARY"):
-        c["length"] = args[0]
-    if src == "mysql" and native.lower().startswith("tinyint(1)"): c = {"type": "boolean"}
-    return c
-
 schema, stats = [], []
 for t in raw["tables"]:
     pk, rows = t.get("primary_key") or [], int(t.get("row_count") or 0)
     uniq = {u[0] for u in (t.get("unique") or []) if len(u) == 1}
     cols, cstats = [], []
     for c in t["columns"]:
-        col = {"name": c["name"], **canon(c["data_type"]), "not_null": not c.get("nullable", True), "native_type": c["data_type"]}
+        col = {"name": c["name"], **canon(c["data_type"], src), "not_null": not c.get("nullable", True), "native_type": c["data_type"]}
         if c["name"] in pk: col["primary_key"] = True
         if c["name"] in uniq: col["unique"] = True
         cols.append(col)

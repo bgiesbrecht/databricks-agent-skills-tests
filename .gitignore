@@ -1,3 +1,4 @@
 *.local.sh
 *.tmp
 conn.json
+__pycache__/

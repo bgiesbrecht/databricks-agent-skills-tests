@@ -8,6 +8,8 @@ parent: lfc-source-setup
 
 Loading 100 GB from a laptop or a notebook means pushing 100 GB over the network. This skill sends **only SQL text**: the database generates every row itself, from an integer.
 
+**Tools:** the engine's SQL client (psql or mysql), and uv for the TPC scripts; see **lfc-source-setup** "Tools".
+
 ## How it works
 
 - **Every row comes from one integer `n`.** Each column's value is a cast of `n` to its type, for example `n % 32767` for `smallint`, `date '1970-01-01' + n % 2932896` for `date`, or a zero-padded `n` followed by MD5 filler for text. Every cast in the engine references has been run at `n` = 1, 2, 10⁶, 10¹², 2⁶², and 2⁶³ − 2 on the live engine, and stays valid for all of them.

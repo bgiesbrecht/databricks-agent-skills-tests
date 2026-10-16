@@ -75,9 +75,7 @@ az postgres flexible-server restart \
   --resource-group "${RESOURCE_GROUP}" \
   --name "${SERVER_NAME}"
 
-# Wait for ready state
-echo "==> Waiting for PostgreSQL restart..."
-sleep 20
+# restart returns when the restart is done; then confirm the server is Ready
 az resource wait \
   --resource-group "${RESOURCE_GROUP}" \
   --name "${SERVER_NAME}" \

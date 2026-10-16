@@ -1,3 +1,7 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# dependencies = ["pyyaml", "sqlglot"]
+# ///
 # Replay the source's top queries on the copy (plans only: EXPLAIN never runs a query) and compare the plans.
 #   replay.py yaml    queries.json > queries.yaml        statschema's queries.yaml (tables found by parsing, not regex)
 #   replay.py explain queries.json --dialect postgres|mysql [--schema shaped.yaml] > explain.sql

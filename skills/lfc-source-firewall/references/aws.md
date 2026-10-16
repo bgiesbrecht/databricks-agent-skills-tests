@@ -11,7 +11,7 @@ RDS and Aurora are reached through the **security groups** attached to the insta
 
 So one instance holds at most about 300 CIDRs by default. One region's serverless list (1 to 5 CIDRs) fits easily. Every serverless region (about 760) doesn't fit even with five groups: use region scope, or an Azure source.
 
-Uses `fw.env`, `lib.sql`, `q.sh`, `missing.sql`, and `plan.sql` from the parent skill. Start every block with `set -a; . ./fw.env`.
+Uses `fw.env` and the parent skill's `$Q` and `$FW` (its Step 0). Start every block with `set -a; . ./fw.env`.
 
 ## Step 1: limits, the database, and what already allows these IPs
 
@@ -46,44 +46,16 @@ done
 Pick groups to reuse, greedily: each round, `sg_pick.sql` returns the group that covers the most of what the attached and already-picked groups don't (`BEST`). One slot stays free for an `lfc-` group:
 
 ```bash
-cat > sg_pick.sql <<'EOF'
--- Input: sgs.json (aws ec2 describe-security-groups), pl.ndjson ({"id", "cidr"} per prefix-list entry).
--- Env: WANT, PORTS, ATTACHED, REUSE. Out: the best group to reuse next (BEST), coverage so far (HAVE), per-group scores.
-CREATE TEMP TABLE perm AS
-  SELECT * FROM (SELECT g.GroupId AS id, g.GroupName AS name, unnest(g.IpPermissions) AS p
-  FROM (SELECT unnest(SecurityGroups) AS g FROM read_json('sgs.json', columns = {SecurityGroups:
-    'STRUCT(GroupId VARCHAR, GroupName VARCHAR, IpPermissions STRUCT(IpProtocol VARCHAR, FromPort INT, ToPort INT,
-       IpRanges STRUCT(CidrIp VARCHAR, Description VARCHAR)[], PrefixListIds STRUCT(PrefixListId VARCHAR)[])[])[]'})))
-  WHERE p.IpProtocol = '-1' OR (p.IpProtocol = 'tcp' AND p.FromPort <= port_lo(getvariable('PORTS')) AND port_hi(getvariable('PORTS')) <= p.ToPort);
-CREATE TEMP TABLE src AS
-  SELECT id, name, r.CidrIp AS c FROM (SELECT id, name, unnest(p.IpRanges) AS r FROM perm)
-  WHERE NOT starts_with(coalesce(r.Description, ''), 'lfc-')                -- your own rules are recomputed
-  UNION ALL
-  SELECT x.id, x.name, pl.cidr FROM (SELECT id, name, unnest(p.PrefixListIds).PrefixListId AS pid FROM perm) x
-  JOIN read_json('pl.ndjson', format = 'newline_delimited', columns = {id: 'VARCHAR', cidr: 'VARCHAR'}) pl ON pl.id = x.pid;
-CREATE TEMP TABLE cov AS
-  SELECT id, any_value(name) AS name, w FROM src, unnest(words(getvariable('WANT'))) t(w)
-  WHERE NOT starts_with(name, 'lfc-') AND covers(c, w)
-    AND id NOT IN (SELECT id FROM src WHERE open_to_all(c))               -- never rely on 0.0.0.0/0
-  GROUP BY id, w;
-WITH taken AS (SELECT unnest(words(getvariable('ATTACHED')) || words(getvariable('REUSE'))) AS id),
-     have AS (SELECT DISTINCT w FROM cov WHERE id IN (SELECT id FROM taken)),
-     best AS (SELECT id, count(*) AS gain FROM cov WHERE id NOT IN (SELECT id FROM taken) AND w NOT IN (SELECT w FROM have)
-              GROUP BY id ORDER BY gain DESC, id LIMIT 1)
-SELECT coalesce((SELECT id FROM best), '') AS BEST,
-       coalesce((SELECT string_agg(w, ' ') FROM (SELECT w FROM have UNION SELECT w FROM cov WHERE id = (SELECT id FROM best))), '') AS HAVE,
-       coalesce((SELECT string_agg(id || '=' || name || ':' || n, ' ') FROM (SELECT id, name, count(*) AS n FROM cov GROUP BY ALL ORDER BY n DESC)), '') AS SG_SCORES;
-EOF
 set -a; . ./fw.env
 REUSE=
 for i in $(seq 1 $(( SGS_PER_ENI - $(echo $ATTACHED | wc -w) - 1 ))); do
-  eval "$(./q.sh sg_pick.sql)"
+  eval "$($Q $FW/sg_pick.sql)"
   [ -n "$BEST" ] || break
   REUSE="${REUSE:+$REUSE }$BEST"
 done
-eval "$(./q.sh sg_pick.sql | grep -v '^BEST=' | tee -a fw.env)"    # final HAVE and SG_SCORES
+eval "$($Q $FW/sg_pick.sql | grep -v '^BEST=' | tee -a fw.env)"    # final HAVE and SG_SCORES
 echo "REUSE='$REUSE'" >> fw.env
-eval "$(./q.sh missing.sql | tee -a fw.env)"
+eval "$($Q $FW/missing.sql | tee -a fw.env)"
 echo "groups covering something: $SG_SCORES"; echo "reuse: $REUSE"; echo "missing: $(echo $MISSING | wc -w)"
 ```
 
@@ -103,7 +75,7 @@ if [ -n "$LFC_IDS" ]; then
            "LFC_GROUPS": ([$r | group_by(.GroupId)[] | .[0].GroupId + ":" + (length | tostring)] | join(" "))}' \
     | tee -a fw.env)"
 fi
-eval "$(./q.sh plan.sql | tee -a fw.env)"
+eval "$($Q $FW/plan.sql | tee -a fw.env)"
 echo "add: $(echo $TO_ADD | wc -w), drop: $(echo $TO_DROP | wc -w), lfc- groups (id:rules used): ${LFC_GROUPS:-none}"
 ```
 

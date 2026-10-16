@@ -47,6 +47,25 @@ Engine-specific database setup (users, grants, change tracking / CDC, replicatio
 | Informix | [engine-informix.md](references/engine-informix.md) |
 | MongoDB | [engine-mongodb.md](references/engine-mongodb.md) |
 
+## Tools
+
+Check what's installed first: [`scripts/check-tools.sh`](scripts/check-tools.sh) prints each tool's version and the install command for anything missing (`base` by default; `local`, `clients`, `aws`, `azure`, `gcp`, or `all`).
+
+```bash
+bash scripts/check-tools.sh all
+```
+
+| Group | Tools | macOS (Homebrew) |
+|---|---|---|
+| base | Databricks CLI, uv (runs every Python script, and downloads a Python if none fits), jq, yq (the Go one), DuckDB | `brew install databricks/tap/databricks uv jq yq duckdb` |
+| local | Podman, Lima (local databases) | `brew install podman lima` |
+| clients | psql, mysql, sqlcmd, mongosh (`sqlplus` runs inside the Oracle container) | `brew install libpq mysql-client sqlcmd mongosh`, then `export PATH="$(brew --prefix libpq)/bin:$(brew --prefix mysql-client)/bin:$PATH"` (both are keg-only) |
+| aws / azure / gcp | the cloud CLIs, only for the clouds you use | `brew install awscli`, `brew install azure-cli`, `brew install --cask gcloud-cli` |
+
+On Linux, the same tools: `curl -LsSf https://astral.sh/uv/install.sh \| sh` for uv, the [Databricks CLI install script](https://docs.databricks.com/aws/en/dev-tools/cli/install), and the distribution's packages (`apt install jq postgresql-client mysql-client podman`; yq and DuckDB as single binaries from their releases).
+
+**Python: always `uv run --no-project --with <packages> python3 <script>.py`**, never `pip install` into a shared Python: uv makes a cached environment with exactly those packages (a Python too, if needed: `uv python install 3.12` to pin one). The skills' scripts say their packages in their first line.
+
 ## Rules for every target
 
 1. **Ask before creating anything.** Cloud databases bill by the hour, and some (SQL Managed Instance, large VMs) cost a lot or take hours to create. Collect every input in one message, list every resource you'll create (server or instance, shared network pieces, firewall rules, parameter groups, the UC connection) with the expected cost class, and wait for one "yes".
@@ -58,6 +77,8 @@ Engine-specific database setup (users, grants, change tracking / CDC, replicatio
 7. **Clean up when done**, or tell the user exactly what's still running and billing.
 8. **Large test databases (tens of GB and up):** populate once, keep the stopped data directory in object storage in the workspace's cloud and region, and clone it per test on a cloud VM's XFS disk instead of every user loading their own. See **lfc-source-cloud-vm** `references/master-snapshots.md`.
 9. **Shell and scripts:** ask every CLI for JSON and turn it into shell variables with `eval "$(<cli> ... -o json | yq -p json -o shell '{"NAME": (.path // "")}')"` (yq quotes the values, so `eval` is safe), not `--query ... -o tsv` or `awk`. Use the simplest tool per step: yq for one-input filters, plain shell for short list loops, and DuckDB SQL files (inputs via `getvariable()`, shared by shell and Python) only for IP-range math, joins across inputs, and ranking. See **shell-json-scripting** for the pattern and gotchas.
+
+10. **Long waits** (a managed instance for hours, a VM or database for minutes, a large fill, a pipeline's first snapshot): start the operation without blocking (`--no-wait`, background task), then check for progress often at first and less often once it moves, by a signal that changes (a percent complete, rows, bytes, a state), not a fixed timer. A deadline is a reason to look, not to kill. See **watch-progress**.
 
 ## Names
 

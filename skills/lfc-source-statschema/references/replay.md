@@ -3,7 +3,7 @@
 [`replay.py`](../scripts/replay.py) plans the source's top queries on the copy (EXPLAIN only: nothing runs) and compares each plan with the source's. A copy that plans like the source behaves like it under the workload; a different plan says where the copy's size or statistics change the optimizer's choices.
 
 ```bash
-PY="uv run --no-project --with pyyaml --with sqlglot python3"; S=skills/lfc-source-statschema/scripts
+PY="uv run"; S=skills/lfc-source-statschema/scripts
 $PY $S/replay.py yaml queries.json > queries.yaml                     # statschema's queries.yaml (tables found by parsing)
 # Postgres copy: generic plans, no values needed
 $PY $S/replay.py explain queries.json --dialect postgres > explain.sql

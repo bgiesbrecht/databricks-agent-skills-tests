@@ -1,7 +1,11 @@
-# uv run --no-project --with pyyaml --with sqlglot python3 ddl.py schema.yaml --dialect postgres > schema.sql
+#!/usr/bin/env -S uv run --script
+# /// script
+# dependencies = ["pyyaml", "sqlglot"]
+# ///
+# uv run ddl.py schema.yaml --dialect postgres > schema.sql
 # A statschema schema.yaml (canonical, from shape.py or any source) -> DDL for any dialect sqlglot knows (postgres, mysql,
 # tsql, oracle, databricks, snowflake, bigquery, duckdb, ...): CREATE TABLE with types, NOT NULL, defaults, identity,
-# primary and unique keys; comments (the lfc tags: table comment from lfc_tags, column comments); foreign keys and indexes
+# primary and unique keys, checks; comments (the lfc tags: table comment from lfc_tags, column comments); foreign keys and indexes
 # after every table exists; on Postgres, REPLICA IDENTITY FULL for a table without a primary key (CDC needs it); on MySQL,
 # tags longer than a comment holds go to lfc_seed.tags, which the MySQL planners read with the comments.
 # Each statement is a sqlglot syntax tree rendered for the dialect, so quoting, type names, and comment syntax follow it.
@@ -68,6 +72,8 @@ for t in tables:
         defs.append(exp.ColumnDef(this=ident(c["name"]), kind=dtype(c), constraints=cons))
     pk = [c["name"] for c in t["columns"] if c.get("primary_key")]
     if pk: defs.append(exp.PrimaryKey(expressions=[ident(k) for k in pk]))
+    for ck in t.get("checks") or []:              # CHECK constraints (MySQL syntax in the file, like the formulas)
+        defs.append(exp.CheckColumnConstraint(this=sqlglot.parse_one(ck, read="mysql")))
     tc = fit(t["name"], "", tags(t.get("lfc_tags")), 2000)
     props = exp.Properties(expressions=[exp.SchemaCommentProperty(this=exp.Literal.string(tc))]) if tc and INLINE else None
     creates.append(exp.Create(this=exp.Schema(this=table(t["name"]), expressions=defs), kind="TABLE", properties=props))

@@ -1,4 +1,8 @@
-# uv run --no-project --with pyyaml python3 shape.py schema.yaml [--stats stats.yaml] [--sf 1] [--scale 1] [--keep-small 1000]
+#!/usr/bin/env -S uv run --script
+# /// script
+# dependencies = ["pyyaml"]
+# ///
+# uv run shape.py schema.yaml [--stats stats.yaml] [--sf 1] [--scale 1] [--keep-small 1000]
 #   > shaped.yaml   (and expected.json, the statistics the copy should have, for compare.sql)
 # statschema's canonical schema (and, if given, its statistics) -> the same schema with each table's target rows and each
 # column's lfc-source-datagen tags in its comment, still in statschema's format; ddl.py turns it into any engine's DDL.

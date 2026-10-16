@@ -61,6 +61,7 @@ Wait for explicit confirmation before calling cloud APIs.
 
 ## Prerequisites
 
+- **Tools**: see **lfc-source-setup** "Tools" (`check-tools.sh azure` or `gcp`)
 - **Cloud CLI**: `az login` (Azure) or `gcloud auth login` (GCP)
 - **SSH key**: `ssh-keygen -t rsa -b 4096 -f ~/.ssh/lfc_test_rsa -N ""`
 - **Quotas**: Check regional vCPU limits
@@ -135,7 +136,7 @@ ssh -i ~/.ssh/lfc_test_rsa azureuser@<VM_IP>
 
 For complex engines or multiple database versions:
 
-1. **Format the data disk as XFS first**, mounted at `/var/lib/containers`: run the block in `references/disk-setup.md` right after the VM is created. It finds the disk by its stable path (not `/dev/sdb`, which on Azure is usually the temporary disk), never wipes a disk that already has a filesystem, and checks for XFS with `ftype=1`. Don't install Podman until it prints `OK`.
+1. **Format the data disk as XFS first**, mounted at `/var/lib/containers`: run `scripts/disk-setup.sh` as `references/disk-setup.md` shows right after the VM is created. It finds the disk by its stable path (not `/dev/sdb`, which on Azure is usually the temporary disk), never wipes a disk that already has a filesystem, and checks for XFS with `ftype=1`. Don't install Podman until it prints `OK`.
 2. Install Podman and run the containers with `sudo` (rootful), so images and volumes are stored on the XFS disk: see `references/install-podman.md` for container examples (Oracle, DB2, Informix, MySQL, PostgreSQL, SQL Server).
 3. **Large test databases:** don't populate one per person. Pull a shared master from object storage once, then clone it per test with XFS reflinks (instant), and throw the clone away or save it back: see `references/master-snapshots.md`.
 
@@ -242,7 +243,9 @@ For more details, see `references/lifecycle.md`.
 
 4. **Podman data not on XFS**: format the data disk by its stable path (`/dev/disk/azure/scsi1/lun0`, `/dev/disk/by-id/google-data`), never `/dev/sdb`, and check `findmnt -no FSTYPE /var/lib/containers` says `xfs` before installing Podman. See `references/disk-setup.md`.
 
-5. **CDC/Change Tracking not capturing**: Verify replication mode enabled in database config and LFC user has required permissions. See parent skill `references/engine-*.md`.
+5. **Disk filled by change logs**: a large load writes as much again to MySQL's binary logs or Postgres' WAL, which CDC reads and so keeps. Size the data disk for the data plus its logs, watch `df -h /var/lib/containers`, and purge logs only when nothing reads them.
+
+6. **CDC/Change Tracking not capturing**: Verify replication mode enabled in database config and LFC user has required permissions. See parent skill `references/engine-*.md`.
 
 ## Additional resources
 

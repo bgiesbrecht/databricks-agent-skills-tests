@@ -5,8 +5,9 @@ Tested on MySQL 8.4 (Podman, arm64) in its default strict mode (`STRICT_TRANS_TA
 ## Connect
 
 ```bash
-SQL="mysql -h <host> -u <user> -N -B -r <database>"                            # password via MYSQL_PWD from a umask 077 file
-# Local Podman: SQL="podman exec -i <container> mysql -uroot -N -B -r <database>"
+MY="mysql -h <host> -u <user>"                                  # password via MYSQL_PWD from a umask 077 file
+# Local Podman: MY="podman exec -i <container> mysql -uroot"
+SQL="$MY -N -B -r <database>"
 ```
 
 `-N -B -r` prints bare values with no escaping, so the planners' output is runnable SQL. **Connect with a default database** (any one that exists, normally the target): `cast.sql` creates session-only temporary tables (`lfc_cols`, `lfc_keys`) in it.
@@ -54,11 +55,11 @@ SQL="mysql -h <host> -u <user> -N -B -r <database>"                            #
 The planners read user variables, so set them in the same session:
 
 ```bash
-D=skills/lfc-source-datagen/scripts/mysql                       # the planner files (adjust to where the skill is)
+P=skills/lfc-source-datagen/scripts/mysql                       # the planner files (adjust to where the skill is)
 D=lfc                                                                          # database (schema)
 # A dataset: 100 tables, even spread up to 1M rows, 12 columns each; the 10 smallest are dimensions, the rest have 2 FKs each
-{ echo "SET @db='$D', @tables=100, @max_rows=1000000, @cols=12, @dist='even', @dims=10, @fks=2;"; cat $D/make-dataset.sql; } | $SQL | $SQL
-{ echo "SET @db='$D';"; cat $D/skipped.sql; } | $SQL                              # should print nothing
+{ echo "SET @db='$D', @tables=100, @max_rows=1000000, @cols=12, @dist='even', @dims=10, @fks=2;"; cat $P/make-dataset.sql; } | $SQL | $SQL
+{ echo "SET @db='$D';"; cat $P/skipped.sql; } | $SQL                              # should print nothing
 # Seed table: one 1,000-row VALUES list, then each INSERT ... SELECT doubles it (about 7 KB of SQL for 1,024,000 keys)
 want=1000000
 { echo "CREATE DATABASE IF NOT EXISTS lfc_seed; DROP TABLE IF EXISTS lfc_seed.seed; CREATE TABLE lfc_seed.seed (i bigint PRIMARY KEY);"
@@ -70,26 +71,19 @@ want=1000000
   echo "CREATE TABLE lfc_seed.seed_r (i bigint PRIMARY KEY, r bigint NOT NULL);"
   echo "INSERT INTO lfc_seed.seed_r SELECT i, ROW_NUMBER() OVER (ORDER BY RAND()) FROM lfc_seed.seed;"
   echo "DROP TABLE lfc_seed.seed; RENAME TABLE lfc_seed.seed_r TO lfc_seed.seed;"; } | $SQL
-for round in $(seq 1 50); do                      # fill until done: re-plan every round, so DDL and failed INSERTs are picked up
-  { echo "SET @db='$D', @rows=100000, @src='seed', @mode='fill', @order='random', @data='scramble', @plain_every=4, @block=1000, @lob_len=100;"; cat $D/cast.sql $D/plan-insert.sql; } | $SQL > inserts.sql
-  for l in $(grep -o '^/\* lfc level [0-9]*' inserts.sql | awk '{ print $4 }' | sort -un); do   # levels in order, 2 sessions each (see calibrate.md)
-    grep "^/\* lfc level $l \*/" inserts.sql | awk -v n=2 '{ print > ("part-" NR % n ".sql") }'
-    for f in part-*.sql; do $SQL < "$f" 2>> fill.err & done; wait; rm -f part-*.sql
-  done
-  { echo "SET @db='$D';"; cat $D/plan-status.sql; } | $SQL > status.sql && $SQL < status.sql > status.out   # table, min, max, rows, target
-  awk -F'\t' '$5 != "" && $4 < $5 { n++ } END { exit n > 0 }' status.out && break
-done
+MYSQL="$MY" DIR=$P SESSIONS=2 bash $P/../fill.sh my $D          # fill until done, level by level (see the skill's "Fill level by level")
+{ echo "SET @db='$D';"; cat $P/plan-status.sql; } | $SQL > status.sql && $SQL < status.sql > status.out   # table, min, max, rows, target
 awk '{ t += $4 } END { print NR " tables, " t " rows" }' status.out
-{ echo "SET @db='$D', @plain_every=4, @block=1000, @lob_len=100;"; cat $D/cast.sql $D/plan-audit.sql; } | $SQL > audit.sql && $SQL < audit.sql   # same @lob_len; bad must be 0
+{ echo "SET @db='$D', @plain_every=4, @block=1000, @lob_len=100;"; cat $P/cast.sql $P/plan-audit.sql; } | $SQL > audit.sql && $SQL < audit.sql   # same @lob_len; bad must be 0
 ```
 
 Other operations:
 
 ```bash
-{ echo "SET @db='$D', @rows=10000, @src='series', @mode='append', @order='random', @data='random';"; cat $D/cast.sql $D/plan-insert.sql; } | $SQL > more.sql && $SQL < more.sql   # random data: not auditable
-{ echo "SET @db='$D', @rows=1000, @end='tail';"; cat $D/cast.sql $D/plan-delete.sql; } | $SQL > deletes.sql && $SQL < deletes.sql   # one session
-{ echo "SET @db='$D', @ops=8;"; cat $D/plan-ddl.sql; } | $SQL > ddl.sql && $SQL --force < ddl.sql 2>&1 | grep ERROR || true   # 8 random DDL; then run the fill loop again
-{ echo "SET @db='<scratch-db>';"; cat $D/cast.sql $D/boundary.sql; } | $SQL > bnd.sql && $SQL --force < bnd.sql 2>&1 | grep ERROR || echo "no bad casts"
+{ echo "SET @db='$D', @rows=10000, @src='series', @mode='append', @order='random', @data='random';"; cat $P/cast.sql $P/plan-insert.sql; } | $SQL > more.sql && $SQL < more.sql   # random data: not auditable
+{ echo "SET @db='$D', @rows=1000, @end='tail';"; cat $P/cast.sql $P/plan-delete.sql; } | $SQL > deletes.sql && $SQL < deletes.sql   # one session
+{ echo "SET @db='$D', @ops=8;"; cat $P/plan-ddl.sql; } | $SQL > ddl.sql && $SQL --force < ddl.sql 2>&1 | grep ERROR || true   # 8 random DDL; then run the fill loop again
+{ echo "SET @db='<scratch-db>';"; cat $P/cast.sql $P/boundary.sql; } | $SQL > bnd.sql && $SQL --force < bnd.sql 2>&1 | grep ERROR || echo "no bad casts"
 ```
 
 ## Types

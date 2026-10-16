@@ -18,6 +18,7 @@ The format is [statschema](https://github.com/rsleedbx/statschema)'s: **`schema.
 |---|---|---|---|
 | 1. Collect schema and statistics | the customer's database | [`collect-postgres.sql`](scripts/collect-postgres.sql), [`collect-mysql.sql`](scripts/collect-mysql.sql) + [`mysql-normalize.jq`](scripts/mysql-normalize.jq) | `raw.json` |
 | 2. To the canonical format | anywhere | [`to-canonical.py`](scripts/to-canonical.py) | `schema.yaml`, `stats.yaml` |
+| 2a. Or import existing DDL | anywhere | [`ddl-to-schema.py`](scripts/ddl-to-schema.py) `--dialect <source>` (any sqlglot dialect; keeps lfc tags in comments, and checks) | `schema.yaml` |
 | 3. Collect the top queries and their plans | the customer's database | [`collect-queries-postgres.sql`](scripts/collect-queries-postgres.sql), [`collect-queries-mysql.sql`](scripts/collect-queries-mysql.sql) | `queries.json` |
 | 4. Shape: scale, and a formula per column | test side | [`shape.py`](scripts/shape.py) | `shaped.yaml` (still statschema's format), `expected.json` |
 | 5. DDL for the target engine | test side | [`ddl.py`](scripts/ddl.py) | `schema.sql` |
@@ -27,7 +28,7 @@ The format is [statschema](https://github.com/rsleedbx/statschema)'s: **`schema.
 
 [`validate.py`](scripts/validate.py) loads any of the YAML files with statschema's own model, to confirm a file is still its format. For a TPC benchmark, skip steps 1–3 and start at step 4 with a schema from [`schemas/`](schemas/).
 
-Python steps run with `uv run --no-project --with pyyaml --with sqlglot python3 scripts/<script>.py` (no other packages).
+Python steps run with `uv run scripts/<script>.py`: each script declares its packages (PyYAML, sqlglot) in its first lines, so uv builds the environment itself; the checks need DuckDB and the MySQL collector jq. **Tools:** see **lfc-source-setup** "Tools" (`check-tools.sh base`).
 
 ## Run
 
@@ -54,7 +55,7 @@ Table and column names are in the files at every level; rename them consistently
 Then, on the test side ([references/shape.md](references/shape.md) for how each column is chosen, [references/replay.md](references/replay.md) for replay):
 
 ```bash
-PY="uv run --no-project --with pyyaml --with sqlglot python3"; S=skills/lfc-source-statschema/scripts
+PY="uv run"; S=skills/lfc-source-statschema/scripts
 $PY $S/to-canonical.py raw.json schema.yaml stats.yaml
 $PY $S/shape.py schema.yaml --stats stats.yaml --scale 0.01 > shaped.yaml                   # also writes expected.json
 $PY $S/ddl.py shaped.yaml --dialect postgres --source-dialect postgres > schema.sql          # or mysql, tsql, oracle, databricks
