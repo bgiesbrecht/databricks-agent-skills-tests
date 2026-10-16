@@ -66,6 +66,8 @@ podman stop -t 60 <container>
 rclone sync $D/master az:masters/$NAME $F --transfers 16 --checkers 16
 ```
 
+**Trim a Postgres master's WAL first.** A bulk load leaves gigabytes of WAL behind (a TPC-H SF 1 master was 5.8 GB on disk, 2.8 GB of it WAL, for 1.8 GB of tables); checkpoints recycle it only slowly. After a clean stop, with no replication slots, `pg_resetwal` drops it to one segment and leaves the data alone: `podman run --rm --user postgres -v $D/master:/var/lib/postgresql/data docker.io/library/postgres:16 pg_resetwal -D /var/lib/postgresql/data` (the SF 1 master went to 1.9 GB and started with all 8.66M rows). Never on a master with a replication slot: it loses the slot's position.
+
 **Pull** (once per VM, and after someone saves a new version):
 
 ```bash

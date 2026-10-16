@@ -25,6 +25,26 @@ Write down, before launching, **one number that grows** while the job works and 
 
 **Liveness is a separate check from progress**: is the process or container still running? A readiness loop that only asks "is it ready yet?" polls a container that has already exited forever. Check `ps -p PID`, `podman inspect -f '{{.State.Running}}'`, or the job's exit status on every check.
 
+## Long jobs on a remote machine: don't tie them to the SSH session
+
+A job started over SSH dies with the session: a dropped connection sends it SIGHUP, and a watcher reading that session's output keeps waiting on a job that's gone. Seen in practice: a 20-minute database build on a VM stopped near the end, and nothing noticed for half an hour. Start the job **as its own unit**, then watch it from new, short SSH calls:
+
+```bash
+ssh <vm> 'sudo systemd-run --unit=lfc-<job> --collect bash /tmp/<job>.sh <args>'   # returns at once; systemd owns the job
+ssh <vm> 'systemctl is-active lfc-<job>; journalctl -u lfc-<job> -n 5 --no-pager'  # each check is a new, short session
+ssh <vm> 'systemctl show lfc-<job> -p Result -p ExecMainStatus'                    # after it ends: success, exit code
+```
+
+| Way | Survives a dropped SSH | Check later | Use for |
+|---|---|---|---|
+| `systemd-run --unit=<name> --collect` | yes | `systemctl status`, `journalctl -u` | scripts: named, exit status kept, logs in one place |
+| `nohup <cmd> > log 2>&1 < /dev/null &` | yes | `tail log`, `pgrep` | where there's no systemd; no exit status unless the script writes one |
+| `tmux new -d -s <name> '<cmd>'` | yes | `tmux attach -t <name>` | interactive work you want to look at |
+| SSH keepalives (`-o ServerAliveInterval=30`) | drops less often | | on top of one of the above, never instead |
+
+- **The watcher must also notice the job ending badly**: check the unit's state (or the process) as well as the output, so a dead job reports as dead, not "still running".
+- **Make long steps resumable** (like `lfc-source-datagen`'s `fill.sh`, which continues from what's already there), and split the tail of a job into steps that can be rerun on their own.
+
 ## The schedule
 
 | When | Check | Decide |

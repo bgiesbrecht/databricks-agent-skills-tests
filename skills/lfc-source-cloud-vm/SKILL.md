@@ -237,6 +237,10 @@ gcloud compute instances delete "$VM_NAME" --zone="$ZONE" --quiet
 
 For more details, see `references/lifecycle.md`.
 
+## Long-running steps on the VM
+
+Builds, fills, uploads and benchmarks take minutes to hours. Run each as a systemd unit, not inside an SSH session, so a dropped connection doesn't kill it: `ssh <vm> 'sudo systemd-run --unit=lfc-<job> --collect bash /tmp/<job>.sh'`, then check with new, short SSH calls (`systemctl is-active lfc-<job>`, `journalctl -u lfc-<job>`). See **watch-progress**.
+
 ## Top gotchas
 
 1. **SSH connection refused**: Verify public IP, SSH key, and firewall allows port 22 from your IP. See `references/troubleshooting.md`.
