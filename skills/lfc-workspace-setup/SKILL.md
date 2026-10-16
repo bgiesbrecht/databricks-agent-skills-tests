@@ -97,3 +97,31 @@ GRANT USE CONNECTION ON CONNECTION <connection> TO `account users`;          -- 
 ```
 
 `MANAGE` on the catalog also lets members bind more workspaces; leave it out if they shouldn't. Catalog privileges don't give workspace login, and workspace login doesn't show an `ISOLATED` catalog that isn't bound: all three are needed.
+
+## 4. Check and grant per principal
+
+What a user, a group, or `account users` needs to run Lakeflow Connect in a workspace (from the public pipeline docs, plus what the tests showed):
+
+| Where | Needs | For |
+|---|---|---|
+| Workspace | Unity Catalog; the connector's preview on (step 1) | every mode |
+| Login | an assignment (directly or through a group) and `workspace-access`; `databricks-sql-access` for SQL and `remote_query` | every mode |
+| Metastore | `CREATE CONNECTION` to create connections (else use existing ones); `CREATE CATALOG` for foreign catalogs | creating connections; QBC through a foreign catalog |
+| Connection | `USE CONNECTION` (or owning it); `CREATE FOREIGN CATALOG` for a foreign catalog | every pipeline on it |
+| Target catalog | `USE CATALOG`, `USE SCHEMA`, `CREATE SCHEMA` (or an existing schema with `CREATE TABLE`), `CREATE TABLE`; visible here (bound, if `ISOLATED`) | every mode |
+| CDC | `CREATE VOLUME` (staging), on a catalog with its own storage (step 2) | integrated and standard CDC |
+| Compute | serverless network path to the source (**lfc-source-firewall**); for a classic gateway, cluster creation or a cluster policy | |
+
+Two scripts, run as a workspace admin:
+
+```bash
+S=skills/lfc-workspace-setup/scripts
+bash $S/check.sh <PROFILE> "<user-email | group | account users>" --catalog <catalog> --connection <connection> --modes qbc,icdc,fcqbc
+bash $S/grant.sh <PROFILE> "<principal>" --level cdc --catalog <catalog> --connection <connection> [--foreign-catalogs] [--create-connections]   # the plan
+bash $S/grant.sh ... --apply                                                    # make the changes, then run check.sh again
+```
+
+[`check.sh`](scripts/check.sh) is read-only. It prints one line per requirement (`PASS`, `FAIL`, `WARN`) with the command or SQL that fixes each failure, and exits 1 if anything fails. It works on effective privileges, so grants that come through a group count, and it counts ownership: owning a securable gives every privilege on it, but Unity Catalog's effective-privileges API doesn't report it. On both test sandboxes the metastore's owner was `account users`, so everyone in the account could create connections and catalogs, while the target catalog still needed grants. [`grant.sh`](scripts/grant.sh) gives exactly the chosen level: `login` (assignment and entitlements), `qbc` (plus connection and catalog privileges), `cdc` (plus `CREATE VOLUME`). It prints its plan and changes nothing without `--apply`. Grants go through the Unity Catalog REST API, so no SQL warehouse is needed.
+
+Tested on an Azure serverless-only and an AWS classic sandbox. A workspace admin who owns the connection and the catalog passed every check. `account users` passed login (after step 3) and the metastore checks (as the metastore's owner), and failed exactly the connection and catalog grants, each with its fix. `grant.sh --apply` for a user went through every call.
+

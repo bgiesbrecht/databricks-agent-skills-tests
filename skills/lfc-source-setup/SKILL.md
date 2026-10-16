@@ -23,6 +23,7 @@ Use it for testing and demos. For a customer's production database, the customer
 | Cloud VM (Azure, AWS, GCP) | **lfc-source-cloud-vm** | MySQL, PostgreSQL, SQL Server (native); more via Podman on the VM | Full control of versions and CDC settings |
 | Test data for any of the above | **lfc-source-datagen** | PostgreSQL, MySQL (SQL Server, Oracle planned) | Generated inside the database from `generate_series` or a seed table; resumable; fast min/max across 10,000+ tables |
 | A copy shaped like a customer's database, from their statistics only | **lfc-source-statschema** | PostgreSQL, MySQL, either direction | Collects catalog statistics (no table scans, data values only if allowed), builds a scaled-down schema, fills it with lfc-source-datagen, and checks its statistics |
+| How big a source is: total for the infrastructure team, data Lakeflow Connect moves, rows, row size | **lfc-source-sizing** | PostgreSQL, MySQL, SQL Server, Oracle | Catalog only, through the UC connection; no table scans; cross-checks stale statistics |
 | The same connections in many workspaces, and an inventory of what exists | **lfc-connection-sync** | — | One private targets file, an idempotent create-or-update script, per-workspace or account-token logins |
 | A new test workspace: connector previews, a CDC-capable catalog, access for other people | **lfc-workspace-setup** | — | Settings API for previews; Default Storage check; workspace assignment, catalog binding, grants |
 | What's been tested, where, and how it went | **lfc-test-results** | — | `results/runs.jsonl` and dated write-ups in this repo; record every run |
@@ -117,7 +118,7 @@ Server and instance names combine these, for example `<pfx>-<service>-<location>
    ```
 
    - **A self-signed certificate** (a VM or container install): add `"trustServerCertificate": "true"` to `options`. SQL Server needs it for every query (otherwise `FAILED_JDBC.CONNECTION`); MySQL needs it for CDC (the extractor fails with `TLS_VALIDATION_FAILURE`), although query-based ingestion works without it. Managed services (Azure SQL, RDS) have trusted certificates and don't need it.
-   - **Oracle:** `user` in uppercase (`C##LFC_USER`), and `"service_name"` set to the root container's service, which is the CDB's name (`FREE` on Oracle Free; `lsnrctl status` lists the services). Integrated CDC refuses a connection without it. The docs' "`CDB$ROOT`" means that service, not the literal name: the listener doesn't serve `CDB$ROOT`, and queries fail. Give the PDB per query (`service_name => 'FREEPDB1'`, which overrides the connection's) and per pipeline (`source_catalog`).
+   - **Oracle:** `user` in uppercase (`C##LFC_USER`), and `"service_name"` set to the root container's service, which is the CDB's name (`FREE` on Oracle Free; `lsnrctl status` lists the services). Integrated CDC refuses a connection without it. The docs' "`CDB$ROOT`" means that service, not the literal name: the listener doesn't serve `CDB$ROOT`, and queries fail. Pipelines reach the PDB through `source_catalog` (`FREEPDB1`). SQL through the connection (`remote_query`, step 3, sizing) runs in the connection's service and ignores a `service_name =>` argument, so for the PDB's tables register a second connection, `<firstname><lastname>-orapdb-<target>`, with `"service_name": "<PDB>"`.
 
 3. **Verify** from serverless with a read-only `remote_query` through the connection. Write it to a file and run `databricks experimental aitools tools query --file ping.sql --profile <PROFILE> -o csv`:
 
@@ -126,7 +127,7 @@ Server and instance names combine these, for example `<pfx>-<service>-<location>
    | MySQL | `SELECT * FROM remote_query('<connection>', query => "SELECT @@version AS v, @@log_bin AS log_bin")` |
    | PostgreSQL | `SELECT * FROM remote_query('<connection>', database => '<database>', query => "SELECT version() AS v")` |
    | SQL Server | `SELECT * FROM remote_query('<connection>', database => '<database>', query => "SELECT @@VERSION AS v")` |
-   | Oracle | `SELECT * FROM remote_query('<connection>', service_name => '<PDB, e.g. FREEPDB1>', query => "SELECT banner_full AS v FROM v$version")` |
+   | Oracle | `SELECT * FROM remote_query('<PDB connection>', query => "SELECT sys_context('USERENV', 'CON_NAME') AS con, banner_full AS v FROM v$version")`: `con` must be the PDB |
 
    `FAILED_JDBC.CONNECTION ... Failed to connect to the database` means the network path (firewall, NSG not attached, wrong port) or, for SQL Server, an untrusted certificate. Check from the laptop first (`nc -z <host> <port>`): if that fails too, it's the firewall. More in Step 0 of `references/3-query-based-connectors.md` in **databricks-lakeflow-connect**.
 4. **Hand off** to **databricks-lakeflow-connect** for the pipeline, its pre-flight checks, and the rows-per-run report.

@@ -141,7 +141,7 @@ BEGIN DBX_ORACLE_SETUP_UTIL.VALIDATE_SETUP('C##LFC_USER'); END;
 - **No comment after a `;`** in these scripts. Oracle 23 rejects it (`ORA-03405: End of query reached; no additional text should follow`), and with `whenever sqlerror exit` the rest of the script is skipped. Keep comments on their own lines.
 - **Check supplemental logging yourself:** `SELECT supplemental_log_data_min, supplemental_log_data_pk FROM v$database` must show `YES YES`. In one run `VALIDATE_SETUP` printed "Pre-requisite checks passed" while both were `NO`.
 
-`GRANT_SELECT_PERMISSIONS` grants only the tables that exist when it runs: rerun it after adding tables. The same user works for query-based ingestion and CDC: UC connection `user` `C##LFC_USER` with `service_name` `FREE` (the CDB), and the PDB (`FREEPDB1`) as `service_name =>` in queries and `source_catalog` in pipelines. The manual grants below are the older way and are kept for reference.
+`GRANT_SELECT_PERMISSIONS` grants only the tables that exist when it runs: rerun it after adding tables. The same user works for query-based ingestion and CDC: UC connection `user` `C##LFC_USER` with `service_name` `FREE` (the CDB), and the PDB (`FREEPDB1`) as `source_catalog` in pipelines. For SQL through a connection (`remote_query`), use a second connection with `service_name` `FREEPDB1`: a `service_name =>` argument doesn't override the connection's. The manual grants below are the older way and are kept for reference.
 
 ## LFC User Setup
 
