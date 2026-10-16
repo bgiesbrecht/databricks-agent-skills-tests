@@ -1,6 +1,6 @@
 ---
 name: lfc-source-cloud-vm
-description: Provision databases on Azure and GCP cloud VMs for Lakeflow Connect. Covers native database packages or Podman containers with manual setup steps.
+description: Provision databases on Azure, AWS and GCP cloud VMs for Lakeflow Connect. Covers native database packages or Podman containers with manual setup steps.
 parent: lfc-source-setup
 ---
 
@@ -8,7 +8,7 @@ parent: lfc-source-setup
 
 When managed cloud databases don't exist for your engine (Oracle 19c, SQL Server Always On, DB2, Informix) or when you need full control over replication settings, provision a plain Ubuntu VM on your cloud and install the database yourself.
 
-This skill covers **Azure VMs** and **GCP Compute Engine** instances. Both support:
+This skill covers **Azure VMs**, **AWS EC2** instances and **GCP Compute Engine** instances. All support:
 1. **Native packages**: Install MySQL, PostgreSQL, SQL Server from apt/yum
 2. **Podman containers**: Run database images in Podman
 
@@ -94,6 +94,10 @@ az vm create \
   --ssh-key-values ~/.ssh/lfc_test_rsa.pub \
   --data-disk-sizes-gb 128        # data disk at LUN 0: /dev/disk/azure/scsi1/lun0
 ```
+
+### AWS
+
+See `references/aws-vm.md` for EC2 creation: default VPC, a shared `lfc-test-<n>` security group, a separate gp3 data volume (its stable path is `/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_<volume-id-without-dash>`), Podman.
 
 ### GCP
 
@@ -250,7 +254,7 @@ For more details, see `references/lifecycle.md`.
 ## Additional resources
 
 - **Parent skill**: [lfc-source-setup](../lfc-source-setup/SKILL.md) — engine-specific configuration
-- **VM creation**: [azure-vm.md](references/azure-vm.md), [gcp-vm.md](references/gcp-vm.md)
+- **VM creation**: [azure-vm.md](references/azure-vm.md), [aws-vm.md](references/aws-vm.md), [gcp-vm.md](references/gcp-vm.md)
 - **Database install**: [install-native.md](references/install-native.md), [install-podman.md](references/install-podman.md)
 - **Reusable master database**: [master-snapshots.md](references/master-snapshots.md) (rclone pull + XFS reflink clones), [juicefs-branches.md](references/juicefs-branches.md) (JuiceFS branches in object storage), [engine-masters.md](references/engine-masters.md) (per engine, with `scripts/branch-test.sh`)
 - **Configuration**: [configure-lfc.md](references/configure-lfc.md)

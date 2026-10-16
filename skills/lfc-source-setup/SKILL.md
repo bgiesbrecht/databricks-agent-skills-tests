@@ -20,7 +20,7 @@ Use it for testing and demos. For a customer's production database, the customer
 | Azure Flexible Server | **lfc-source-azure-flexserver** | MySQL, PostgreSQL | Stop/start supported |
 | Azure SQL Database / SQL Managed Instance | **lfc-source-azure-sql** | SQL Server | Change tracking or CDC; MI is slow to create and costly |
 | Google Cloud SQL | **lfc-source-gcp-cloudsql** | MySQL, PostgreSQL, SQL Server | Stop/start via activation policy |
-| Cloud VM (Azure, GCP) | **lfc-source-cloud-vm** | MySQL, PostgreSQL, SQL Server (native); more via Podman on the VM | Full control of versions and CDC settings |
+| Cloud VM (Azure, AWS, GCP) | **lfc-source-cloud-vm** | MySQL, PostgreSQL, SQL Server (native); more via Podman on the VM | Full control of versions and CDC settings |
 | Test data for any of the above | **lfc-source-datagen** | PostgreSQL, MySQL (SQL Server, Oracle planned) | Generated inside the database from `generate_series` or a seed table; resumable; fast min/max across 10,000+ tables |
 | A copy shaped like a customer's database, from their statistics only | **lfc-source-statschema** | PostgreSQL, MySQL, either direction | Collects catalog statistics (no table scans, data values only if allowed), builds a scaled-down schema, fills it with lfc-source-datagen, and checks its statistics |
 | What's been tested, where, and how it went | **lfc-test-results** | — | `results/runs.jsonl` and dated write-ups in this repo; record every run |
@@ -93,7 +93,11 @@ Every name starts from a short owner prefix, so resources from different people 
 
 Server and instance names combine these, for example `<pfx>-<service>-<location>-<epoch>`. Each child skill gives the exact pattern its cloud allows (length limits, allowed characters, global uniqueness). Shared network pieces (security groups, subnet groups, parameter groups, firewall rules) use a shared prefix such as `lfc-test` instead of `<pfx>`, so every user reuses them.
 
-The Unity Catalog connection follows the pipeline naming rule in **databricks-lakeflow-connect**: `<firstname><lastname>-<engine>-<target>`, with `-2`, `-3` if taken.
+**The Unity Catalog connection**, when the user doesn't name it, is `<firstname><lastname>-<engine>-<target>`, with `-2`, `-3` if taken (check `databricks connections list`):
+
+- `<firstname><lastname>`: `name.givenName` + `name.familyName` from `databricks current-user me --profile <PROFILE>`, lowercased, letters and digits only (Jane Doe → `janedoe`); if those are empty, the part of `userName` before `@` without dots. This is the Databricks user, not the cloud identity behind `<pfx>`.
+- `<engine>`: `mysql`, `pg`, `mssql`, `ora`; `<target>`: where the source runs, e.g. `azvm`, `awsvm`, `rds`, `flex`.
+- Example: `janedoe-mysql-awsvm`. Pipelines on it use the connection name as their base (**databricks-lakeflow-connect**), without repeating the prefix.
 
 ## After the database exists
 

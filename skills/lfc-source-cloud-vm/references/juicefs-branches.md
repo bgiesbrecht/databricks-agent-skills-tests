@@ -7,7 +7,7 @@
 | VM disk needed | the whole master, plus changes | a cache (for example 2 GB), plus changes |
 | First use on a new VM | pull everything (5.5 GB in about 45 s) | mount: ready in seconds, blocks fetched as read |
 | Branch | `cp --reflink`, 0.01–8 s (more files, longer) | `juicefs clone -p`, 0.05–0.3 s |
-| Writes (pgbench, 8 clients) | 514 TPS, 864 with durability off | 234 TPS |
+| Writes (pgbench, 8 clients, default Postgres) | 514-575 TPS, 864-1,718 with durability off | 188-234 TPS; up to 1,952 with more Postgres memory (see [Write performance](#write-performance)) |
 | Full-table read (snapshot) | limited by the VM disk | limited by the network to Blob; matched or beat a small Premium SSD |
 | Save | upload whole changed files | nothing to upload: rename the branch |
 | Moving parts | rclone | JuiceFS client, Redis (metadata), FUSE |
@@ -134,6 +134,24 @@ A snapshot reads every row once, which is the case JuiceFS handles best. Postgre
 - Raising `--buffer-size`, `--max-downloads` and `--prefetch` changed nothing measurable: Postgres's own COPY work is most of the time.
 - The first read after a mount pays the download; with a cache that fits the data, the next read comes from local disk.
 - Starting a database on a branch with an empty cache took 2.4 s (Postgres).
+
+## Write performance
+
+Postgres 16 branch of a 30M-row master (3.8 GB table), pgbench with 8 clients, Standard_D4s_v5. The JuiceFS client is CPU-bound: about 2.7 of 4 cores during pgbench, writing hundreds of MB/s into its cache and Blob for small row updates. The fix is in Postgres, not in the storage layout:
+
+| Change | JuiceFS TPS | XFS reflink TPS |
+|---|---|---|
+| Defaults (2 GB cache, `shared_buffers` 128 MB) | 188-225 | 555-575 |
+| WAL (`pg_wal`) copied to local XFS, data on JuiceFS | 195; 222 with durability off | |
+| Mount `--buffer-size 1024`, `--upload-delay 10m`, `--prefetch 0`, a bigger or RAM cache, each alone | 225-238 | |
+| 10 GB cache warmed (`juicefs warmup`) + `--buffer-size 1024 --prefetch 0` | 288-359 | |
+| + Postgres `shared_buffers=4GB`, `max_wal_size=8GB`, `checkpoint_timeout=30min`, 60 s run | **1,952**; 6,265 with durability off | 940; 3,853 with durability off |
+| Same, 6 min with a checkpoint every 2 min | 1,719-1,730 until the first checkpoint, then 154-389 (average 758) | 732-1,329 (average 1,053) |
+
+- **Give Postgres the memory.** With the working set in `shared_buffers` and checkpoints spread out, JuiceFS is faster than the local disk until a checkpoint writes the dirty pages, then several times slower while it does. Good for short write-heavy tests (minutes); for long ones, a reflink clone on XFS is steadier.
+- **Don't split the WAL onto local disk.** It didn't help (the WAL isn't the bottleneck), and it makes a branch two places to manage. Postgres also won't start on an empty `pg_wal`, even after a clean shutdown (`PANIC: could not locate a valid checkpoint record`): the WAL has to be copied, and copied back before keeping a branch.
+- **Durability off** (`fsync=off`, `synchronous_commit=off`, `full_page_writes=off`) helps XFS a lot and JuiceFS only once Postgres has the memory: with `--writeback` an fsync already returns once the block is in the local cache.
+- **Stopping takes longer** with big `shared_buffers`: the shutdown checkpoint writes them (46 s here), and writeback then uploads (57 s). Wait for both before cloning or unmounting.
 
 ## Engines tested
 

@@ -145,7 +145,7 @@ the skills repo's CLAUDE.md.
 
 ## Test results
 
-Every run is recorded in [`results/`](results/): `runs.jsonl` holds one record per test cell (what, where, outcome, counts, the exact error, both repos' commits), and `results/<date>-<topic>.md` is the write-up. See what's been tested before running anything:
+Every run is recorded in [`results/`](results/): `runs/<run>.jsonl` holds one record per test cell (what, where, outcome, counts, the exact error, both repos' commits), and `results/<date>-<topic>.md` is the write-up. See what's been tested before running anything:
 
 ```bash
 uv run skills/lfc-test-results/scripts/recall.py                    # latest result per test x engine x host

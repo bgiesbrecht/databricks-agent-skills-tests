@@ -68,7 +68,7 @@ These follow **shell-json-scripting**. The agent's shell doesn't keep variables 
 - **DuckDB steps** are `.sql` files that read inputs with `getvariable('NAME')` and JSON files with `read_json`, and return one row. `q.sh` fills every `getvariable` from the env var of the same name and prints the row as shell assignments: `eval "$($Q $FW/<step>.sql | tee -a fw.env)"`. `q.py` does the same when the caller is Python (`uv run q.py`), so the SQL files are shared.
 - **Never put passwords in `fw.env`:** it holds IPs and resource names only.
 
-The DuckDB steps are files in [`scripts/`](scripts/): [`lib.sql`](scripts/lib.sql) (the IPv4 and port macros every step uses), [`missing.sql`](scripts/missing.sql), [`plan.sql`](scripts/plan.sql), and the per-cloud [`sg_pick.sql`](scripts/sg_pick.sql), [`nsg_cover.sql`](scripts/nsg_cover.sql), [`fw_cover.sql`](scripts/fw_cover.sql). They run with **shell-json-scripting**'s runner, `q.sh` (or `q.py` from Python), which reads `lib.sql` from the query's directory:
+The DuckDB steps are files in [`scripts/`](scripts/): [`lib.sql`](scripts/lib.sql) (the IPv4 and port macros every step uses), [`collapse.sql`](scripts/collapse.sql), [`missing.sql`](scripts/missing.sql), [`plan.sql`](scripts/plan.sql), and the per-cloud [`sg_pick.sql`](scripts/sg_pick.sql), [`nsg_cover.sql`](scripts/nsg_cover.sql), [`fw_cover.sql`](scripts/fw_cover.sql). They run with **shell-json-scripting**'s runner, `q.sh` (or `q.py` from Python), which reads `lib.sql` from the query's directory:
 
 ```bash
 Q=skills/shell-json-scripting/scripts/q.sh; FW=skills/lfc-source-firewall/scripts     # adjust to where the skills are
@@ -94,8 +94,11 @@ set -a; . ./fw.env
 eval "$(curl -fsSL https://www.databricks.com/networking/v1/ip-ranges.json | yq -p json -o shell '{"SERVERLESS": ([.prefixes[]
   | select(.type == "outbound" and (strenv(SCOPE) == "all" or (.platform == strenv(CLOUD) and .region == strenv(REGION))))
   | .ipv4Prefixes[]] | unique | join(" "))}' | tee -a fw.env)"
+eval "$($Q $FW/collapse.sql | tee -a fw.env)"     # drop ranges inside other ranges: they overlap across regions
 echo "laptop $MYIP, serverless: $(echo $SERVERLESS | wc -w) CIDRs"
 ```
+
+`collapse.sql` matters for `SCOPE=all`: the file has ranges that sit inside others from another region (763 → 760 when this was written), and an Azure NSG rule rejects overlapping prefixes (`OverlappingSubnetsNotPermittedInSecurityRule`). It's harmless for one region.
 
 If `SERVERLESS` is empty, the region isn't in the file: stop and tell the user, don't guess.
 
@@ -114,6 +117,15 @@ Classic clusters leave the workspace through its own NAT / egress IP, which isn'
   ```
 
 - **VNet-injected (Azure) or customer-managed VPC (AWS, GCP):** it's the customer's NAT; ask the user.
+- **Not in an account you can read:** ask classic compute itself. A one-off single-node job reports the address it leaves from (tested on an AWS classic workspace, where the gateway then connected):
+  ```bash
+  printf '# Databricks notebook source\nimport urllib.request\ndbutils.notebook.exit(urllib.request.urlopen("https://api.ipify.org", timeout=10).read().decode())\n' > egress.py
+  databricks workspace import /Users/<user>/lfc-egress-ip --file egress.py --format SOURCE --language PYTHON --overwrite --profile <PROFILE>
+  # submit with a small single-node new_cluster (a node type with local disk, e.g. m5d.large on AWS), then:
+  databricks jobs get-run-output <task-run-id> --profile <PROFILE> -o json | yq -p json '.notebook_output.result' > classic.ip   # private file
+  databricks workspace delete /Users/<user>/lfc-egress-ip --profile <PROFILE>
+  ```
+  A workspace normally has one NAT IP, but a cluster in another subnet can leave from a second one: if a gateway still can't connect (`INCORRECT_SOURCE_HOSTNAME_OR_PORT_SPECIFIED_FAILURE`), run the job again and compare.
 - **Can't determine it:** add the laptop and serverless IPs anyway, and **warn the user** that any part of the pipeline that runs on classic compute (for example a standard CDC gateway) may not be able to reach the database until its egress IP is added. Serverless parts will still work.
 
 Then record the full wanted list:
