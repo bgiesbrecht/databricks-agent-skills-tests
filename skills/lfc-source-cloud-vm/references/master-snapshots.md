@@ -111,6 +111,7 @@ From the tests (Postgres 16, 975 files):
 | Save after a small change | 10 of 975 files, 18 MB (one WAL segment and the changed table) |
 | Save after updating 1% of rows spread across a 510 MB table | 24 files, 422 MB |
 | Fresh pull of a saved copy | starts, with the changes |
+| Pull onto a blank, newly attached data disk (Db2, 862 MB, 61 files), `.lfc-dirs` reapplied | 3.4 s; starts and returns all 5M rows |
 | Round trip without directory markers | 0 of 12 empty directories back; Postgres won't start |
 
 `rclone` uploads **whole changed files**, not changed blocks. Postgres stores a table in 1 GB segment files, so scattered updates re-upload most of each segment they touch, and every save includes some 16 MB WAL segments. Small, local changes save quickly; wide updates cost close to a full upload.

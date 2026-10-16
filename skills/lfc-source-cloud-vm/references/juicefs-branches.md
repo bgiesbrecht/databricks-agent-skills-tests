@@ -93,17 +93,30 @@ mv $B/test-1 $M/<name>-v2                                  # or keep it as a new
 
 Data paths and stop commands per engine are in [engine-masters.md](engine-masters.md).
 
-**Before deleting or deallocating the VM:**
+**Before deleting the VM or its data disk**, put the metadata in the bucket. The disk being deleted holds Redis and the cache, so a dump left on it is lost with it:
 
 ```bash
-podman stop -t 120 <every container on /mnt/jfs>
-find /var/lib/containers/jfs/cache -path '*rawstaging*' -type f | head -1   # wait until empty
+for c in $(podman ps --format '{{.Names}}' | grep -v '^jfs-redis$'); do podman stop -t 120 $c; done
+until ! find /var/lib/containers/jfs/cache -path '*rawstaging*' -type f | grep . > /dev/null; do sleep 2; done   # writeback uploaded
 umount /mnt/jfs
-podman exec jfs-redis redis-cli SAVE
-juicefs dump redis://127.0.0.1:6379/1 /var/lib/containers/jfs/meta-dump.json.gz
+juicefs dump redis://127.0.0.1:6379/1 /var/tmp/meta.json.gz              # /var/tmp is on the OS disk
+rclone copy /var/tmp/meta.json.gz jfs:juicefs/meta-manual/               # a container SAS: paths start with the container name
+podman stop -a; systemctl stop podman.socket podman.service; umount /var/lib/containers
 ```
 
-Keep the dump somewhere off the VM if the VM will be deleted. A new VM gets the volume back with `juicefs load redis://127.0.0.1:6379/1 meta-dump.json.gz` and the same mount. Use one VM at a time on a volume (no shared metadata): give another VM its own copy instead (`cp -a` out of the mount, then rclone).
+`rclone` here is the container from [master-snapshots.md](master-snapshots.md), with a remote for the JuiceFS container: `RCLONE_CONFIG_JFS_TYPE=azureblob` and `RCLONE_CONFIG_JFS_SAS_URL=https://<account>.blob.core.windows.net/juicefs?<sas>`. JuiceFS also uploads a dump every hour while mounted (`<volume>/meta/dump-<time>.json.gz` in the bucket). That's a fallback, up to an hour old. Stop `podman.socket` too, or a later `podman` call recreates `storage/` on the root disk under the empty mount point.
+
+**On a new data disk, or a new VM** (tested: old disk detached, a blank one attached, [disk-setup.md](disk-setup.md), then this):
+
+```bash
+rclone copy jfs:juicefs/meta-manual/meta.json.gz /var/tmp/
+podman run -d --name jfs-redis --restart=always -p 127.0.0.1:6379:6379 -v /var/lib/containers/jfs/redis:/data \
+  docker.io/library/redis:7 redis-server --appendonly yes --appendfsync everysec
+juicefs load redis://127.0.0.1:6379/1 /var/tmp/meta.json.gz              # an empty Redis db; 0.1 s for 7 masters
+# then mount as above, and branch: juicefs clone -p /mnt/jfs/masters/<name> /mnt/jfs/branches/<test>
+```
+
+On the blank disk, a Postgres branch of a 30M-row master was ready in 1 s and returned every row (the first full count took 14 s, all from Blob). A SQL Server branch returned its 5M rows. Use one VM at a time on a volume (there's no shared metadata). To give another VM a copy instead, `cp -a` the master out of the mount and use rclone.
 
 ## Read performance (snapshot tests)
 

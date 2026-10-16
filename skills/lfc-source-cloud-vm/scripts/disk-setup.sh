@@ -14,8 +14,12 @@ case "$(sudo blkid -s TYPE -o value "$DEV" || true)" in
 esac
 UUID=$(sudo blkid -s UUID -o value "$DEV")
 sudo mkdir -p "$MNT"
-grep -q "UUID=$UUID" /etc/fstab || echo "UUID=$UUID $MNT xfs defaults,nofail 0 2" | sudo tee -a /etc/fstab > /dev/null
-findmnt "$MNT" > /dev/null || sudo mount "$MNT"
+for old in $(awk -v m="$MNT" '$2 == m && $1 ~ /^UUID=/ { print substr($1, 6) }' /etc/fstab); do   # a replaced disk's line comes first,
+  [ "$old" = "$UUID" ] || sudo blkid -U "$old" > /dev/null || sudo sed -i "s|^UUID=$old |# disk gone: &|" /etc/fstab   # so mount picks it and fails
+done
+grep -q "^UUID=$UUID" /etc/fstab || echo "UUID=$UUID $MNT xfs defaults,nofail 0 2" | sudo tee -a /etc/fstab > /dev/null
+findmnt "$MNT" > /dev/null || { [ -z "$(sudo ls -A "$MNT")" ] || echo "note: $MNT already has files on the root disk ($(sudo ls -A "$MNT" | tr '\n' ' ')); they'll be hidden under the mount"
+  sudo mount "$MNT"; }
 [ "$(findmnt -no FSTYPE "$MNT")" = xfs ] && sudo xfs_info "$MNT" | grep -q 'ftype=1' \
   || { echo "FAIL: $MNT is not XFS with ftype=1"; exit 1; }
 echo "OK: $MNT is XFS (ftype=1) on $DEV"

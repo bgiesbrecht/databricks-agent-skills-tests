@@ -104,7 +104,7 @@ END;
 
 ## Set up with the Databricks setup package (recommended)
 
-The [public setup](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/oracle-integrated-setup) supports Oracle 12c to 26ai (not RAC, standby, or multi-tenant RDS) and uses a Databricks PL/SQL package, `DBX_ORACLE_SETUP_UTIL`, instead of hand-written grants. Tested on `docker.io/gvenzl/oracle-free:23` (which is now 26ai Free 23.26; CDB `FREE`, PDB `FREEPDB1`), as `sqlplus / as sysdba` inside the container: `VALIDATE_SETUP` passes and query-based ingestion runs with this user. Integrated CDC wasn't enabled on the test workspace (`Ingestion source 'ORACLE' is not supported in your workspace`), so the CDC pipeline itself is untested here.
+The [public setup](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/oracle-integrated-setup) supports Oracle 12c to 26ai (not RAC, standby, or multi-tenant RDS) and uses a Databricks PL/SQL package, `DBX_ORACLE_SETUP_UTIL`, instead of hand-written grants. Tested on `docker.io/gvenzl/oracle-free:23` (which is now 26ai Free 23.26; CDB `FREE`, PDB `FREEPDB1`), as `sqlplus / as sysdba` inside the container: `VALIDATE_SETUP` passes, and both query-based ingestion and integrated CDC (snapshot, then inserts, updates and deletes, on a table with a primary key and one without) run with this user. The UC connection needs `service_name` = the CDB's service (`FREE`), see **lfc-source-setup** step 2. A workspace where Oracle CDC isn't enabled refuses the pipeline with `Ingestion source 'ORACLE' is not supported in your workspace`.
 
 ```sql
 -- 1. Recovery area and ARCHIVELOG (restarts the database; the container keeps running)
@@ -141,7 +141,7 @@ BEGIN DBX_ORACLE_SETUP_UTIL.VALIDATE_SETUP('C##LFC_USER'); END;
 - **No comment after a `;`** in these scripts. Oracle 23 rejects it (`ORA-03405: End of query reached; no additional text should follow`), and with `whenever sqlerror exit` the rest of the script is skipped. Keep comments on their own lines.
 - **Check supplemental logging yourself:** `SELECT supplemental_log_data_min, supplemental_log_data_pk FROM v$database` must show `YES YES`. In one run `VALIDATE_SETUP` printed "Pre-requisite checks passed" while both were `NO`.
 
-`GRANT_SELECT_PERMISSIONS` grants only the tables that exist when it runs: rerun it after adding tables. The same user works for query-based ingestion (UC connection `user` `C##LFC_USER`, PDB as `service_name` / `source_catalog`). The manual grants below are the older way and are kept for reference.
+`GRANT_SELECT_PERMISSIONS` grants only the tables that exist when it runs: rerun it after adding tables. The same user works for query-based ingestion and CDC: UC connection `user` `C##LFC_USER` with `service_name` `FREE` (the CDB), and the PDB (`FREEPDB1`) as `service_name =>` in queries and `source_catalog` in pipelines. The manual grants below are the older way and are kept for reference.
 
 ## LFC User Setup
 

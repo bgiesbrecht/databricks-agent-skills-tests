@@ -46,3 +46,14 @@ The 64 GB OS disk allocated during VM creation should be sufficient for test dat
 ## Advanced: Separate data volume for native databases
 
 To keep a native database's files off the OS disk, use the same block with `MNT` set to the database's data directory (for example `MNT=/var/lib/mysql`), **before** installing the database package. Then set ownership after install (`sudo chown mysql:mysql /var/lib/mysql && sudo chmod 750 /var/lib/mysql`).
+
+## Replace the data disk
+
+Tested: the old disk detached and kept, a blank one attached at the same LUN, and the masters brought back from object storage (see [juicefs-branches.md](juicefs-branches.md) and [master-snapshots.md](master-snapshots.md)).
+
+1. On the VM: stop every container, `systemctl stop podman.socket podman.service`, save what's only on the disk (JuiceFS metadata, see juicefs-branches.md), then `umount /var/lib/containers`.
+2. Create the new disk: `az disk create -g <rg> -n <name> -l <region> --size-gb <gb> --sku Premium_LRS --tags purpose=lfc-test`.
+3. Detach the old disk, then attach the new one at the same LUN, so `/dev/disk/azure/scsi1/lun0` still points at it. If `az vm disk detach` or `attach` fails with `InvalidApiVersionParameter` (an az CLI bug seen in 2026-10), patch the VM with `az rest --method patch --url "https://management.azure.com<vm-id>?api-version=2025-04-01"`: first a body with `"dataDisks": []`, then one with `{"lun": 0, "createOption": "Attach", "managedDisk": {"id": "<disk-id>"}}`. Wait until `az disk show ... --query diskState` says `Unattached` before attaching, or the attach fails with `AttachDiskWhileBeingDetached`.
+4. Run `disk-setup.sh` again. It comments out the old disk's `/etc/fstab` line, which `mount` would otherwise pick first and fail on, adds the new one, and mounts it.
+
+Delete the old disk only once everything is back.

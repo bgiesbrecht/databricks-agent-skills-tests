@@ -181,7 +181,7 @@ A UC connection on a laptop container is only useful for checking the request bo
 | MySQL | `MYSQL` | none | `lfc_user` |
 | PostgreSQL | `POSTGRESQL` | none | `lfc_user` |
 | SQL Server | `SQLSERVER` | `"trustServerCertificate": "true"`: the container's certificate is self-signed, and without it serverless fails with `FAILED_JDBC.CONNECTION` | `lfc_user` |
-| Oracle | `ORACLE` | none; the service (PDB) is given per query or per pipeline, not in the connection | the common user in **uppercase**, for example `C##LFC_USER` |
+| Oracle | `ORACLE` | `"service_name"`: the CDB's service (`FREE` for `gvenzl/oracle-free`), needed by CDC; the PDB is given per query or per pipeline | the common user in **uppercase**, for example `C##LFC_USER` |
 
 There is no `databricks connections test`. Verify with a read-only `remote_query` from serverless (**lfc-source-setup**, step 3).
 

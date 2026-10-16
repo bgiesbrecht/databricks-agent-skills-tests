@@ -1,6 +1,6 @@
 # Configure a VM's databases for Lakeflow Connect
 
-Tested end to end on an Azure VM (Ubuntu 24.04, rootful Podman) in the workspace's region: MySQL 8.4, PostgreSQL 16, SQL Server 2022 and Oracle 23ai Free, each with query-based ingestion, plus integrated CDC on SQL Server and MySQL. The SQL for users, grants, seed tables and CDC is the same on every target and lives in **lfc-source-setup**'s engine references; this page covers what's specific to a VM.
+Tested end to end on an Azure VM (Ubuntu 24.04, rootful Podman) in the workspace's region: MySQL 8.4, PostgreSQL 16, SQL Server 2022 and Oracle 23ai Free, each with query-based ingestion, plus integrated CDC on SQL Server, MySQL and Oracle, and standard (gateway) CDC on SQL Server. The workspace refused MySQL and PostgreSQL gateways as not enabled. All of it was rebuilt from these docs on a freshly attached data disk, with the same results. The SQL for users, grants, seed tables and CDC is the same on every target and lives in **lfc-source-setup**'s engine references; this page covers what's specific to a VM.
 
 ## Start the engines ready for CDC
 
@@ -24,7 +24,7 @@ Follow the engine references in **lfc-source-setup**. Run each SQL script inside
 | MySQL | `lfc_user`, grants in engine-mysql.md (CDC adds `SELECT ON *.*` and `SELECT (plugin, user) ON mysql.user`) | the binlog flags above |
 | PostgreSQL | `lfc_user` with `REPLICATION` | publication and slot per pipeline (engine-postgres.md); gateway CDC must be enabled on the workspace |
 | SQL Server | login `lfc_user`, plus a user in the database **and in `master`** | the Lakeflow utility script (engine-sqlserver.md): change tracking for tables with a primary key, CDC for the rest |
-| Oracle | `C##LFC_USER`, created by `DBX_ORACLE_SETUP_UTIL` | ARCHIVELOG, supplemental logging and the setup package (engine-oracle.md) |
+| Oracle | `C##LFC_USER`, created by `DBX_ORACLE_SETUP_UTIL`; connection `service_name` `FREE` | ARCHIVELOG, supplemental logging and the setup package (engine-oracle.md) |
 
 ## Register and check the connections
 

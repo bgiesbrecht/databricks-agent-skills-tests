@@ -110,7 +110,7 @@ The Unity Catalog connection follows the pipeline naming rule in **databricks-la
    ```
 
    - **A self-signed certificate** (a VM or container install): add `"trustServerCertificate": "true"` to `options`. SQL Server needs it for every query (otherwise `FAILED_JDBC.CONNECTION`); MySQL needs it for CDC (the extractor fails with `TLS_VALIDATION_FAILURE`), although query-based ingestion works without it. Managed services (Azure SQL, RDS) have trusted certificates and don't need it.
-   - **Oracle:** `user` in uppercase (`C##LFC_USER`). The connection has no service name; give the PDB per query (`service_name =>`) and per pipeline (`source_catalog`).
+   - **Oracle:** `user` in uppercase (`C##LFC_USER`), and `"service_name"` set to the root container's service, which is the CDB's name (`FREE` on Oracle Free; `lsnrctl status` lists the services). Integrated CDC refuses a connection without it. The docs' "`CDB$ROOT`" means that service, not the literal name: the listener doesn't serve `CDB$ROOT`, and queries fail. Give the PDB per query (`service_name => 'FREEPDB1'`, which overrides the connection's) and per pipeline (`source_catalog`).
 
 3. **Verify** from serverless with a read-only `remote_query` through the connection. Write it to a file and run `databricks experimental aitools tools query --file ping.sql --profile <PROFILE> -o csv`:
 
