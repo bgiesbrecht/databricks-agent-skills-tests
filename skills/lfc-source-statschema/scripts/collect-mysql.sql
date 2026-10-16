@@ -1,16 +1,5 @@
-# Collect statistics: MySQL 8.0+
-
-One query over `information_schema`: no table is read. Row counts and index cardinalities are InnoDB's estimates. **Null fractions, distinct counts, most common values, and ranges exist only for columns with a histogram**: the DBA builds them once with `ANALYZE TABLE t UPDATE HISTOGRAM ON c1, c2, ... WITH 100 BUCKETS`, which samples the table (bounded by `histogram_generation_max_mem_size`, 20 MB by default; TPC-H's 8.6M rows took 3 s) and stores the histograms in the data dictionary. A column that leads an index gets its distinct count from the index without a histogram. This statement writes every table's histogram command:
-
-```sql
-SELECT CONCAT('ANALYZE TABLE `', table_name, '` UPDATE HISTOGRAM ON ', GROUP_CONCAT(CONCAT('`', column_name, '`')), ' WITH 100 BUCKETS;')
-FROM information_schema.columns WHERE table_schema = 'sales' AND column_key <> 'PRI' GROUP BY table_name;
-```
-
-```bash
-cat > collect.sql <<'SS_EOF'
--- mysql -N -B -r -e "SET @db='shop', @vals='none'; SOURCE collect.sql" | jq -f my-normalize.jq > stats.json
---   (@vals: none | ranges | all; my-normalize.jq turns the raw catalog rows into the same format as the Postgres collector)
+-- mysql -N -B -r -e "SET @db='shop', @vals='none'; SOURCE collect-mysql.sql" | jq -f mysql-normalize.jq > stats.json
+--   (@vals: none | ranges | all; mysql-normalize.jq turns the raw catalog rows into the same format as the Postgres collector)
 -- Reads only the catalog (information_schema): no table is scanned. Row counts and index cardinalities are InnoDB's
 -- estimates (ANALYZE TABLE refreshes them). Null fractions, distinct counts, most common values, and value ranges of a column exist only where the DBA
 -- has built a histogram (ANALYZE TABLE t UPDATE HISTOGRAM ON c1, c2 WITH 100 BUCKETS samples the table once; columns with
@@ -83,34 +72,3 @@ SELECT JSON_OBJECT('version', '1', 'source_dialect', 'mysql', 'source_version', 
            'columns', col.columns))
            FROM information_schema.tables t JOIN col ON col.table_name = t.table_name
            WHERE t.table_schema = @db AND t.table_type = 'BASE TABLE'));
-SS_EOF
-```
-
-The raw output is normalized with jq into the same format as Postgres's:
-
-```bash
-cat > my-normalize.jq <<'SS_EOF'
-# jq -f my-normalize.jq: the MySQL collector's raw output -> the common stats format (the Postgres collector's)
-.tables |= (map(
-  . as $t
-  | {name, row_count, size_bytes, comment, avg_row_bytes,
-     primary_key: ([.keys[]? | select(.type == "PRIMARY KEY") | .cols | sort_by(.[0]) | map(.[1])] | first),
-     unique: ([.keys[]? | select(.type == "UNIQUE") | .cols | sort_by(.[0]) | map(.[1])] | if length > 0 then . else null end),
-     foreign_keys: ([.keys[]? | select(.type == "FOREIGN KEY") | .cols | sort_by(.[0])
-                     | {columns: map(.[1]), ref_table: .[0][2], ref_columns: map(.[3])}] | if length > 0 then . else null end),
-     checks, indexes: ([.indexes[]? | sort_by(.[0]) | map(.[1])] | if length > 0 then . else null end),
-     columns: (.columns | sort_by(.pos) | map(
-       . as $c
-       | {name, data_type, nullable, null_fraction, n_distinct, min_value, max_value, histogram_buckets,
-          most_common_values: (if .mcv_raw then (.mcv_raw | sort_by(-.f) | map({value: (if $c.keep_values == 1 or $c.keep_values == true then .v else null end), frequency: .f})) else null end),
-          histogram_bounds: (if .bounds_raw then (.bounds_raw | sort_by(.[0]) | (map(.[1]) + [last[2]])) else null end)}
-       | with_entries(select(.value != null))))}
-  | with_entries(select(.value != null))) | sort_by(.name))
-SS_EOF
-```
-
-```bash
-mysql -N -B -r -e "SET @db='sales', @vals='none'; SOURCE collect.sql" sales | jq -f my-normalize.jq > stats.json
-```
-
-Gotchas found while testing: `JSON_TABLE` can't read `information_schema.column_statistics` directly (error 1210), so the query materializes it first; histogram buckets hold *cumulative* frequencies (singleton `[value, cumulative]`, equi-height `[low, high, cumulative, distinct]`); text values in histograms are base64-encoded and may be truncated.

@@ -1,52 +1,44 @@
 ---
 name: lfc-source-statschema
-description: "When a customer can't share data but can share their schema and database statistics, build a scaled-down test database with the same shape: collect the statistics from the catalog (no table is scanned, and no data values unless the customer allows them), turn them into tables with lfc-source-datagen formulas (row counts, null fractions, distinct counts, most-common-value frequencies, value ranges, string widths, keys, foreign keys and their skew), fill it inside the database, and check the copy's statistics against the source's. Postgres and MySQL, either direction."
+description: "Build a Lakeflow Connect test source shaped like a customer's database, or like a TPC benchmark, from statschema's canonical schema.yaml and stats.yaml: collect a customer's schema, statistics, and top queries from the catalog (no table scans; data values only if they allow it), scale it down, write DDL for any engine (Postgres, MySQL, SQL Server, Oracle, Databricks, ...), fill it inside the database with lfc-source-datagen, check the copy's statistics against the source's, and replay the source's queries on the copy to compare plans. Ships statschema's TPC-B, TPC-C, TPC-H, TPC-DS, TPC-E, and TPC-DI schemas."
 parent: lfc-source-setup
 ---
 
-# A test database shaped like the customer's, from statistics only
+# A test source shaped like the customer's database
 
-Customers often say: *"I can't give you my data, but you can look at my schema and statistics."* That's enough to build a database that **behaves** like theirs for Lakeflow Connect testing (the same tables and keys, row counts at a chosen scale, the same nulls, cardinalities, and skew) without a single real row leaving their site. The design follows [statschema](https://github.com/rsleedbx/statschema); this skill does it with SQL and two short scripts, and generates the data inside the target with **lfc-source-datagen**.
+Customers often say: *"I can't give you my data, but you can look at my schema and statistics."* That's enough to build a database that **behaves** like theirs for Lakeflow Connect testing (the same tables and keys, row counts at a chosen scale, the same nulls, cardinalities, skew, and value ranges, and the same query plans) without a single real row leaving their site. When there is no customer, the same pipeline builds a TPC benchmark schema.
 
-**FIRST**: use **lfc-source-datagen** for the planners and `fill.sh`; this skill only writes the tables and their formulas.
+The format is [statschema](https://github.com/rsleedbx/statschema)'s: **`schema.yaml`** (tables, columns in canonical types, keys, foreign keys, generation rules) and **`stats.yaml`** (column, index, and foreign-key statistics), plus `queries.yaml` for the workload. Every step reads and writes these files, so a schema collected from Postgres can be built on MySQL, SQL Server, or Databricks. The parts of statschema this skill needs (its model and file I/O) are in `scripts/statschema/`; the rest of the pipeline was rewritten with newer techniques (below).
 
-## How it works
+**FIRST**: use **lfc-source-datagen** for the planners and `fill.sh`; this skill writes the tables and the formulas the planners fill them with.
 
-1. **The customer collects statistics** with one read-only query ([collect-postgres.md](references/collect-postgres.md), [collect-mysql.md](references/collect-mysql.md)). It reads only the catalog and the optimizer's statistics, so it is cheap on 10,000 tables and touches no table data. The output is one JSON file in statschema's `stats.yaml` field names.
-2. **They review the file and send it.** It's plain JSON; `jq` shows what's in it (below). Data values are in it only if they chose `values=ranges` or `all`.
-3. **`shape.py` writes the tables** ([build.md](references/build.md)): the same columns, keys, unique keys, foreign keys, and indexes, with types mapped by sqlglot when the target engine differs, and a formula per column (an `lfc:v` tag) that reproduces its statistics at the chosen scale. It also writes `expected.json`, the statistics the copy should have.
-4. **`fill.sh` fills the copy** inside the target database, parents first.
-5. **`compare.sql` checks the copy**: collect its statistics with the same collector and compare them with `expected.json` in DuckDB. It prints only what's off.
+## Pipeline
 
-## What the copy reproduces
+| Step | Where | Script | Output |
+|---|---|---|---|
+| 1. Collect schema and statistics | the customer's database | [`collect-postgres.sql`](scripts/collect-postgres.sql), [`collect-mysql.sql`](scripts/collect-mysql.sql) + [`mysql-normalize.jq`](scripts/mysql-normalize.jq) | `raw.json` |
+| 2. To the canonical format | anywhere | [`to-canonical.py`](scripts/to-canonical.py) | `schema.yaml`, `stats.yaml` |
+| 3. Collect the top queries and their plans | the customer's database | [`collect-queries-postgres.sql`](scripts/collect-queries-postgres.sql), [`collect-queries-mysql.sql`](scripts/collect-queries-mysql.sql) | `queries.json` |
+| 4. Shape: scale, and a formula per column | test side | [`shape.py`](scripts/shape.py) | `shaped.yaml` (still statschema's format), `expected.json` |
+| 5. DDL for the target engine | test side | [`ddl.py`](scripts/ddl.py) | `schema.sql` |
+| 6. Fill | the test database | **lfc-source-datagen** `scripts/fill.sh` | rows |
+| 7. Check the statistics | test side | the step 1 collector on the copy, then [`compare.sql`](scripts/compare.sql) (DuckDB) | what's off |
+| 8. Replay the queries | the test database | [`replay.py`](scripts/replay.py) `explain`, then `compare` | plan differences |
 
-| Statistic | How | Notes |
-|---|---|---|
-| Row count | `--scale` × the source's; tables of `--keep-small` rows or fewer (default 1,000: lookup tables) keep their size | Postgres: `reltuples`; MySQL: InnoDB's estimate (can be 10% off) |
-| Null fraction | Exactly: the first share of a permutation of the rows is `NULL` | |
-| Distinct count | Exactly, at most the rows and the value range: one that is at least 10% of the rows grows with the table, a smaller one stays (categories) | Postgres keeps growing ones as a negative fraction |
-| Most common values and their frequencies | Exactly: each value takes its share of a permutation of the rows. Numeric and date values are the real ones if the file has them; otherwise, and always for text, a stand-in value per entry | Up to 100 per column on Postgres, 10 on MySQL (its 1,024-character column comment); when they are every value, the rest are drawn evenly |
-| Value range | Numeric and date values spread evenly between min and max (with `values=ranges` or `all`) | Histograms beyond min and max aren't used yet |
-| String width | The average width (Postgres `avg_width`), as an `lfc:len` tag | MySQL has no per-column width |
-| Keys | One-column keys are numbered 1, 2, …; composite keys from the first two columns (the second runs fastest, spread over its parent if it is a foreign key); a table without a key stays without one and its first integer column numbers the rows | |
-| Foreign keys | Every value is a parent key: the source's share of parents with children, the hot parents first if the column has most common values | A composite foreign key to a composite key follows the parent's key formulas |
-| Indexes | Created as in the source | MySQL: not on unbounded text |
-| Check constraints | Left out unless `--checks` | A cross-column check (`ship <= receipt`) can fail: the statistics don't relate columns |
+[`validate.py`](scripts/validate.py) loads any of the YAML files with statschema's own model, to confirm a file is still its format. For a TPC benchmark, skip steps 1–3 and start at step 4 with a schema from [`schemas/`](schemas/).
 
-**Not reproduced:** cross-column relationships (dates in order, totals that sum lines), real text values, histograms beyond the range, and the physical order of rows (`correlation`). Values are never sequential in the key: every draw is a permutation `(n − 1) × p mod rows` with a large prime `p` per column.
+Python steps run with `uv run --no-project --with pyyaml --with sqlglot python3 scripts/<script>.py` (no other packages).
 
 ## Run
 
-The customer, on their database:
+The customer, on their database ([references/collect.md](references/collect.md) for privileges and fields):
 
 ```bash
-# Postgres: catalog only; ANALYZE first only if the statistics are stale
-psql -X -At -v schema=sales -v values=none -f collect.sql > stats.json
-# MySQL: the DBA builds histograms once (ANALYZE TABLE t UPDATE HISTOGRAM ON ... samples the table), then
-mysql -N -B -r -e "SET @db='sales', @vals='none'; SOURCE collect.sql" sales | jq -f my-normalize.jq > stats.json
-# what's in the file: tables, rows, and which columns carry values
-jq -r '.values, (.tables[] | "\(.name) \(.row_count) rows, \(.columns | length) columns")' stats.json
-jq -r '.tables[] | .name as $t | .columns[] | select(.min_value or (.most_common_values // [] | any(.value))) | "\($t).\(.name)"' stats.json
+psql -X -At -v schema=sales -v values=none -f collect-postgres.sql > raw.json                 # Postgres: catalog only
+psql -X -At -v top=50 -v search_path=sales -f collect-queries-postgres.sql > queries.json     # plans only, nothing runs
+# MySQL: the DBA builds histograms first (ANALYZE TABLE t UPDATE HISTOGRAM ON ...: samples each table once)
+mysql -N -B -r -e "SET @db='sales', @vals='none'; SOURCE collect-mysql.sql" sales | jq -f mysql-normalize.jq > raw.json
+mysql -N -B -r -e "SET @db='sales', @top=50; SOURCE collect-queries-mysql.sql" > queries.json
 ```
 
 **Ask the customer which `values` level they accept** before they run it:
@@ -54,39 +46,78 @@ jq -r '.tables[] | .name as $t | .columns[] | select(.min_value or (.most_common
 | `values` | The file has | The copy gets |
 |---|---|---|
 | `none` (default) | No data values: names, types, keys, counts, null fractions, distinct counts, frequencies, widths | The shape, with stand-in values |
-| `ranges` | Also min, max, and most common values of numeric and date columns | Also real numeric and date ranges and peaks |
-| `all` | Also the most common values of text columns (Postgres, MySQL histograms) | The same as `ranges`: text values are never copied |
+| `ranges` | Also min, max, histograms, and most common values of numeric and date columns | Also real numeric and date ranges, peaks, and distributions |
+| `all` | Also the most common values of text columns, and MySQL's statement samples | The same as `ranges`: text values are never copied |
 
-Table and column names are in the file at every level; if they are sensitive, rename them in the file (consistently) before sending it.
+Table and column names are in the files at every level; rename them consistently in the files if they are sensitive. The query texts have no literals (Postgres and MySQL replace them with `$1` / `?`).
 
-Then, on the test database (see [build.md](references/build.md) for the files):
+Then, on the test side ([references/shape.md](references/shape.md) for how each column is chosen, [references/replay.md](references/replay.md) for replay):
 
 ```bash
-uv run -q --with sqlglot python3 -I shape.py stats.json --target pg --scale 0.01 > shape.sql   # also writes expected.json
-psql -v ON_ERROR_STOP=1 -c "CREATE SCHEMA sales_s" -c "SET search_path = sales_s" -f shape.sql
-DIR=pg bash fill.sh pg sales_s                                 # lfc-source-datagen
-psql -c "ANALYZE" && psql -X -At -v schema=sales_s -v values=ranges -f collect.sql > got.json
-duckdb -c "SET VARIABLE expected = 'expected.json'; SET VARIABLE actual = 'got.json';" -c ".read compare.sql"
+PY="uv run --no-project --with pyyaml --with sqlglot python3"; S=skills/lfc-source-statschema/scripts
+$PY $S/to-canonical.py raw.json schema.yaml stats.yaml
+$PY $S/shape.py schema.yaml --stats stats.yaml --scale 0.01 > shaped.yaml                   # also writes expected.json
+$PY $S/ddl.py shaped.yaml --dialect postgres --source-dialect postgres > schema.sql          # or mysql, tsql, oracle, databricks
+psql -v ON_ERROR_STOP=1 -c "CREATE SCHEMA sales_s" -c "SET search_path = sales_s" -f schema.sql
+DIR=skills/lfc-source-datagen/scripts/postgres bash skills/lfc-source-datagen/scripts/fill.sh pg sales_s
+psql -c ANALYZE && psql -X -At -v schema=sales_s -v values=ranges -f $S/collect-postgres.sql > got.json
+duckdb -c "SET VARIABLE expected = 'expected.json'; SET VARIABLE actual = 'got.json';" -c ".read $S/compare.sql"
+$PY $S/replay.py explain queries.json --dialect postgres > explain.sql
+psql -X -At -c "SET search_path = sales_s" -f explain.sql > plans.json
+$PY $S/replay.py compare queries.json plans.json --dialect postgres --scale 0.01
 ```
 
-Show the plan before creating anything: the tables, total rows (`shape.py` prints them), and where. `shape.py` also prints what it changed: lists of most common values it cut, tables without a key, foreign keys it left to the planner.
+A TPC benchmark: `$PY $S/shape.py $S/../schemas/tpcc.yaml --sf 10 > shaped.yaml`, then `ddl.py` and `fill.sh` as above. Show the plan before creating anything: the tables, total rows (`shape.py` prints them and every decision it made), and where.
 
-## Measured
+## What the copy reproduces
 
-TPC-H at scale factor 1 (8.66M rows, 8 tables, composite keys and foreign keys) as the "customer", copied at `--scale 0.01` (86,630 rows), `values=ranges`, 4 vCPUs:
+| From | How |
+|---|---|
+| Row counts | `row_count_per_sf` × `--sf`, or a collected `row_count` × `--scale`; tables of `--keep-small` rows or fewer (default 1,000: lookup tables) keep their size |
+| Generation rules (`schema.yaml`) | `sequential`, `cyclic`, `block`, `block_cyclic`, `constant`, `uniform`, `zipf` (inverse power-law CDF), `normal` (Box–Muller), value lists with weights, `format_pattern` (names, phones, addresses, emails, URLs, ids, words, sentences, TPC-C last names), `unique` |
+| Null fraction, most common values and their frequencies | Exactly: each takes its share of a permutation of the rows, `(n − 1) × p mod rows` with a large prime `p` per column |
+| Distinct count | At most the rows and the value range; one at least 10% of the rows grows with the table, a smaller one stays (categories) |
+| Histograms | The values that aren't most common spread through the equi-height bounds, so the median and quartiles follow the source |
+| String widths | Postgres `avg_width`, as an `lfc:len` tag |
+| Keys | Rules that form a mixed radix (TPC-C's warehouse, district, customer) give `n` back from the key; other keys go through a codec per column (code lists, zero-padded digits, base 36 for short text, days or seconds for dates) that the children's foreign keys share |
+| Foreign keys | Every value is a parent key: the parent's codec at a parent row drawn uniformly, by zipf, or by the source's share of parents with children and its hot parents |
+| Indexes, unique keys, check constraints | Indexes and unique keys as in the source; checks left out (a cross-column check can fail: statistics don't relate columns) |
+| Tables without a primary key | Stay without one (Postgres: `REPLICA IDENTITY FULL`); a timestamp (one second per row) or an integer column numbers the rows |
 
-| Statistics from | Copy on | Fill | Columns within tolerance |
-|---|---|---|---|
-| Postgres 16 | Postgres 16 | 6 s | 61 of 61; every table's rows exact |
-| Postgres 16 | MySQL 8.4 | 21 s | 55 of 61; the 6 others are high-cardinality columns where MySQL's sampled histograms estimate the distinct count; exact `COUNT(DISTINCT)` on the copy: all within 0.5% |
-| MySQL 8.4 | Postgres 16 | 5 s | 61 of 61 |
+**Not reproduced:** relationships between columns (dates in order, totals of lines), real text values, the physical order of rows.
 
-Tolerances: null fraction and top frequency 0.02 (or 3 standard errors on a small table), distinct count 20%, rows 10%.
+## Measured (4 vCPUs, Podman VM, Postgres 16 and MySQL 8.4)
+
+statschema's TPC schemas, built by this pipeline (TPC-C at 2 warehouses, the others at SF 0.1), every table at its target and every foreign key enforced:
+
+| Schema | Tables | Rows | Postgres | MySQL |
+|---|---|---|---|---|
+| TPC-B | 4 | 20,002 | 3 s | 11 s |
+| TPC-C | 9 | 1,098,022 | 20 s | 48 s |
+| TPC-H | 8 | 866,030 | 16 s | 35 s |
+| TPC-DI | 18 | 102,567 | 4 s | 20 s |
+| TPC-DS | 24 | 3,834,794 | 35 s | 102 s |
+| TPC-E | 32 | 8,062,150 | not timed | 180 s |
+
+A customer-shaped copy: TPC-H at SF 1 on Postgres as the "customer" (`values=ranges`), copied at 1% (86,630 rows): every one of the 61 columns' null fraction, distinct count, and top frequency, all 11 histogram medians, and every table's rows match within tolerance. Replaying its 10 top queries: all 10 plan on the Postgres copy, 8 with the source's plan shape (the other 2 pick a nested loop or an index where 100× the data had a hash join or a scan); all 10 plan on a MySQL copy, 5 with the same shape (the engines differ).
+
+## What changed from statschema
+
+| statschema | Here |
+|---|---|
+| Collects statistics with full scans on most engines (`COUNT(DISTINCT)`, `GROUP BY`, `NTILE`); MySQL's sampling uses `TABLESAMPLE`, which MySQL doesn't have, and falls back to a full scan | Catalog only: `pg_stats`, MySQL histograms and index cardinalities; data values only by `values` |
+| Six hand-written DDL emitters that drop foreign keys, `CHAR`, and table comments | One emitter building sqlglot syntax trees: any sqlglot dialect, with foreign keys, comments, indexes |
+| Rows generated in Python, pandas, or Spark and loaded | Generated inside the database from one integer per row (lfc-source-datagen) |
+| Values drawn with `x % 100 < frequency` (1% steps) | Exact shares of a permutation of the rows |
+| Table names in queries by regex; replay prints EXPLAIN text, and fails on `$1` / `?` | Tables by parsing; Postgres generic plans, MySQL placeholders set from the copy; a plan-shape comparison |
+| Bugs in its TPC schemas: TPC-C's district ids don't wrap at 10 per warehouse (fixed in `schemas/tpcc.yaml`); TPC-E's `holding` has more rows than `trade` though each points at its own trade (`shape.py` caps it) | |
+| `pip install` from git fails: the `.cursor` submodule points at a commit GitHub doesn't have | Not needed: the model lives in `scripts/statschema/` |
 
 ## Gotchas
 
-- **Statistics are estimates.** Postgres samples 30,000 rows per table by default (`default_statistics_target` 100); its distinct counts on big tables can be well off. MySQL row counts are InnoDB's estimate, and its histograms are sampled too (`histogram_generation_max_mem_size`). The copy reproduces what the statistics say, not the true numbers.
-- **MySQL caches row counts** in `information_schema` for up to a day: the collector sets `information_schema_stats_expiry = 0`, and `ANALYZE TABLE` refreshes them.
-- **MySQL columns without a histogram or an index have only their type**: the copy fills them like any datagen column (scrambled, unique-ish). Ask the DBA for histograms on the columns that matter.
-- **Checking a MySQL copy:** its statistics are estimates, so a flagged high-cardinality column needs an exact `COUNT(DISTINCT)` before it counts as a miss.
-- **Keys are renumbered** from 1 (a source's nation keys 0 … 24 become 1 … 25), and every foreign key follows, so joins work the same.
+- **Statistics are estimates.** Postgres samples 30,000 rows per table (`default_statistics_target` 100); MySQL's row counts are InnoDB's estimates and its histograms are sampled. The copy reproduces what the statistics say. A flagged high-cardinality column on a MySQL copy is often MySQL's estimate: check it with `COUNT(DISTINCT)` on the copy (it's test data).
+- **MySQL caches row counts** in `information_schema` for up to a day: the collector sets `information_schema_stats_expiry = 0`; run `ANALYZE TABLE` on the copy before collecting from it.
+- **MySQL comments hold 1,024 characters**: longer formulas go to `lfc_seed.tags`, which `ddl.py` fills and the MySQL planners read.
+- **MySQL binary logs grow with every load** (25 GB filled a 50 GB test VM during this skill's tests): on a test container without a CDC reader, purge them (`PURGE BINARY LOGS BEFORE NOW()`) or set `binlog_expire_logs_seconds`; with CDC, size the disk for them.
+- **Keys are renumbered** (a source's nation keys 0 … 24 become what the rules or codecs say), and every foreign key follows, so joins work the same.
+- **Text-key order:** a key's `n` must rise with its sort order (the resume probe reads the highest key); code lists are sorted, and digits and base 36 sort as numbers in byte order. A collation that sorts digits after letters breaks this.

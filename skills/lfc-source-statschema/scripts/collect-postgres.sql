@@ -1,10 +1,4 @@
-# Collect statistics: Postgres
-
-One query over the catalog and `pg_stats`: no table is read, so it costs the same on 10 tables or 10,000. It needs `SELECT` on the tables' `pg_stats` rows (the table owner, or the `pg_read_all_stats` role). The statistics are as fresh as the last `ANALYZE`, which autovacuum runs; run `ANALYZE` first only if they are stale (it samples each table, 30,000 rows at the default `default_statistics_target`).
-
-```bash
-cat > collect.sql <<'SS_EOF'
--- psql -X -At -v schema=public [-v values=none|ranges|all] -f collect.sql > stats.json
+-- psql -X -At -v schema=public [-v values=none|ranges|all] -f collect-postgres.sql > stats.json
 -- Reads only the catalog and the planner's statistics (pg_class, pg_stats, pg_constraint, pg_index): no table is scanned, so
 -- it is as cheap on 10,000 tables as on 10. Statistics are as fresh as the last ANALYZE (autovacuum runs it; run ANALYZE
 -- for exact numbers). Values: pg_stats holds real data values (most common values, histogram bounds), so
@@ -56,16 +50,3 @@ SELECT json_build_object('version', '1', 'source_dialect', 'postgres', 'source_v
            'columns', col.columns)) ORDER BY r.relname))
 FROM pg_class r JOIN pg_namespace n ON n.oid = r.relnamespace AND n.nspname = :'schema' JOIN col ON col.oid = r.oid
 WHERE r.relkind IN ('r', 'p');
-SS_EOF
-```
-
-```bash
-psql -X -At -v schema=sales -v values=none -f collect.sql > stats.json
-```
-
-| Field | From |
-|---|---|
-| `row_count`, `size_bytes` | `pg_class.reltuples` (the planner's estimate), `pg_table_size` |
-| `primary_key`, `unique`, `foreign_keys`, `checks`, `indexes` | `pg_constraint`, `pg_index` |
-| `null_fraction`, `n_distinct` (negative: a fraction of the rows), `avg_width_bytes`, `correlation` | `pg_stats` |
-| `most_common_values` (frequency, and the value if `values` allows), `min_value`, `max_value`, `histogram_bounds` | `pg_stats.most_common_vals` / `most_common_freqs` / `histogram_bounds` (min and max: the histogram's ends, or the extreme common values) |
