@@ -110,6 +110,7 @@ The `inet` extension's `<<=` also works for plain CIDRs, but it has to be instal
 - **SQL doesn't short-circuit `AND`.** `is_ip(s) AND lo(s) = 0` still evaluates `lo('*')`; put the guard inside the macro (`CASE WHEN NOT is_ip(s) THEN NULL ...`) or use `TRY_CAST`.
 - **Filter on an `unnest` in a subquery.** `SELECT unnest(x) AS p ... WHERE p.f = 1` fails; wrap it: `SELECT * FROM (SELECT unnest(x) AS p ...) WHERE p.f = 1`.
 - **No `->` lambdas.** DuckDB 1.5 prints a deprecation warning to stdout for them, which breaks the JSON the runner reads. Use list comprehensions: `[x FOR x IN list IF x <> '']`.
+- **`grep -q` in a pipeline under `set -o pipefail` can fail on a match.** `grep -q` exits at the first match, the writer gets SIGPIPE, and `pipefail` reports the pipeline as failed, so `until podman logs c | grep -q READY; do sleep 5; done` never ends when the writer prints more after the match. Use `grep PATTERN > /dev/null`, which reads to the end.
 - **`duckdb -bail`** stops at the first error; without it, later statements still run and print misleading results.
 - **Extensions are per version.** The CLI and the Python module can be different versions; put `INSTALL <ext>; LOAD <ext>;` in the SQL file if you use one (`inet`, `httpfs`). Downloading inputs with `curl` first avoids needing `httpfs`.
 - **Numbers from APIs can be floats** (`60.0`): shell arithmetic rejects them.

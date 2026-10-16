@@ -64,7 +64,7 @@ See [azure-sql-database.md](references/azure-sql-database.md) for full steps (pr
 ```bash
 # Create logical server
 umask 077
-openssl rand -hex 24 > admin.pw
+echo "Lfc1$(openssl rand -hex 12)" > admin.pw
 az sql server create --resource-group <rg> --name <pfx>-mssql-<loc>-<epoch> \
   --location <location> --admin-user sqladmin \
   --admin-password "$(cat admin.pw)" --enable-public-network true
@@ -95,7 +95,7 @@ az network vnet subnet create --resource-group <rg> --vnet-name lfc-test-vnet \
 
 # Create Managed Instance
 umask 077
-openssl rand -hex 24 > admin.pw
+echo "Lfc1$(openssl rand -hex 12)" > admin.pw
 az sql mi create --resource-group <rg> --name <pfx>-mssql-mi-<loc>-<epoch> \
   --location <location> --admin-user sqladmin \
   --admin-password "$(cat admin.pw)" \

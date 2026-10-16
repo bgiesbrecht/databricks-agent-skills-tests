@@ -28,7 +28,7 @@ az sql server firewall-rule list \
 
 ## Password complexity
 
-Azure SQL requires passwords with uppercase, lowercase, digits, and symbols (no spaces). `openssl rand -hex 24` produces valid hex; if you use a custom password, test it before provisioning.
+Azure SQL requires passwords with uppercase, lowercase, digits, and symbols (no spaces). Bare `openssl rand -hex` output has only two of those classes (lowercase, digits), so prefix it: `echo "Lfc1$(openssl rand -hex 12)"`. If you use a custom password, test it before provisioning.
 
 ## LFC user grants
 

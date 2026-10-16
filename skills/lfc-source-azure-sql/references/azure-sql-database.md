@@ -6,7 +6,7 @@
 
 ```bash
 umask 077
-openssl rand -hex 24 > admin.pw
+echo "Lfc1$(openssl rand -hex 12)" > admin.pw
 
 az sql server create \
   --resource-group <resource_group> \

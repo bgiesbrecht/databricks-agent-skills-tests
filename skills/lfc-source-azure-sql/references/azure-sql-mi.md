@@ -41,7 +41,7 @@ az network nsg rule create \
 
 ```bash
 umask 077
-openssl rand -hex 24 > admin.pw
+echo "Lfc1$(openssl rand -hex 12)" > admin.pw
 
 az sql mi create --no-wait \
   --resource-group <resource_group> \

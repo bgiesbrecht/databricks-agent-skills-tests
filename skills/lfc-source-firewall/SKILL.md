@@ -129,9 +129,12 @@ Shared test accounts usually already have security groups, firewall rules, or NS
 
 ```bash
 set -a; . ./fw.env
+[ -n "${WANT:-}" ] || echo "STOP: WANT is empty; run the last block of Step 1 first"
 eval "$($Q $FW/missing.sql | tee -a fw.env)"
 echo "missing: $(echo $MISSING | wc -w)"      # 0 means existing rules already cover everything
 ```
+
+An empty `WANT` (Step 1's last block skipped) also gives 0 missing, so check it before trusting a 0.
 
 A CIDR counts as covered when it falls inside an existing allowed range. Rules open to everyone (`0.0.0.0/0`, `*`, `Internet`) never count: don't rely on them, and point them out to the user.
 

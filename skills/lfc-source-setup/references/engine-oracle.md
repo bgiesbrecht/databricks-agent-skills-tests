@@ -102,6 +102,47 @@ END;
 /
 ```
 
+## Set up with the Databricks setup package (recommended)
+
+The [public setup](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/oracle-integrated-setup) supports Oracle 12c to 26ai (not RAC, standby, or multi-tenant RDS) and uses a Databricks PL/SQL package, `DBX_ORACLE_SETUP_UTIL`, instead of hand-written grants. Tested on `docker.io/gvenzl/oracle-free:23` (which is now 26ai Free 23.26; CDB `FREE`, PDB `FREEPDB1`), as `sqlplus / as sysdba` inside the container: `VALIDATE_SETUP` passes and query-based ingestion runs with this user. Integrated CDC wasn't enabled on the test workspace (`Ingestion source 'ORACLE' is not supported in your workspace`), so the CDC pipeline itself is untested here.
+
+```sql
+-- 1. Recovery area and ARCHIVELOG (restarts the database; the container keeps running)
+host mkdir -p /opt/oracle/oradata/fra
+ALTER SYSTEM SET db_recovery_file_dest_size = 10G SCOPE=BOTH;
+ALTER SYSTEM SET db_recovery_file_dest = '/opt/oracle/oradata/fra' SCOPE=BOTH;
+SHUTDOWN IMMEDIATE
+STARTUP MOUNT
+ALTER DATABASE ARCHIVELOG;
+ALTER DATABASE OPEN;
+ALTER PLUGGABLE DATABASE ALL OPEN;
+-- SAVE STATE, or the PDB stays MOUNTED after the next restart
+ALTER PLUGGABLE DATABASE ALL SAVE STATE;
+-- 2. Supplemental logging
+ALTER DATABASE ADD SUPPLEMENTAL LOG DATA;
+ALTER DATABASE ADD SUPPLEMENTAL LOG DATA (PRIMARY KEY) COLUMNS;
+```
+
+Then keep archive logs 48 hours (`rman target /` → `CONFIGURE RETENTION POLICY TO RECOVERY WINDOW OF 2 DAYS;`), download the package script from the page (`dbx-oracle-setup-package-<hash>.sql`), run it in `CDB$ROOT` as SYSDBA, and create the user with it. The user must be uppercase and, in a CDB, start with `C##`:
+
+```sql
+BEGIN DBX_ORACLE_SETUP_UTIL.CREATE_USER('C##LFC_USER', '<password-from-file>', 'USERS', 'TEMP'); END;
+/
+BEGIN DBX_ORACLE_SETUP_UTIL.GRANT_PERMISSIONS('C##LFC_USER'); END;
+/
+-- after the tables exist (see the seed below): SELECT on a schema in a PDB
+BEGIN DBX_ORACLE_SETUP_UTIL.GRANT_SELECT_PERMISSIONS('C##LFC_USER', '<SCHEMA>', '<PDB>'); END;
+/
+-- prints "Privilege validation passed"
+BEGIN DBX_ORACLE_SETUP_UTIL.VALIDATE_SETUP('C##LFC_USER'); END;
+/
+```
+
+- **No comment after a `;`** in these scripts. Oracle 23 rejects it (`ORA-03405: End of query reached; no additional text should follow`), and with `whenever sqlerror exit` the rest of the script is skipped. Keep comments on their own lines.
+- **Check supplemental logging yourself:** `SELECT supplemental_log_data_min, supplemental_log_data_pk FROM v$database` must show `YES YES`. In one run `VALIDATE_SETUP` printed "Pre-requisite checks passed" while both were `NO`.
+
+`GRANT_SELECT_PERMISSIONS` grants only the tables that exist when it runs: rerun it after adding tables. The same user works for query-based ingestion (UC connection `user` `C##LFC_USER`, PDB as `service_name` / `source_catalog`). The manual grants below are the older way and are kept for reference.
+
 ## LFC User Setup
 
 ### Platform-Specific User Strategies
@@ -176,34 +217,27 @@ SELECT * FROM DUAL;
 
 ## Seed Tables for Demo/Testing
 
-LFC uses seed tables in the **PDB** (not CDB; LogMiner connects to CDB). Run as <lfc_user>:
+Seed tables live in a schema in the **PDB**. A table owner with no password (`NO AUTHENTICATION`) keeps the schema separate from the ingestion user. `DT` is the query-based cursor: `NOT NULL`, indexed, and bumped on every update by a trigger. Run as SYSDBA:
 
 ```sql
--- Connect as <lfc_user> to the PDB
-
--- intpk: integer PK for query-based ingestion
-CREATE TABLE intpk (
-  pk  NUMBER PRIMARY KEY,
-  dt  TIMESTAMP DEFAULT SYSTIMESTAMP,
-  ops VARCHAR2(255) DEFAULT 'insert'
-);
-CREATE INDEX idx_intpk_dt ON intpk (dt);
-
--- dtix: no PK, for CDC/LogMiner testing
-CREATE TABLE dtix (
-  pk  NUMBER,
-  dt  TIMESTAMP DEFAULT SYSTIMESTAMP,
-  ops VARCHAR2(255) DEFAULT 'insert'
-);
-CREATE INDEX idx_dtix_dt ON dtix (dt);
-
--- Seed 10 rows
-INSERT INTO intpk (pk, dt) SELECT LEVEL, SYSTIMESTAMP FROM DUAL CONNECT BY LEVEL <= 10;
-INSERT INTO dtix (pk, dt) SELECT LEVEL, SYSTIMESTAMP FROM DUAL CONNECT BY LEVEL <= 10;
+ALTER SESSION SET CONTAINER = FREEPDB1;
+CREATE USER LFC NO AUTHENTICATION DEFAULT TABLESPACE USERS QUOTA UNLIMITED ON USERS;
+CREATE TABLE LFC.INTPK (PK NUMBER PRIMARY KEY, DT TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL, OPS VARCHAR2(255) DEFAULT 'insert');
+CREATE INDEX LFC.IDX_INTPK_DT ON LFC.INTPK (DT);
+CREATE TABLE LFC.DTIX (PK NUMBER, DT TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL, OPS VARCHAR2(255) DEFAULT 'insert');
+CREATE INDEX LFC.IDX_DTIX_DT ON LFC.DTIX (DT);
+-- no primary key: log every column
+ALTER TABLE LFC.DTIX ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS;
+CREATE OR REPLACE TRIGGER LFC.INTPK_SET_DT BEFORE UPDATE ON LFC.INTPK FOR EACH ROW BEGIN :NEW.DT := SYSTIMESTAMP; END;
+/
+CREATE OR REPLACE TRIGGER LFC.DTIX_SET_DT BEFORE UPDATE ON LFC.DTIX FOR EACH ROW BEGIN :NEW.DT := SYSTIMESTAMP; END;
+/
+INSERT INTO LFC.INTPK (PK) SELECT LEVEL FROM DUAL CONNECT BY LEVEL <= 10;
+INSERT INTO LFC.DTIX (PK) SELECT LEVEL FROM DUAL CONNECT BY LEVEL <= 10;
 COMMIT;
 ```
 
-> **Note:** Oracle does not support IDENTITY; use NUMBER PRIMARY KEY or SEQUENCE.
+> **No identity columns:** Oracle has them (12c and later), but LogMiner-based CDC doesn't support them, so use `NUMBER PRIMARY KEY` filled by the application or a sequence. Names are limited to 30 characters, and types added after 12.2 (`BOOLEAN`, `JSON`, `VECTOR`) aren't supported.
 
 ## Supplemental Logging Configuration
 

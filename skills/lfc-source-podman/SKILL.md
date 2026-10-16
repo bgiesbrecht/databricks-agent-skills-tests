@@ -174,42 +174,16 @@ LFC requires:
 
 ## Register the Unity Catalog connection
 
-Once the database is up and configured, register a UC connection for Lakeflow Connect. Use a temporary `conn.json` file with restricted permissions and delete it immediately after creation.
+A UC connection on a laptop container is only useful for checking the request body: Databricks serverless can't reach `127.0.0.1` or a laptop's port. To ingest, run the same containers on a cloud VM in the workspace's region (**lfc-source-cloud-vm**), open the published ports to serverless (**lfc-source-firewall**), and register the connection with the VM's public IP, as **lfc-source-setup** "After the database exists" shows. Per engine:
 
-**Create the UC connection (PostgreSQL example):**
+| Engine | `connection_type` | Options beyond `host`, `port`, `user`, `password` | User |
+|---|---|---|---|
+| MySQL | `MYSQL` | none | `lfc_user` |
+| PostgreSQL | `POSTGRESQL` | none | `lfc_user` |
+| SQL Server | `SQLSERVER` | `"trustServerCertificate": "true"`: the container's certificate is self-signed, and without it serverless fails with `FAILED_JDBC.CONNECTION` | `lfc_user` |
+| Oracle | `ORACLE` | none; the service (PDB) is given per query or per pipeline, not in the connection | the common user in **uppercase**, for example `C##LFC_USER` |
 
-```bash
-# Create connection file with restricted permissions
-umask 077
-cat > conn.json <<'EOF'
-{
-  "name": "owner-postgres-podman",
-  "connection_type": "POSTGRESQL",
-  "options": {
-    "host": "127.0.0.1",
-    "port": "30002",
-    "user": "lfc_user",
-    "password": "lfc_user_password"
-  }
-}
-EOF
-
-# Create the connection
-databricks connections create --json @conn.json --profile DEFAULT
-
-# Delete the temporary file immediately
-rm conn.json
-```
-
-Replace `POSTGRESQL` with `MYSQL`, `SQLSERVER`, `ORACLE`, etc. as needed. Update the `port` to match your container and the `password` to the LFC user's password.
-
-**Verify the connection:**
-
-```bash
-databricks connections test --name owner-postgres-podman --profile DEFAULT
-```
-
-The UC connection is now registered and ready for Lakeflow Connect pipelines.
+There is no `databricks connections test`. Verify with a read-only `remote_query` from serverless (**lfc-source-setup**, step 3).
 
 ## Lifecycle
 

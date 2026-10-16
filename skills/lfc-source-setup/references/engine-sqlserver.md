@@ -61,6 +61,10 @@ LFC needs both a **login** (server-level) and a **user** (database-level) with a
 ```sql
 -- Connect as DBA (e.g., sa or equivalent)
 
+-- The database, if it doesn't exist yet
+IF DB_ID(N'<database>') IS NULL CREATE DATABASE [<database>];
+GO
+
 -- ── CREATE LOGIN (server-level, in master) ──
 IF NOT EXISTS (SELECT 1 FROM sys.sql_logins WHERE name = N'<lfc_user>')
   CREATE LOGIN [<lfc_user>] WITH PASSWORD = N'<password-from-file>';
@@ -99,33 +103,56 @@ SELECT 1;
 
 ## Seed Tables for Demo/Testing
 
-LFC uses two seed tables for testing (run as LFC user):
+Two seed tables for query-based ingestion and CDC (tested end to end, SQL Server 2022 Developer). `dt` is the query-based cursor: `NOT NULL` with a default (so inserts never leave it NULL), indexed, and bumped on every update by a trigger.
 
 ```sql
 USE [<database>];
 
--- intpk: integer identity PK for query-based ingestion
+-- intpk: identity primary key (change tracking needs a primary key)
 CREATE TABLE dbo.intpk (
   pk  INT IDENTITY NOT NULL PRIMARY KEY,
-  dt  DATETIME,
+  dt  DATETIME NOT NULL DEFAULT GETDATE(),
   ops VARCHAR(255) DEFAULT 'insert'
 );
-CREATE INDEX idx_dt ON dbo.intpk (dt);
+CREATE INDEX idx_intpk_dt ON dbo.intpk (dt);
 
--- dtix: no explicit PK, for CDC testing
+-- dtix: no primary key (query-based: APPEND_ONLY; CDC: SQL Server CDC, not change tracking)
 CREATE TABLE dbo.dtix (
   pk  BIGINT,
-  dt  DATETIME,
+  dt  DATETIME NOT NULL DEFAULT GETDATE(),
   ops VARCHAR(255) DEFAULT 'insert'
 );
-CREATE INDEX idx_dt ON dbo.dtix (dt);
-
--- Seed 10 rows
-INSERT INTO dbo.intpk (dt) VALUES (GETDATE()), (GETDATE()), (GETDATE()), (GETDATE()), (GETDATE()),
-  (GETDATE()), (GETDATE()), (GETDATE()), (GETDATE()), (GETDATE());
-INSERT INTO dbo.dtix (pk, dt) VALUES (1, GETDATE()), (2, GETDATE()), (3, GETDATE()), (4, GETDATE()), (5, GETDATE()),
-  (6, GETDATE()), (7, GETDATE()), (8, GETDATE()), (9, GETDATE()), (10, GETDATE());
+CREATE INDEX idx_dtix_dt ON dbo.dtix (dt);
+GO
+CREATE OR ALTER TRIGGER dbo.intpk_set_dt ON dbo.intpk AFTER UPDATE AS
+  BEGIN SET NOCOUNT ON; UPDATE t SET dt = GETDATE() FROM dbo.intpk t JOIN inserted i ON i.pk = t.pk; END
+GO
+CREATE OR ALTER TRIGGER dbo.dtix_set_dt ON dbo.dtix AFTER UPDATE AS
+  BEGIN SET NOCOUNT ON; UPDATE t SET dt = GETDATE() FROM dbo.dtix t JOIN inserted i ON i.pk = t.pk; END
+GO
+-- Seed 10 rows each
+INSERT INTO dbo.intpk (ops) SELECT TOP 10 'insert' FROM sys.all_objects;
+INSERT INTO dbo.dtix (pk) SELECT TOP 10 ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) FROM sys.all_objects;
 ```
+
+## Set up CT and CDC with the Lakeflow utility script (recommended)
+
+The [public setup](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/sql-server-utility) is a Databricks script that installs three procedures in the source database: `lakeflowSetupChangeTracking`, `lakeflowSetupChangeDataCapture`, and `lakeflowFixPermissions`. It replaces the manual statements in the next two sections. Tested on SQL Server 2022 in a container:
+
+1. Download the script from the page (`utility_script-<hash>.sql`) and run it **in the source database** as a `db_owner` (for example `sa`): `sqlcmd ... -d <database> -i utility_script.sql`. It prints `✓` per object; check `SELECT dbo.lakeflowUtilityVersion()`.
+2. Give the ingestion user a user in `master` too, or the server-scoped grants fail (`⚠ Could not grant EXECUTE on sys.sp_statistics_100 in master: Cannot find the user`):
+   ```sql
+   USE master; CREATE USER [<lfc_user>] FOR LOGIN [<lfc_user>];
+   ```
+3. Enable tracking and grant, per table. Change tracking needs a primary key; use CDC for tables without one, or for SCD Type 2:
+   ```sql
+   USE [<database>];
+   EXEC dbo.lakeflowSetupChangeTracking @Tables = 'dbo.intpk', @User = '<lfc_user>', @Retention = '2 DAYS', @CreateDdlSupportingObjects = 1;
+   EXEC dbo.lakeflowSetupChangeDataCapture @Tables = 'dbo.dtix', @User = '<lfc_user>';
+   EXEC dbo.lakeflowFixPermissions @User = '<lfc_user>', @Tables = 'dbo.intpk,dbo.dtix';
+   ```
+   `@Tables` also takes `'ALL'` and `'SCHEMAS:Sales,HR'`. CDC needs SQL Server Agent running; in the `mcr.microsoft.com/mssql/server` image, set `MSSQL_AGENT_ENABLED=true`.
+4. The ingestion user doesn't need `db_owner` once this is done: `ALTER ROLE db_owner DROP MEMBER [<lfc_user>]`. `db_owner` is only for whoever runs the setup.
 
 ## Change Tracking (CT) Configuration
 

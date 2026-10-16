@@ -13,13 +13,14 @@ Populating a large test database (100 GB and up) takes hours, and keeping it on 
 
 Keep the object storage in **the same cloud and region as the VM** (and the VM in the workspace's region, see **lfc-source-setup**), so pulls aren't billed as egress. Use the Hot tier: a master is read often and written rarely, and Cool charges per GB read plus a 30-day minimum, which every save resets.
 
-Tested end to end with Postgres 16 and Azure Blob, from an Azure VM (Ubuntu 24.04, XFS data disk). S3 and GCS use the same steps with their own directory-marker flag, but haven't been tested.
+Tested end to end with Azure Blob from an Azure VM (Ubuntu 24.04, XFS data disk) with Postgres 16, SQL Server 2022, Oracle 23ai Free, Db2 11.5, CockroachDB 25 and YugabyteDB 2025 ([engine-masters.md](engine-masters.md) has each engine's details). S3 and GCS use the same steps with their own directory-marker flag, but haven't been tested.
 
 ## Rules
 
 - **Cache and clones on the same XFS filesystem**, under `/var/lib/containers` (see [disk-setup.md](disk-setup.md)). A reflink can't cross filesystems: `cp --reflink=always` from an `rclone mount` or into `/tmp` (often tmpfs) fails with `Invalid cross-device link`.
 - **Stop the database cleanly** (`podman stop -t 60`) before uploading, saving, cloning, or deleting its files. Copying a running database's files gives a torn copy.
-- **Keep empty directories and file metadata.** Object storage has no empty directories, and Postgres won't start without its 12 (`could not open directory "pg_notify"`). Always pass `--create-empty-src-dirs --metadata` and turn on directory markers. `--metadata` keeps each file's owner and mode; directories come back owned by root, which the Postgres and MySQL images fix on start (other images may need `chown -R` to the engine's user).
+- **Keep empty directories, symlinks and file metadata.** Object storage has no empty directories or symlinks. Postgres won't start without its 12 empty directories (`could not open directory "pg_notify"`), and YugabyteDB keeps `data/pg_data` as a symlink. Always pass `--create-empty-src-dirs --metadata --links` and turn on directory markers. `--links` stores each symlink as a small `.rclonelink` object. On the pull, the first attempt logs `failed to set xattr key "user.tier"` for each symlink, and rclone's automatic retry succeeds; that's expected.
+- **Save directory owners and modes with the master.** `--metadata` keeps each file's owner and mode, but directories come back owned by root with mode 755, and setuid, setgid and sticky bits are lost. Engines that run as root, or that fix owners on start (Postgres, MySQL, CockroachDB), don't mind. The others fail: SQL Server crashes (`chmod: changing permissions of '/var/opt/mssql/log'`), YugabyteDB gets `Permission denied: '/yb/conf/yugabyted.conf'`, and Db2's instance (uid 1000, setgid directories, setuid security programs) won't start, even after a `chown -R`. So write a list of those entries into the master before uploading (`.lfc-dirs`, below), and reapply it after every pull.
 - **Same engine major version and CPU architecture** as the master. A Postgres 16 master doesn't start in Postgres 17, and amd64 and arm64 data files aren't guaranteed compatible.
 - **Use a recent rclone.** Ubuntu 24.04's package (1.60) is too old for directory markers; run the `rclone/rclone` image, as below.
 
@@ -51,7 +52,7 @@ Every block runs on the VM as root (`sudo bash`). `NAME` is the master's name in
 
 ```bash
 D=/var/lib/containers/lfc-data; NAME=<master-name>
-F="--create-empty-src-dirs --metadata"
+F="--create-empty-src-dirs --metadata --links"
 rclone() { podman run --rm --env-file /var/tmp/lfc-rclone.env -v $D:$D:z docker.io/rclone/rclone:latest "$@"; }
 mkdir -p $D/cache
 [ "$(findmnt -no FSTYPE --target $D)" = xfs ] || echo "STOP: $D is not on XFS"
@@ -61,6 +62,7 @@ mkdir -p $D/cache
 
 ```bash
 podman stop -t 60 <container>
+(cd $D/master && find . \( -type d -o -perm /7000 \) -printf '%m %U %G %P\n' > .lfc-dirs)   # owners and modes object storage drops
 rclone sync $D/master az:masters/$NAME $F --transfers 16 --checkers 16
 ```
 
@@ -68,6 +70,7 @@ rclone sync $D/master az:masters/$NAME $F --transfers 16 --checkers 16
 
 ```bash
 rclone copy az:masters/$NAME $D/cache/$NAME $F --transfers 16 --checkers 16
+(cd $D/cache/$NAME && while read -r m u g p; do chown $u:$g "./$p" && chmod $m "./$p"; done < .lfc-dirs)
 ```
 
 **Clone and run** a test (as many clones at once as the disk has room for their changes):
@@ -77,7 +80,7 @@ cp -a --reflink=always $D/cache/$NAME $D/run-1
 podman run -d --name <container> -v $D/run-1:/var/lib/postgresql/data:Z ... docker.io/library/postgres:16
 ```
 
-Data directory paths for the other engines are in **lfc-source-podman**'s `references/engines.md`.
+Data directory paths, users and stop commands for each engine are in [engine-masters.md](engine-masters.md). To keep the master in object storage and branch it without pulling it whole, see [juicefs-branches.md](juicefs-branches.md).
 
 **Throw it away:**
 
@@ -89,6 +92,7 @@ podman rm -f <container>; rm -rf $D/run-1
 
 ```bash
 podman stop -t 60 <container>; podman rm <container>
+(cd $D/run-1 && find . \( -type d -o -perm /7000 \) -printf '%m %U %G %P\n' > .lfc-dirs)
 rclone sync $D/run-1 az:masters/$NAME-v2 $F --transfers 16 --checkers 16
 mv $D/run-1 $D/cache/$NAME-v2
 ```

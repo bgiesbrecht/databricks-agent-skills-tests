@@ -92,8 +92,16 @@ GRANT REPLICATION SLAVE ON *.* TO '<lfc_user>'@'%';
 -- Grant auxiliary privileges
 GRANT RELOAD, SHOW DATABASES ON *.* TO '<lfc_user>'@'%';
 
+-- CDC (from the public mysql-privileges page): read every user database, and the auth plugin column
+GRANT SELECT ON *.* TO '<lfc_user>'@'%';
+GRANT SELECT (plugin, user) ON mysql.user TO '<lfc_user>'@'%';
+
 FLUSH PRIVILEGES;
 ```
+
+For CDC only, the [public page](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/mysql-privileges) needs just `REPLICATION SLAVE, REPLICATION CLIENT ON *.*`, `SELECT ON *.*`, and `SELECT (plugin, user) ON mysql.user`; the write grants above are for seeding test data as this user.
+
+**MySQL in a container:** pass the binlog settings as server options, for example `docker.io/library/mysql:8.4 --server-id=1 --log-bin=mysql-bin --binlog-format=ROW --binlog-row-image=FULL --binlog-expire-logs-seconds=172800 --gtid-mode=ON --enforce-gtid-consistency=ON` (tested with integrated CDC).
 
 ### Verify LFC User
 
@@ -113,7 +121,7 @@ LFC uses two seed tables for testing ingestion:
 -- Create schema/database (if needed)
 CREATE SCHEMA IF NOT EXISTS <database>;
 
--- Connect as <lfc_user> to <database>
+USE <database>;
 
 -- Create intpk (integer primary key for query-based ingestion)
 CREATE TABLE IF NOT EXISTS intpk (

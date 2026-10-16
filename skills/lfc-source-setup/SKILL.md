@@ -70,7 +70,7 @@ On Linux, the same tools: `curl -LsSf https://astral.sh/uv/install.sh \| sh` for
 
 1. **Ask before creating anything.** Cloud databases bill by the hour, and some (SQL Managed Instance, large VMs) cost a lot or take hours to create. Collect every input in one message, list every resource you'll create (server or instance, shared network pieces, firewall rules, parameter groups, the UC connection) with the expected cost class, and wait for one "yes".
 2. **Check the cloud login first:** `aws sts get-caller-identity`, `az account show`, or `gcloud config list`. Never pick an account, subscription, or project for the user: show what's active and ask.
-3. **Passwords:** generate them into a file (`umask 077; openssl rand -hex 24 > admin.pw`), pass them to the CLI from the file, and never print them or paste them into the conversation. Delete the files once the UC connection exists, and tell the user where any remaining copy is.
+3. **Passwords:** generate them into a file (`umask 077; echo "Lfc1$(openssl rand -hex 12)" > admin.pw`: 28 characters with uppercase, lowercase and digits, starting with a letter, which meets SQL Server's and Azure SQL's policy of three of four character classes and Oracle's 30-byte limit; bare `openssl rand -hex` output is only lowercase and digits, and SQL Server refuses it), pass them to the CLI from the file, and never print them or paste them into the conversation. Delete the files once the UC connection exists, and tell the user where any remaining copy is.
 4. **Reachability:** the database has to accept your laptop (for setup) and the workspace's serverless egress, plus its classic egress if any part of the pipeline runs on classic compute. Use **lfc-source-firewall** to find those IPs and add them. Open only the database port, never `0.0.0.0/0`, and say what you opened.
 5. **Azure resource group:** ask whether the user has a resource group of their own. If not, use the shared test group `forgedb-rg` (check it exists: `az group show -n forgedb-rg`); the user is free to choose a different one. Don't create a resource group without asking. Shared groups can run out of quota: if creation fails with a quota or limit error, ask for another group rather than removing other people's resources.
 6. **Tag everything** you create (owner, purpose `lfc-test`, and a creation date), so it can be found and cleaned up later.
@@ -98,7 +98,7 @@ The Unity Catalog connection follows the pipeline naming rule in **databricks-la
 
 1. **Configure the engine** for the ingestion mode (engine reference above): the Lakeflow Connect user, grants, and CDC / change tracking / replication where needed.
    To fill it with test data, use **lfc-source-datagen**: rows are generated inside the database, so none cross the network. If the customer can't share data but can share statistics, use **lfc-source-statschema** to build a copy with their shape.
-2. **Register the UC connection** from a request body in a private file, then delete it:
+2. **Register the UC connection** from a request body in a private file, then delete it. `host` is the address serverless reaches (a public IP or DNS name, never `127.0.0.1`):
 
    ```bash
    umask 077
@@ -109,7 +109,19 @@ The Unity Catalog connection follows the pipeline naming rule in **databricks-la
    databricks connections create --json @conn.json --profile <PROFILE> && rm conn.json
    ```
 
-3. **Verify** through the connection with a read-only `remote_query` (see Step 0 of `references/3-query-based-connectors.md` in **databricks-lakeflow-connect**).
+   - **A self-signed certificate** (a VM or container install): add `"trustServerCertificate": "true"` to `options`. SQL Server needs it for every query (otherwise `FAILED_JDBC.CONNECTION`); MySQL needs it for CDC (the extractor fails with `TLS_VALIDATION_FAILURE`), although query-based ingestion works without it. Managed services (Azure SQL, RDS) have trusted certificates and don't need it.
+   - **Oracle:** `user` in uppercase (`C##LFC_USER`). The connection has no service name; give the PDB per query (`service_name =>`) and per pipeline (`source_catalog`).
+
+3. **Verify** from serverless with a read-only `remote_query` through the connection. Write it to a file and run `databricks experimental aitools tools query --file ping.sql --profile <PROFILE> -o csv`:
+
+   | Engine | `ping.sql` |
+   |---|---|
+   | MySQL | `SELECT * FROM remote_query('<connection>', query => "SELECT @@version AS v, @@log_bin AS log_bin")` |
+   | PostgreSQL | `SELECT * FROM remote_query('<connection>', database => '<database>', query => "SELECT version() AS v")` |
+   | SQL Server | `SELECT * FROM remote_query('<connection>', database => '<database>', query => "SELECT @@VERSION AS v")` |
+   | Oracle | `SELECT * FROM remote_query('<connection>', service_name => '<PDB, e.g. FREEPDB1>', query => "SELECT banner_full AS v FROM v$version")` |
+
+   `FAILED_JDBC.CONNECTION ... Failed to connect to the database` means the network path (firewall, NSG not attached, wrong port) or, for SQL Server, an untrusted certificate. Check from the laptop first (`nc -z <host> <port>`): if that fails too, it's the firewall. More in Step 0 of `references/3-query-based-connectors.md` in **databricks-lakeflow-connect**.
 4. **Hand off** to **databricks-lakeflow-connect** for the pipeline, its pre-flight checks, and the rows-per-run report.
 
 ## Lifecycle

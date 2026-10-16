@@ -138,7 +138,7 @@ For complex engines or multiple database versions:
 
 1. **Format the data disk as XFS first**, mounted at `/var/lib/containers`: run `scripts/disk-setup.sh` as `references/disk-setup.md` shows right after the VM is created. It finds the disk by its stable path (not `/dev/sdb`, which on Azure is usually the temporary disk), never wipes a disk that already has a filesystem, and checks for XFS with `ftype=1`. Don't install Podman until it prints `OK`.
 2. Install Podman and run the containers with `sudo` (rootful), so images and volumes are stored on the XFS disk: see `references/install-podman.md` for container examples (Oracle, DB2, Informix, MySQL, PostgreSQL, SQL Server).
-3. **Large test databases:** don't populate one per person. Pull a shared master from object storage once, then clone it per test with XFS reflinks (instant), and throw the clone away or save it back: see `references/master-snapshots.md`.
+3. **Large test databases:** don't populate one per person. Pull a shared master from object storage once, then clone it per test with XFS reflinks (instant), and throw the clone away or save it back: see `references/master-snapshots.md`. To leave the master in object storage and branch it in place (no full pull, a small local cache), use JuiceFS: `references/juicefs-branches.md`. Per-engine owners, clean stops and measured times: `references/engine-masters.md`.
 
 ## Configure for Lakeflow Connect
 
@@ -252,7 +252,7 @@ For more details, see `references/lifecycle.md`.
 - **Parent skill**: [lfc-source-setup](../lfc-source-setup/SKILL.md) — engine-specific configuration
 - **VM creation**: [azure-vm.md](references/azure-vm.md), [gcp-vm.md](references/gcp-vm.md)
 - **Database install**: [install-native.md](references/install-native.md), [install-podman.md](references/install-podman.md)
-- **Reusable master database** (object storage + XFS clones): [master-snapshots.md](references/master-snapshots.md)
+- **Reusable master database**: [master-snapshots.md](references/master-snapshots.md) (rclone pull + XFS reflink clones), [juicefs-branches.md](references/juicefs-branches.md) (JuiceFS branches in object storage), [engine-masters.md](references/engine-masters.md) (per engine, with `scripts/branch-test.sh`)
 - **Configuration**: [configure-lfc.md](references/configure-lfc.md)
 - **Lifecycle**: [lifecycle.md](references/lifecycle.md)
 - **Troubleshooting**: [troubleshooting.md](references/troubleshooting.md)

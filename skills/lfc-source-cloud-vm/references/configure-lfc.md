@@ -1,138 +1,36 @@
-# Configure Database for Lakeflow Connect
+# Configure a VM's databases for Lakeflow Connect
 
-> Passwords come from files created with `umask 077; openssl rand -hex 24 > admin.pw` (and `lfc_user.pw`). Where SQL needs the password as a literal, paste it from the file into the client session; don't type it on a shell command line.
+Tested end to end on an Azure VM (Ubuntu 24.04, rootful Podman) in the workspace's region: MySQL 8.4, PostgreSQL 16, SQL Server 2022 and Oracle 23ai Free, each with query-based ingestion, plus integrated CDC on SQL Server and MySQL. The SQL for users, grants, seed tables and CDC is the same on every target and lives in **lfc-source-setup**'s engine references; this page covers what's specific to a VM.
 
-## Create LFC user and schema
+## Start the engines ready for CDC
 
-For engine-specific grants, CDC setup, and replication configuration, see the parent skill **lfc-source-setup** → `references/engine-*.md`.
+Turn on what CDC needs when the container is created, so no restart is needed later. Publish each engine on a port in `30000-30063`, the range the shared NSG opens (**lfc-source-firewall**):
 
-Quick examples for user creation:
+| Engine | Port | Flags beyond **lfc-source-podman** `references/engines.md` |
+|---|---|---|
+| MySQL 8.4 | 30001 | server options: `--server-id=1 --log-bin=mysql-bin --binlog-format=ROW --binlog-row-image=FULL --binlog-expire-logs-seconds=172800 --gtid-mode=ON --enforce-gtid-consistency=ON` |
+| PostgreSQL 16 | 30002 | server options: `-c wal_level=logical -c max_replication_slots=10 -c max_wal_senders=10 -c max_slot_wal_keep_size=4096` |
+| SQL Server 2022 | 30003 | env `MSSQL_AGENT_ENABLED=true` (CDC needs SQL Server Agent) and `MSSQL_PID=Developer` |
+| Oracle 23ai Free | 30004 | `docker.io/gvenzl/oracle-free:23`, the full image (`-slim` drops optional components and wasn't tested with CDC); ARCHIVELOG is turned on afterwards with SQL, see engine-oracle.md |
 
-### MySQL
+Generate every password on the VM into a root-only directory (`install -d -m 700 /root/lfc-src`, then `umask 077` and `echo "Lfc1$(openssl rand -hex 12)"` per file; SQL Server's container exits on a password without three character classes) and pass it with `--env-file`. To register the UC connection from your laptop, copy only the ingestion user's password file back, into a private file, without printing it: `ssh <vm> 'sudo cat /root/lfc-src/<engine>.lfc.pw' > ~/.lfc-test/src/<engine>.lfc.pw`.
 
-```bash
-export MYSQL_PWD="$(cat admin.pw)"
-mysql -h <vm-ip> -u root <<'EOF'
-CREATE USER IF NOT EXISTS 'lfc_user'@'%' IDENTIFIED BY '<password from lfc_user.pw>';
-GRANT ALL PRIVILEGES ON *.* TO 'lfc_user'@'%';
-GRANT REPLICATION CLIENT, REPLICATION SLAVE ON *.* TO 'lfc_user'@'%';
-CREATE DATABASE IF NOT EXISTS lfc_test_db;
-FLUSH PRIVILEGES;
-EOF
-unset MYSQL_PWD
-```
+## Users, seeds and CDC
 
-### PostgreSQL
+Follow the engine references in **lfc-source-setup**. Run each SQL script inside the container (`podman exec -i <container> <client>`). The admin password stays in the container's environment: `MYSQL_PWD=$MYSQL_ROOT_PASSWORD`, `SQLCMDPASSWORD=$MSSQL_SA_PASSWORD`, `sqlplus / as sysdba`.
 
-```bash
-export PGPASSWORD="$(cat admin.pw)"
-psql -h <vm-ip> -U postgres <<'EOF'
-CREATE USER lfc_user WITH PASSWORD '<password from lfc_user.pw>';
-ALTER ROLE lfc_user WITH CREATEDB CREATEROLE;
-CREATE DATABASE lfc_test_db OWNER lfc_user;
-EOF
-unset PGPASSWORD
-```
+| Engine | Ingestion user | CDC setup |
+|---|---|---|
+| MySQL | `lfc_user`, grants in engine-mysql.md (CDC adds `SELECT ON *.*` and `SELECT (plugin, user) ON mysql.user`) | the binlog flags above |
+| PostgreSQL | `lfc_user` with `REPLICATION` | publication and slot per pipeline (engine-postgres.md); gateway CDC must be enabled on the workspace |
+| SQL Server | login `lfc_user`, plus a user in the database **and in `master`** | the Lakeflow utility script (engine-sqlserver.md): change tracking for tables with a primary key, CDC for the rest |
+| Oracle | `C##LFC_USER`, created by `DBX_ORACLE_SETUP_UTIL` | ARCHIVELOG, supplemental logging and the setup package (engine-oracle.md) |
 
-### SQL Server
+## Register and check the connections
 
-```bash
-export SQLCMDPASSWORD="$(cat admin.pw)"
-sqlcmd -S <vm-ip> -U sa <<'EOF'
-CREATE LOGIN lfc_user WITH PASSWORD = '<password from lfc_user.pw>';
-CREATE USER lfc_user FOR LOGIN lfc_user;
-GRANT CONTROL ON SERVER::lfc_test_db TO lfc_user;
-GO
-EOF
-unset SQLCMDPASSWORD
-```
+Register each connection with the **VM's public IP** and the published port (**lfc-source-setup**, step 2). SQL Server and MySQL use self-signed certificates in these images, so add `"trustServerCertificate": "true"`. SQL Server needs it for every query, and MySQL for CDC: query-based ingestion from MySQL works without it, but the CDC extractor fails with `TLS_VALIDATION_FAILURE`. Then check each connection from serverless with the `remote_query` in step 3.
 
-## Enable replication mode
-
-### MySQL
-
-Edit `/etc/mysql/mysql.conf.d/mysqld.cnf`:
-
-```
-server-id = 1
-log_bin = /var/log/mysql/mysql-bin.log
-binlog_format = ROW
-binlog_row_image = FULL
-```
-
-Restart:
-
-```bash
-sudo systemctl restart mysql
-```
-
-### PostgreSQL
-
-Edit `/etc/postgresql/*/main/postgresql.conf`:
-
-```
-wal_level = logical
-max_wal_senders = 4
-max_replication_slots = 2
-```
-
-Restart:
-
-```bash
-sudo systemctl restart postgresql
-```
-
-### SQL Server
-
-Enable change tracking or CDC (see parent skill `references/engine-sqlserver.md`):
-
-```bash
-export SQLCMDPASSWORD="$(cat admin.pw)"
-sqlcmd -S <vm-ip> -U sa <<'EOF'
-USE master;
-GO
-EXEC sp_replicationdboption @dbname = N'lfc_test_db', @optname = N'publish', @value = N'true';
-GO
-EOF
-unset SQLCMDPASSWORD
-```
-
-### Oracle (Podman)
-
-Inside container:
-
-```bash
-sudo podman exec <container> sqlplus -v
-
-# Or via SQL:
-# ALTER SYSTEM SET db_recovery_file_dest_size=50G scope=both;
-# ALTER SYSTEM SET db_recovery_file_dest='/opt/oracle/oradata/FRA' scope=both;
-# ALTER DATABASE ARCHIVELOG;
-# ALTER DATABASE ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS;
-```
-
-## Verify replication settings
-
-### MySQL
-
-```bash
-export MYSQL_PWD="$(cat lfc_user.pw)"
-mysql -h <vm-ip> -u lfc_user lfc_test_db -e "SHOW MASTER STATUS;"
-unset MYSQL_PWD
-```
-
-### PostgreSQL
-
-```bash
-export PGPASSWORD="$(cat lfc_user.pw)"
-psql -h <vm-ip> -U lfc_user -d lfc_test_db -c "SELECT version();"
-unset PGPASSWORD
-```
-
-### SQL Server
-
-```bash
-export SQLCMDPASSWORD="$(cat lfc_user.pw)"
-sqlcmd -S <vm-ip> -U lfc_user -d lfc_test_db -Q "SELECT @@VERSION"
-unset SQLCMDPASSWORD
-```
+If serverless can't connect (`FAILED_JDBC.CONNECTION`):
+1. `nc -z <vm-ip> <port>` from the laptop. If that fails too, the NSG isn't letting traffic in: check the NIC's NSG is the shared one (`az network nic show ... networkSecurityGroup.id`).
+2. `sudo ss -ltn | grep 3000` on the VM shows the published ports.
+3. For SQL Server, check `trustServerCertificate`.

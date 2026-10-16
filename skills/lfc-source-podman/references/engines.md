@@ -6,7 +6,7 @@ This file contains detailed startup commands, environment variables, readiness t
 >
 > ```bash
 > umask 077
-> openssl rand -hex 24 > mysql.pw                                  # for SQL clients (MYSQL_PWD / PGPASSWORD / SQLCMDPASSWORD)
+> echo "Lfc1$(openssl rand -hex 12)" > mysql.pw                                  # for SQL clients (MYSQL_PWD / PGPASSWORD / SQLCMDPASSWORD)
 > printf 'MYSQL_ROOT_PASSWORD=%s\n' "$(cat mysql.pw)" > mysql.env   # for podman run --env-file (printf is a shell builtin)
 > ```
 >
@@ -289,3 +289,61 @@ podman run -d \
 ```
 
 **Readiness:** ~1 min
+
+## CockroachDB (25.x)
+
+> Verified on an Azure VM (amd64, Podman 4.9) with `cockroachdb/cockroach:latest`. Lakeflow Connect has no CockroachDB connector; use it as a Postgres-wire test target.
+
+**Environment:** none. `--insecure` has no passwords; keep the port unpublished, or bound to 127.0.0.1, and use `podman exec`.
+
+**Volume path:** `/cockroach/cockroach-data` (runs as root)
+
+**CPU/Memory:** 2 CPUs, 4 GiB (give `--cache` and `--max-sql-memory` about a quarter of the memory each)
+
+**Startup:**
+
+```bash
+podman run -d \
+  --name jane-doe-crdb-25-dockerhub-host-local-812 \
+  --cpus 2 --memory 4g \
+  -p 127.0.0.1:30009:26257 \
+  -v jane-doe-crdb-25-dockerhub-host-local-812-data:/cockroach/cockroach-data \
+  docker.io/cockroachdb/cockroach:latest start-single-node --insecure --cache=1GiB --max-sql-memory=1GiB
+podman exec -i jane-doe-crdb-25-dockerhub-host-local-812 ./cockroach sql --insecure <<< "SELECT 1"
+```
+
+**Readiness:** about 3 s.
+
+**Stop:** `podman exec <name> ./cockroach node drain --self --insecure --shutdown`, then `podman stop`. A plain SIGTERM after a large load can take over 120 s and end in SIGKILL.
+
+**Loading:** insert in batches (for example 250,000 rows per `INSERT ... SELECT ... FROM generate_series(...)`); one huge transaction is slow.
+
+## YugabyteDB (2.25, 2025.x)
+
+> Verified on an Azure VM (amd64, Podman 4.9) with `yugabytedb/yugabyte:latest`. Postgres-compatible (YSQL), so the Postgres datagen scripts mostly apply.
+
+**Environment:** none. Without `--secure`, user `yugabyte` has no password; keep the port unpublished, or bound to 127.0.0.1.
+
+**Volume path:** whatever `--base_dir` points at, for example `/yb`. The image runs as **uid 10001** (`yugabyte`, group `users` 100), so a host directory must be owned by 10001.
+
+**CPU/Memory:** 2 CPUs, 4 GiB
+
+**Startup:**
+
+```bash
+mkdir -p yb-data && sudo chown 10001:100 yb-data       # or a named volume
+podman run -d \
+  --name jane-doe-yb-2025-dockerhub-host-local-812 \
+  --cpus 2 --memory 4g \
+  -p 127.0.0.1:30010:5433 \
+  -v $PWD/yb-data:/yb \
+  docker.io/yugabytedb/yugabyte:latest \
+  bin/yugabyted start --base_dir=/yb --advertise_address=127.0.0.1 --background=false
+podman exec -i jane-doe-yb-2025-dockerhub-host-local-812 bin/ysqlsh -h 127.0.0.1 -U yugabyte -c "SELECT 1"
+```
+
+- `--background=false` keeps yugabyted in the foreground; without it the container exits.
+- `--advertise_address=127.0.0.1` is stored in the data directory. Pin it, so a copy of the directory still starts in another container with a different IP.
+- The data directory holds **symlinks** (`data/pg_data`, the log directories); anything that copies it must keep them.
+
+**Readiness:** about 15 s first start, about 6 s restart.

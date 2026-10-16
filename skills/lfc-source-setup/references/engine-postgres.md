@@ -70,7 +70,11 @@ Server parameters:
 ### Create or Update LFC Role
 
 ```sql
--- Connect as superuser (postgres) or with CREATEUSER privilege
+-- Connect as superuser (postgres) or with CREATEUSER privilege, in psql
+
+-- The database, if it doesn't exist yet; then connect to it (the schema grants apply to the current database)
+SELECT 'CREATE DATABASE "<database>"' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '<database>')\gexec
+\c <database>
 
 -- Create LFC user (idempotent)
 DO $$ BEGIN
@@ -129,31 +133,37 @@ SELECT has_database_privilege('<lfc_user>', '<database>', 'CONNECT');
 
 ## Seed Tables for Demo/Testing
 
-LFC uses two seed tables for testing ingestion (run as <lfc_user>):
+Two seed tables that work for both query-based ingestion and CDC (tested end to end, Postgres 16). `dt` is the query-based cursor: `NOT NULL`, indexed, and bumped on every update by a trigger (`DEFAULT` alone only covers inserts, and updates would never arrive). Create them as the admin, then grant:
 
 ```sql
--- Connect as <lfc_user> to <database>
+-- Connect as the admin to <database>
 
--- intpk: integer primary key for query-based ingestion
+-- intpk: integer primary key
 CREATE TABLE IF NOT EXISTS public.intpk (
   pk  SERIAL PRIMARY KEY,
-  dt  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  dt  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   ops VARCHAR(255) DEFAULT 'insert'
 );
-CREATE INDEX IF NOT EXISTS idx_dt ON public.intpk (dt);
+CREATE INDEX IF NOT EXISTS idx_intpk_dt ON public.intpk (dt);
 
--- dtix: no primary key, REPLICA IDENTITY FULL for CDC testing
+-- dtix: no primary key (query-based: APPEND_ONLY; CDC: needs REPLICA IDENTITY FULL)
 CREATE TABLE IF NOT EXISTS public.dtix (
   pk  BIGINT,
-  dt  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  dt  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   ops VARCHAR(255) DEFAULT 'insert'
 );
-CREATE INDEX IF NOT EXISTS idx_dt ON public.dtix (dt);
+CREATE INDEX IF NOT EXISTS idx_dtix_dt ON public.dtix (dt);
+ALTER TABLE public.dtix REPLICA IDENTITY FULL;
 
--- Seed 10 rows
-INSERT INTO public.intpk (dt) VALUES (NOW()), (NOW()), (NOW()), (NOW()), (NOW()),
-  (NOW()), (NOW()), (NOW()), (NOW()), (NOW());
-INSERT INTO public.dtix (pk, dt) SELECT i, NOW() FROM generate_series(1, 10) i;
+-- Bump the cursor on every update
+CREATE OR REPLACE FUNCTION public.set_dt() RETURNS trigger AS 'BEGIN NEW.dt := now(); RETURN NEW; END' LANGUAGE plpgsql;
+CREATE OR REPLACE TRIGGER intpk_set_dt BEFORE UPDATE ON public.intpk FOR EACH ROW EXECUTE FUNCTION public.set_dt();
+CREATE OR REPLACE TRIGGER dtix_set_dt BEFORE UPDATE ON public.dtix FOR EACH ROW EXECUTE FUNCTION public.set_dt();
+
+-- Seed 10 rows each
+INSERT INTO public.intpk (dt) SELECT now() FROM generate_series(1, 10);
+INSERT INTO public.dtix (pk, dt) SELECT i, now() FROM generate_series(1, 10) i;
+GRANT SELECT ON public.intpk, public.dtix TO <lfc_user>;
 ```
 
 ## CDC Requirements (Logical Replication)

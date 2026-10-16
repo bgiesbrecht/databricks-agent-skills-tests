@@ -7,8 +7,8 @@ Passwords must be generated securely and never passed on the command line in a w
 ```bash
 # Generate passwords securely with restricted permissions
 umask 077
-openssl rand -hex 24 > admin.pw
-openssl rand -hex 24 > lfc_user.pw
+echo "Lfc1$(openssl rand -hex 12)" > admin.pw
+echo "Lfc1$(openssl rand -hex 12)" > lfc_user.pw
 
 # Verify file permissions (should be 600)
 ls -la admin.pw lfc_user.pw

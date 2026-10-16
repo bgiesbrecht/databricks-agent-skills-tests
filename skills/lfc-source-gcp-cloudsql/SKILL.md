@@ -108,8 +108,8 @@ Quick example:
 
 ```bash
 umask 077
-openssl rand -hex 24 > admin.pw
-openssl rand -hex 24 > lfc_user.pw
+echo "Lfc1$(openssl rand -hex 12)" > admin.pw
+echo "Lfc1$(openssl rand -hex 12)" > lfc_user.pw
 
 gcloud sql users create root \
   --instance="${INSTANCE_NAME}" \
