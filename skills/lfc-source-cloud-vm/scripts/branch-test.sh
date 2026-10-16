@@ -7,6 +7,8 @@
 #   steps:   init    build a 5M-row master on local XFS ($D/m-<engine>) and stop it
 #            rclone  upload to Blob, pull to a cache, reflink-clone, start, check, write, measure a save, discard
 #            jfs     copy into JuiceFS, juicefs clone, start, check, write, cold read, discard
+#            reflink pull the master from Blob if not cached (read-only), reflink-clone, write on the clone, then show the
+#                    master is byte-for-byte unchanged and a second clone has none of the write
 set -uo pipefail
 E=$1; D=/var/lib/containers/lfc-data; J=/mnt/jfs; JC=/var/lib/containers/jfs/cache; N=5000000
 F="--create-empty-src-dirs --metadata --links --transfers 16 --checkers 16"
@@ -116,4 +118,21 @@ jfs)
   podman rm $C > /dev/null; echo "  discard:"; t rm -rf $J/clones/$E
   echo "  a new clone has none of the discarded write:"; juicefs clone -p $J/masters/$E $J/clones/$E-2 > /dev/null
   run $C $J/clones/$E-2 && check $C "$N|0"; stop $C; podman rm $C > /dev/null; rm -rf $J/clones/$E-2 ;;
+reflink)
+  mkdir -p $D/cache
+  if [ ! -d $D/cache/$E ]; then echo "  pull from Blob:"; t rclone copy az:masters/$E $D/cache/$E $F -q || exit 1
+    if [ -f $D/cache/$E/.lfc-dirs ]; then dirs_restore $D/cache/$E
+    else chown -R $(stat -c %u:%g "$(find $D/cache/$E -type f ! -name .lfc-dirs | head -1)") $D/cache/$E; fi; fi   # older masters: no .lfc-dirs
+  sum() { (cd $1 && find . -type f ! -name .lfc-dirs -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16); }
+  before=$(sum $D/cache/$E); echo "  master checksum before: $before ($(du -sh $D/cache/$E | cut -f1))"
+  used0=$(df --output=used -B1M $D | tail -1)
+  rm -rf $D/run-$E; echo "  reflink clone:"; t cp -a --reflink=always $D/cache/$E $D/run-$E
+  echo "  disk used by the clone: $(( $(df --output=used -B1M $D | tail -1) - used0 )) MB"
+  t run $C $D/run-$E || exit 1; check $C "$N|0"
+  { echo "$WRITE" | sql $C > /tmp/w.out 2>&1 || { echo "  write failed:"; tail -3 /tmp/w.out; }; }; check $C "$N|100000"
+  stop $C; podman rm $C > /dev/null
+  after=$(sum $D/cache/$E); [ "$after" = "$before" ] && echo "  master unchanged: $after" || echo "  MASTER CHANGED: $after"
+  rm -rf $D/run-$E-2; cp -a --reflink=always $D/cache/$E $D/run-$E-2
+  echo "  a second clone has none of the write:"; run $C $D/run-$E-2 && check $C "$N|0"; stop $C; podman rm $C > /dev/null
+  rm -rf $D/run-$E $D/run-$E-2 ;;
 esac

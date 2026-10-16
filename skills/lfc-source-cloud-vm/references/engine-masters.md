@@ -38,6 +38,13 @@ Azure Standard_D4s_v5 (4 vCPU, 16 GB), Ubuntu 24.04, Podman 4.9, 32 GB Premium S
 
 Every clone returned the master's rows. After the update it returned the changed rows. A second branch made after the first was discarded had none of the change.
 
+**XFS reflink isolation** (`branch-test.sh <engine> reflink`): each master is pulled from Blob onto a fresh data disk, checksummed (SHA-256 of every file), reflink-cloned, and the clone gets the 100,000-row update. For Db2, CockroachDB, YugabyteDB, SQL Server and Oracle alike:
+- the clone added 0 MB to the disk;
+- the master's checksum was identical after the write;
+- a second clone had none of the write.
+
+JuiceFS branches were checked the same way, minus the checksum (a second `juicefs clone` has none of the write).
+
 Notes:
 
 - **Branch time.** A reflink copy grows with the number of extents: a few seconds for a heavily written 1 GB data file. `juicefs clone` is a metadata copy (0.1–0.3 s).
