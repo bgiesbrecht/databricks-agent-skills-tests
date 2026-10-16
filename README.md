@@ -142,3 +142,15 @@ When editing in a sandbox (Omnigent, Solution Builder) with no git push access, 
 uploads and downloads individual files through a Databricks workspace (`push` / `pull` for skill
 files, `push-tests` / `pull-tests` for this repo). See "Exporting skill changes from a sandbox" in
 the skills repo's CLAUDE.md.
+
+## Test results
+
+Every run is recorded in [`results/`](results/): `runs.jsonl` holds one record per test cell (what, where, outcome, counts, the exact error, both repos' commits), and `results/<date>-<topic>.md` is the write-up. See what's been tested before running anything:
+
+```bash
+uv run skills/lfc-test-results/scripts/recall.py                    # latest result per test x engine x host
+uv run skills/lfc-test-results/scripts/recall.py --engine oracle --all
+```
+
+Record new results with `skills/lfc-test-results/scripts/record.py`, which refuses anything that looks internal (this repo is public). The [lfc-test-results](skills/lfc-test-results/SKILL.md) skill has the format and rules.
+

@@ -23,6 +23,7 @@ Use it for testing and demos. For a customer's production database, the customer
 | Cloud VM (Azure, GCP) | **lfc-source-cloud-vm** | MySQL, PostgreSQL, SQL Server (native); more via Podman on the VM | Full control of versions and CDC settings |
 | Test data for any of the above | **lfc-source-datagen** | PostgreSQL, MySQL (SQL Server, Oracle planned) | Generated inside the database from `generate_series` or a seed table; resumable; fast min/max across 10,000+ tables |
 | A copy shaped like a customer's database, from their statistics only | **lfc-source-statschema** | PostgreSQL, MySQL, either direction | Collects catalog statistics (no table scans, data values only if allowed), builds a scaled-down schema, fills it with lfc-source-datagen, and checks its statistics |
+| What's been tested, where, and how it went | **lfc-test-results** | — | `results/runs.jsonl` and dated write-ups in this repo; record every run |
 | Firewall rules for any of the above | **lfc-source-firewall** | — | Laptop IP + workspace serverless egress (+ classic egress when known) |
 | Local Podman (Lima on macOS) | **lfc-source-podman** | MySQL, MariaDB, PostgreSQL, SQL Server (incl. Availability Groups), Oracle, Db2, Informix, MongoDB | **Local testing only:** Databricks serverless can't reach a laptop container, and an SSH tunnel doesn't change that. To ingest from Databricks, use a managed service or a cloud VM |
 
@@ -123,6 +124,7 @@ The Unity Catalog connection follows the pipeline naming rule in **databricks-la
 
    `FAILED_JDBC.CONNECTION ... Failed to connect to the database` means the network path (firewall, NSG not attached, wrong port) or, for SQL Server, an untrusted certificate. Check from the laptop first (`nc -z <host> <port>`): if that fails too, it's the firewall. More in Step 0 of `references/3-query-based-connectors.md` in **databricks-lakeflow-connect**.
 4. **Hand off** to **databricks-lakeflow-connect** for the pipeline, its pre-flight checks, and the rows-per-run report.
+5. **Record the results** of every test you ran (passes, failures, and cells the workspace refused) with **lfc-test-results**, and check it first for what's already been tested.
 
 ## Lifecycle
 
