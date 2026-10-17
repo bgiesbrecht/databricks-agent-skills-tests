@@ -40,8 +40,15 @@ LEAKS = [
     (r"Lfc1[0-9a-f]{12,}", "a generated password"),
 ]
 
+VERSION = r"\d+\.\d+\.\d+\.\d+(?![\d.])"   # 11.5.8.0: a four-part engine version, not an address
 def leaks(rec):
-    text = json.dumps(rec)
+    # subject.version and subject.image, and a version written after "v" or as an image tag (":11.5.8.0") anywhere,
+    # hold four-part versions such as Db2's, which the address pattern would flag; everything else is checked as is
+    r = json.loads(json.dumps(rec))
+    for k in ("version", "image"):
+        if isinstance(r.get("subject"), dict) and isinstance(r["subject"].get(k), str):
+            r["subject"][k] = re.sub(r"(?<![\d.])" + VERSION, "<v>", r["subject"][k])
+    text = re.sub(r"(?<=[v:])" + VERSION, "<v>", json.dumps(r))
     return [why for pat, why in LEAKS if re.search(pat, text)]
 
 def problems(rec):

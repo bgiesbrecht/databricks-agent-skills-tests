@@ -52,7 +52,7 @@ To keep a native database's files off the OS disk, use the same block with `MNT`
 Tested: the old disk detached and kept, a blank one attached at the same LUN, and the masters brought back from object storage (see [juicefs-branches.md](juicefs-branches.md) and [master-snapshots.md](master-snapshots.md)).
 
 1. On the VM: stop every container, `systemctl stop podman.socket podman.service`, save what's only on the disk (JuiceFS metadata, see juicefs-branches.md), then `umount /var/lib/containers`.
-2. Create the new disk: `az disk create -g <rg> -n <name> -l <region> --size-gb <gb> --sku Premium_LRS --tags purpose=lfc-test`.
+2. Create the new disk: `az disk create -g <rg> -n <name> -l <region> --zone <the VM's zone> --sku PremiumV2_LRS --size-gb <gb> --disk-iops-read-write 3000 --disk-mbps-read-write 125 --tags purpose=lfc-test` (on a VM without a zone: `--sku Premium_LRS`, and mind its size's IOPS, [disk-io-limits.md](disk-io-limits.md)). Attach a v2 disk with caching `None`.
 3. Detach the old disk, then attach the new one at the same LUN, so `/dev/disk/azure/scsi1/lun0` still points at it. If `az vm disk detach` or `attach` fails with `InvalidApiVersionParameter` (an az CLI bug seen in 2026-10), patch the VM with `az rest --method patch --url "https://management.azure.com<vm-id>?api-version=2025-04-01"`: first a body with `"dataDisks": []`, then one with `{"lun": 0, "createOption": "Attach", "managedDisk": {"id": "<disk-id>"}}`. Wait until `az disk show ... --query diskState` says `Unattached` before attaching, or the attach fails with `AttachDiskWhileBeingDetached`.
 4. Run `disk-setup.sh` again. It comments out the old disk's `/etc/fstab` line, which `mount` would otherwise pick first and fail on, adds the new one, and mounts it.
 

@@ -35,7 +35,7 @@ The workflow is manual so you control every step and understand the configuratio
 |-------|---------|---------|-------|
 | **Cloud** | `azure` or `gcp` | — | Determines VM API and firewall |
 | **Region** | Azure: `eastus`, `centralus`, `westus`; GCP: `us-central1`, `us-east1` | `eastus` (Azure) / `us-central1` (GCP) | Close to Databricks workspace |
-| **VM size** | Azure: `Standard_B4ms`, `Standard_D2s_v3`; GCP: `n1-standard-4`, `e2-standard-4` | `Standard_B4ms` / `n1-standard-4` | 4 vCPU, 8–16 GB recommended |
+| **VM size** | Azure: `Standard_D4s_v5`, `Standard_B4ms`; GCP: `n1-standard-4`, `e2-standard-4` | `Standard_D4s_v5` (in a zone, for a Premium SSD v2 data disk) / `n1-standard-4` | 4 vCPU, 8–16 GB recommended |
 | **Installation model** | `native` or `podman` | — | Based on engine availability |
 | **Engine & version** | MySQL 8.0, PostgreSQL 16, SQL Server 2022, Oracle 23ai, etc. | — | Determines install script |
 
@@ -79,8 +79,9 @@ Quick command:
 SUBSCRIPTION="<sub-id>"
 RESOURCE_GROUP="forgedb-rg"     # or the user's own group: they are free to choose
 LOCATION="eastus"
+ZONE="1"                        # Premium SSD v2 attaches only to a VM in an availability zone
 VM_NAME="jane-doe-mysql-vm-eastus-$(date +%s)"
-VM_SIZE="Standard_B4ms"
+VM_SIZE="Standard_D4s_v5"
 
 az account set --subscription "$SUBSCRIPTION"
 az group create --name "$RESOURCE_GROUP" --location "$LOCATION"
@@ -90,10 +91,18 @@ az vm create \
   --name "$VM_NAME" \
   --image Ubuntu2204 \
   --size "$VM_SIZE" \
+  --zone "$ZONE" \
   --admin-username azureuser \
-  --ssh-key-values ~/.ssh/lfc_test_rsa.pub \
-  --data-disk-sizes-gb 128        # data disk at LUN 0: /dev/disk/azure/scsi1/lun0
+  --ssh-key-values ~/.ssh/lfc_test_rsa.pub
+
+# the data disk: Premium SSD v2, 3,000 IOPS and 125 MB/s included at any size (a 128 GiB Premium SSD v1 is a 500-IOPS P10)
+az disk create --resource-group "$RESOURCE_GROUP" --name "${VM_NAME}-data" --location "$LOCATION" --zone "$ZONE" \
+  --sku PremiumV2_LRS --size-gb 128 --disk-iops-read-write 3000 --disk-mbps-read-write 125
+az vm disk attach --resource-group "$RESOURCE_GROUP" --vm-name "$VM_NAME" --name "${VM_NAME}-data" \
+  --lun 0 --caching None          # LUN 0: /dev/disk/azure/scsi1/lun0; v2 takes no host caching
 ```
+
+**The data disk is Premium SSD v2** by default: its IOPS and throughput are set apart from its size, so a 128 GiB disk gets the 3,000 IOPS / 125 MB/s an AWS gp3 has, with no burst credits to mislead a short test. Premium SSD v1 at the same size (a P10) has 500 IOPS: the TPC SF 1 builds took up to 5.8 times as long on it ([disk-io-limits.md](references/disk-io-limits.md)). Raise IOPS or MB/s later without detaching (`az disk update --disk-iops-read-write 6000`). If `az vm disk attach` fails with `InvalidApiVersionParameter`, attach through `az rest` as [disk-setup.md](references/disk-setup.md) shows. A VM created without a zone can't take a v2 disk; it keeps Premium SSD v1, and a P30 (1 TiB, 5,000 IOPS) is the v1 size that doesn't stall a load.
 
 ### AWS
 

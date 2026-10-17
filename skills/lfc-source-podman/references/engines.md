@@ -217,42 +217,52 @@ podman exec jane-doe-mongo-8-dockerhub-host-local-812 \
 
 ## Db2 (11.5, 12.1)
 
-> **Unverified:** Db2 x86_64-only; on macOS Apple Silicon, runs under Rosetta2. Timing and stability TBD on Apple Silicon.
+> **Tested on macOS** (Apple Silicon, Lima, Rosetta): `docker.io/ibmcom/db2:11.5.8.0` as x86_64, database created and queried, port reachable from the Mac, data kept across a VM restart. It needs **`--privileged`** and **Rosetta registered with the preserve-argv0 flag** (SKILL.md, macOS), or setup fails with `db2: command not found`.
+
+**Image:** `icr.io/db2_community/db2:<version>` (current, 11.5.9 and 12.1) or `docker.io/ibmcom/db2:11.5.8.0` (the last on Docker Hub, 2022). If `icr.io` times out (seen behind a corporate VPN: `pinging container registry icr.io: ... i/o timeout`), use the Docker Hub image, or pull on another network and `podman save` / `podman load` it.
 
 **Environment:**
-- `DB2INST1_PASSWORD` — instance user password (required; set securely via password file)
-- `LICENSE=accept` — accept license (required)
+- `DB2INST1_PASSWORD`: the instance user's password (in `db2.env`)
+- `DBNAME`: a database to create at first start (otherwise there is none)
+- `LICENSE=accept` (required)
 
-**Volume path:** `/database`
+**Volume path:** `/database` (instance home, data, and config; setgid directories and setuid programs, so keep it a named volume)
 
 **CPU/Memory:** 2 CPUs, 4 GiB minimum
 
 **Startup:**
 
 ```bash
-# db2.pw and db2.env: as in the note at the top (a generated password, mode 600)
-
-# Run container with password from file
+# db2.pw and db2.env (with DB2INST1_PASSWORD and DBNAME=lfcdb): as in the note at the top
 podman run -d \
-  --name jane-doe-db2-11.5-icr-host-local-812 \
+  --name jane-doe-db2-11.5-dockerhub-host-local-812 \
+  --privileged --platform linux/amd64 \
   --cpus 2 --memory 4g \
   -p 30007:50000 \
   --env-file db2.env \
   -e LICENSE=accept \
-  -v jane-doe-db2-11.5-icr-host-local-812-data:/database \
-  icr.io/db2_community/db2:11.5.9.0
+  -v jane-doe-db2-11.5-dockerhub-host-local-812-data:/database \
+  docker.io/ibmcom/db2:11.5.8.0
 ```
 
-**Readiness:** ~15 min first start (slow initialization); ~60 s restart
+**Readiness:** `(*) Setup has completed.` in the log: 295 s at first start (Lima, Rosetta, 2 CPUs), and it answers 231 s after a restart (setup rechecks everything). Watch the log for `Failed to`: setup keeps going after an error and the container stays up.
+
+**Query** (every `db2` call in one CLP session, from a file: separate `db2` commands don't share a connection):
+
+```bash
+podman exec <name> bash -c 'su - db2inst1 -c "printf \"CONNECT TO lfcdb;\nVALUES CURRENT SERVER;\n\" > /tmp/q.sql; db2 -x -tf /tmp/q.sql"'
+```
 
 ## Informix (14.10)
 
-> **Unverified:** Informix x86_64-only; on macOS Apple Silicon, runs under Rosetta2. Timing TBD.
+> **Tested on macOS** (Apple Silicon, Lima, Rosetta): `docker.io/ibmcom/informix-developer-database:14.10.FC7W1DE` as x86_64: On-Line in 40 s at first start and in 22 s when recreated on its volumes, queried with `dbaccess`, port reachable from the Mac.
+
+**Image:** `icr.io/informix/informix-developer-database:latest` (current) or `docker.io/ibmcom/informix-developer-database:14.10.FC7W1DE` (the last on Docker Hub, 2022); `icr.io` as for Db2.
 
 **Environment:**
-- `LICENSE=accept` — accept license (required)
+- `LICENSE=accept` (required)
 
-**Volume path:** `/opt/informix/data`
+**Volume paths:** **`/opt/ibm/data`** (the dbspaces: `rootdbs.000` and the rest) and `/opt/ibm/config`, the image's declared volumes, mounted with **`:U`** (a new named volume is owned by root and the server runs as `informix`: without it, `init_status.log: Permission denied` and the server stays offline). Not `/opt/informix/data`: nothing is written there, so with only that mounted the data sits in anonymous volumes and is gone with the container. Tested: a table written, the container removed and run again on the same volumes, On-Line in 22 s with the row there.
 
 **CPU/Memory:** 2 CPUs, 2 GiB minimum
 
@@ -260,15 +270,19 @@ podman run -d \
 
 ```bash
 podman run -d \
-  --name jane-doe-ifx-14.10-icr-host-local-812 \
+  --name jane-doe-ifx-14.10-dockerhub-host-local-812 \
+  --platform linux/amd64 \
   --cpus 2 --memory 2g \
   -p 30008:9088 \
   -e LICENSE=accept \
-  -v jane-doe-ifx-14.10-icr-host-local-812-data:/opt/informix/data \
-  icr.io/informix/informix-developer-database:latest
+  -v jane-doe-ifx-14.10-dockerhub-host-local-812-data:/opt/ibm/data:U \
+  -v jane-doe-ifx-14.10-dockerhub-host-local-812-config:/opt/ibm/config:U \
+  docker.io/ibmcom/informix-developer-database:14.10.FC7W1DE
 ```
 
-**Readiness:** ~1 min
+**Readiness:** `On-Line Mode` in the log, or the container's health check (`podman ps` shows `healthy`).
+
+**Query:** `podman exec <name> bash -lc 'echo "select dbinfo(\"version\",\"full\") from sysmaster:sysdual;" | dbaccess sysmaster - 2>&1'`. `dbaccess` writes its messages (`1 row(s) retrieved.`) to stderr: a readiness check that drops stderr never sees them.
 
 ## CockroachDB (25.x)
 

@@ -6,8 +6,9 @@
 SUBSCRIPTION="<your-subscription-id>"
 RESOURCE_GROUP="forgedb-rg"     # or the user's own group: they are free to choose
 LOCATION="eastus"
+ZONE="1"                             # Premium SSD v2 needs a zonal VM
 VM_NAME="jane-doe-mysql-vm-eastus-1779207800"
-VM_SIZE="Standard_B4ms"              # 4 vCPU, 16 GB
+VM_SIZE="Standard_D4s_v5"            # 4 vCPU, 16 GB
 SSH_KEY_PATH="$HOME/.ssh/lfc_test_rsa.pub"
 OS_DISK_GB="64"
 DATA_DISK_GB="128"
@@ -32,17 +33,25 @@ az vm create \
   --admin-username azureuser \
   --ssh-key-values "$SSH_KEY_PATH" \
   --public-ip-sku Standard \
+  --zone "$ZONE" \
   --output table
 
-# Attach data disk
+# Data disk: Premium SSD v2 (3,000 IOPS and 125 MB/s included, set apart from size), in the VM's zone
+az disk create \
+  --resource-group "$RESOURCE_GROUP" \
+  --name "${VM_NAME}-data" \
+  --location "$LOCATION" \
+  --zone "$ZONE" \
+  --sku PremiumV2_LRS \
+  --size-gb "$DATA_DISK_GB" \
+  --disk-iops-read-write 3000 \
+  --disk-mbps-read-write 125
 az vm disk attach \
   --resource-group "$RESOURCE_GROUP" \
   --vm-name "$VM_NAME" \
   --name "${VM_NAME}-data" \
-  --new \
-  --size-gb "$DATA_DISK_GB" \
-  --sku Premium_LRS \
-  --lun 0
+  --lun 0 \
+  --caching None
 
 # Get public IP
 eval "$(az vm list-ip-addresses \
@@ -53,9 +62,9 @@ eval "$(az vm list-ip-addresses \
 echo "VM ready at: $AZURE_PUBLIC_IP"
 ```
 
-**`Premium_LRS` at 128 GiB is a P10: 500 IOPS.** Enough to hold a database, too slow to load one: a MySQL TPC-E SF 1 fill took 3.3 times as long as on AWS's default gp3 (3,000 IOPS). For loads and CDC tests, use a Premium SSD v2 disk (`--sku PremiumV2_LRS`, 3,000 IOPS and 125 MB/s included at any size; it needs a VM in an availability zone, `--zone 1`) or a P30 (1 TiB, 5,000 IOPS). See [disk-io-limits.md](disk-io-limits.md) (not yet tested here).
+**Why Premium SSD v2:** Premium SSD v1 (`Premium_LRS`) ties IOPS to size, and at 128 GiB it's a P10 with 500 IOPS and burst credits that make short tests look fast. The TPC SF 1 masters took up to 5.8 times as long to build on one as on a laptop, and MySQL's TPC-E 3.3 times as long as on AWS's default gp3 (3,000 IOPS). v2 gives the same 3,000 IOPS at any size, no bursting, and lets you raise IOPS or MB/s online (`az disk update --disk-iops-read-write 6000 --disk-mbps-read-write 250`). Its limits: the VM must be in a zone (centralus offers v2 and `Standard_D4s_v5` in zones 1 to 3), host caching must be `None`, and it can't be the OS disk. Measurements in [disk-io-limits.md](disk-io-limits.md). Not yet built end to end on v2: run `fio` (disk-io-limits.md) on the first VM and record it.
 
-Next, for Podman: format the data disk (LUN 0, `/dev/disk/azure/scsi1/lun0`) as XFS with the block in [disk-setup.md](disk-setup.md), before installing anything. Don't use `/dev/sdb`: on this size it's the temporary disk.
+Next, for Podman: format the data disk (LUN 0, `/dev/disk/azure/scsi1/lun0`) as XFS with the block in [disk-setup.md](disk-setup.md), before installing anything. Don't use `/dev/sdb`: on sizes with a temporary disk (`Standard_B4ms`, the `ds` sizes) that's the temporary disk, and on `Standard_D4s_v5`, which has none, the letters can still change between boots.
 
 ## Add labels
 

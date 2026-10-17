@@ -33,7 +33,7 @@ Watch the data disk while it runs (`iostat -x 5`, the device of `/var/lib/contai
 2. **Throughput-bound** when `wkB/s` is flat at the disk's MB/s. The average write is `wkB/s / w/s`: bulk loads write large blocks (a P10 at 500 writes of 30 kB is IOPS-bound at only 15 MB/s).
 3. **Either way**, `%util` near 100 and `w_await` far above a few milliseconds confirm it, while the CPUs (`top`) sit partly idle.
 
-Then lift the limit that binds, cheapest first: on Azure, a **Premium SSD v2** data disk (3,000 IOPS and 125 MB/s included, at any size; more provisioned without resizing) instead of a P10; on AWS, raise the gp3's IOPS or MB/s online. A bigger VM doesn't help until the disk is no longer the limit.
+Then lift the limit that binds, cheapest first: on Azure, a **Premium SSD v2** data disk (the default in this skill's Azure steps) (3,000 IOPS and 125 MB/s included, at any size; more provisioned without resizing) instead of a P10; on AWS, raise the gp3's IOPS or MB/s online. A bigger VM doesn't help until the disk is no longer the limit.
 
 ## Measured
 

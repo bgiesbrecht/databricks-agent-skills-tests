@@ -84,14 +84,14 @@ sudo podman pull --timeout 10m container-registry.oracle.com/database/free:lates
 
 **Fix (Azure, disk not attached):**
 ```bash
+az disk create --resource-group "$RESOURCE_GROUP" --name "${VM_NAME}-data" --location "$LOCATION" --zone "$ZONE" \
+  --sku PremiumV2_LRS --size-gb 128 --disk-iops-read-write 3000 --disk-mbps-read-write 125
 az vm disk attach \
   --resource-group "$RESOURCE_GROUP" \
   --vm-name "$VM_NAME" \
   --name "${VM_NAME}-data" \
-  --new \
-  --size-gb 128 \
-  --sku Premium_LRS \
-  --lun 0
+  --lun 0 \
+  --caching None
 ```
 
 Then rerun the disk block; no reboot is needed.

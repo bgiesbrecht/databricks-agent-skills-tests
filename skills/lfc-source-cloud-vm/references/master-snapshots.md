@@ -8,7 +8,8 @@ Populating a large test database (100 GB and up) takes hours, and keeping it on 
 
 | Where a 100 GB master sits idle | About |
 |---|---|
-| Azure Premium SSD (P10, 128 GB) | $20/month |
+| Azure Premium SSD v1 (P10, 128 GB) | $20/month |
+| Azure Premium SSD v2 (128 GiB, the included 3,000 IOPS / 125 MB/s) | priced per GiB plus any IOPS or MB/s above the included: check the calculator for your region (not verified here) |
 | Azure Blob, Hot tier | $2/month, no fee per read in the same region |
 
 Keep the object storage in **the same cloud and region as the VM** (and the VM in the workspace's region, see **lfc-source-setup**), so pulls aren't billed as egress. Use the Hot tier: a master is read often and written rarely, and Cool charges per GB read plus a 30-day minimum, which every save resets.
