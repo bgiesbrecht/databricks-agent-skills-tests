@@ -58,7 +58,7 @@ Then, on the test side ([references/shape.md](references/shape.md) for how each 
 PY="uv run"; S=skills/lfc-source-statschema/scripts
 $PY $S/to-canonical.py raw.json schema.yaml stats.yaml
 $PY $S/shape.py schema.yaml --stats stats.yaml --scale 0.01 > shaped.yaml                   # also writes expected.json
-$PY $S/ddl.py shaped.yaml --dialect postgres --source-dialect postgres > schema.sql          # or mysql, tsql, oracle, databricks
+$PY $S/ddl.py shaped.yaml --dialect postgres --source-dialect postgres > schema.sql          # or mysql, tsql, oracle, db2, informix, databricks
 psql -v ON_ERROR_STOP=1 -c "CREATE SCHEMA sales_s" -c "SET search_path = sales_s" -f schema.sql
 DIR=skills/lfc-source-datagen/scripts/postgres bash skills/lfc-source-datagen/scripts/fill.sh pg sales_s
 psql -c ANALYZE && psql -X -At -v schema=sales_s -v values=ranges -f $S/collect-postgres.sql > got.json
@@ -120,6 +120,15 @@ A customer-shaped copy: TPC-H at SF 1 on Postgres as the "customer" (`values=ran
 - **MySQL caches row counts** in `information_schema` for up to a day: the collector sets `information_schema_stats_expiry = 0`; run `ANALYZE TABLE` on the copy before collecting from it.
 - **MySQL comments hold 1,024 characters**: longer formulas go to `lfc_seed.tags`, which `ddl.py` fills and the MySQL planners read.
 - **SQL Server and Oracle keep every tag in a side table** (`lfc_seed.tags` per schema; `LFC_TAGS` in the Oracle schema), which `ddl.py --dialect tsql` / `oracle` fills and their planners read: SQL Server has no comments, Oracle's hold 4,000 bytes. `ddl.py` also rewrites what sqlglot leaves MySQL-shaped (lfc-source-datagen's `references/sqlserver.md` and `oracle.md` list each): integer division, `LPAD`, `LEFT`, `CONCAT`, `ROUND`, `POWER`, `PI`, and on T-SQL a value list's nested CASE, which SQL Server can't compile at 150 values.
+- **Db2 and Informix** (`--dialect db2` / `informix`), which sqlglot doesn't know, are rendered as Postgres and rewritten. Every tag goes to a side table (`LFC_TAGS` in the Db2 schema, `lfc_tags` in the Informix database), which lfc-source-datagen's `scripts/python/fill.py` reads. Names are unquoted, so Db2 folds them to upper case and Informix to lower. The rewrites, each found by a failing fill:
+  - Informix types: `LVARCHAR` above 255 characters, `DATETIME YEAR TO FRACTION(5)` and `HOUR TO SECOND`, `SERIAL`, `DEFAULT` before `NOT NULL`, `ADD CONSTRAINT FOREIGN KEY`, no second index on the same columns.
+  - Db2 types: `CLOB` and `BLOB` for unbounded columns, `DECIMAL` capped at 31 digits.
+  - Arithmetic: `MOD(CAST(a AS BIGINT), b)` for `%` on Informix (`INT8 * INT` is a DECIMAL there, and `MOD` of one returns INTEGER); `TRUNC` for `DIV` on Informix; `POWER` of a `DOUBLE PRECISION`; `ACOS(-1)` for `PI()`.
+  - Precedence: parentheses around arithmetic inside `||`, which binds like `+` there.
+  - Casts: `DECIMAL(31, 0)` for a bare `DECIMAL` cast (Db2's is (5,0)); `ROUND` written as is (sqlglot's Postgres `ROUND` adds that bare cast).
+  - Days and seconds since 1970: `DAYS()` and `MIDNIGHT_SECONDS` on Db2; `MDY()` and `TO_CHAR(x, '%H')` on Informix, kept out of sqlglot, which would rewrite the format.
+  - The value list's nested `CASE` folded, as for T-SQL.
+  - Oracle has no `TIME`: `TIMESTAMP(0)`.
 - **MySQL binary logs grow with every load** (25 GB filled a 50 GB test VM during this skill's tests): on a test container without a CDC reader, purge them (`PURGE BINARY LOGS BEFORE NOW()`) or set `binlog_expire_logs_seconds`; with CDC, size the disk for them.
 - **Keys are renumbered** (a source's nation keys 0 … 24 become what the rules or codecs say), and every foreign key follows, so joins work the same.
 - **Text-key order:** a key's `n` must rise with its sort order (the resume probe reads the highest key); code lists are sorted, and digits and base 36 sort as numbers in byte order. A collation that sorts digits after letters breaks this.

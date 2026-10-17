@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bin/test_scripts.sh: regression tests for the skills' scripts.
-#   Offline (always): shell syntax, every markdown link, the six TPC schemas through shape.py and ddl.py for five
-#   dialects, a DDL import round trip, and the shared DuckDB runners.
+#   Offline (always): shell syntax, every markdown link, the six TPC schemas through shape.py and ddl.py for seven
+#   dialects, a DDL import round trip, the Python fill planner compiles, and the shared DuckDB runners.
 #   With databases (PSQL and/or MYSQL set, e.g. PSQL="podman exec -i dg-pg psql -U postgres",
 #   MYSQL="podman exec -i dg-my mysql -uroot"): fill TPC-C (1 warehouse) and the TPC-H spec schema (SF 0.1) on each, and
 #   check every table is at its target, TPC-H's spec rules, and the audit (0 bad rows). Schemas test_* are dropped first.
@@ -18,7 +18,7 @@ for f in $(find "$SK" -name '*.sh'); do check "bash -n ${f#$SK/}" bash -n "$f"; 
 check "links in every skill" python3 "$R/bin/check_links.py" "$SK"
 for w in tpcb tpcc tpch tpcdi tpcds tpce; do
   check "shape.py $w" sh -c "uv run -q '$SS/shape.py' '$SK/lfc-source-statschema/schemas/$w.yaml' --sf 0.1 --expected '$T/$w.exp.json' > '$T/$w.yaml'"
-  for d in postgres mysql tsql oracle databricks; do
+  for d in postgres mysql tsql oracle db2 informix databricks; do
     check "ddl.py $w $d" sh -c "uv run -q '$SS/ddl.py' '$T/$w.yaml' --dialect $d | grep -c 'CREATE TABLE' | grep -qv '^0$'"
   done
   check "validate.py $w" uv run -q "$SS/validate.py" "$T/$w.yaml"
@@ -26,6 +26,7 @@ done
 check "ddl-to-schema.py round trip (TPC-H spec)" bash -c "bash '$DG/tpc/tpc-schema.sh' tpch 0.1 | uv run -q '$SS/ddl-to-schema.py' --dialect mysql > '$T/spec.yaml' \
   && uv run -q '$SS/ddl.py' '$T/spec.yaml' --dialect mysql | uv run -q '$SS/ddl-to-schema.py' --dialect mysql > '$T/spec2.yaml' \
   && python3 -c \"import sys, yaml; f = lambda p: [{k: ([{c: v for c, v in x.items() if c != 'native_type'} for x in v] if k == 'columns' else v) for k, v in t.items()} for t in yaml.safe_load(open(p))['tables']]; sys.exit(f('$T/spec.yaml') != f('$T/spec2.yaml'))\""
+check "python fill planner compiles" python3 -m py_compile "$DG/python/fill.py" "$DG/python/planner.py" "$DG/python/drivers.py" "$DG"/python/engines/*.py
 check "results/runs/*.jsonl valid, nothing internal" python3 "$SK/lfc-test-results/scripts/record.py" --check
 check "results/*.md: nothing internal" python3 -c "import sys, glob, re; sys.path.insert(0, '$SK/lfc-test-results/scripts'); import record; bad = [(f, w) for f in glob.glob('$R/results/*.md') for w in record.leaks({'text': open(f).read()})]; print(bad); sys.exit(bool(bad))"   # the same check as record.py's, version masking included
 check "recall.py runs" sh -c "python3 '$SK/lfc-test-results/scripts/recall.py' > /dev/null"

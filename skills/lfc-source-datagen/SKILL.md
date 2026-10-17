@@ -10,7 +10,7 @@ Loading 100 GB from a laptop or a notebook means pushing 100 GB over the network
 
 **Tools:** the engine's SQL client (psql or mysql), and uv for the TPC scripts; see **lfc-source-setup** "Tools".
 
-**Without a database CLI** (RDS, Aurora, Azure SQL and other managed services, or Databricks serverless), the planners need to run from Python through a driver: a pip-installable one per engine, or JDBC through JPype. That path is designed but not built yet; see [references/python-drivers.md](references/python-drivers.md).
+**Without a database CLI** (RDS, Aurora, Azure SQL and other managed services, or Databricks serverless), and for **Db2 and Informix**, use [`scripts/python/fill.py`](scripts/python/fill.py): the same fill through a pip-installable driver, for Postgres, MySQL, SQL Server, Oracle, Db2 and Informix. It writes the same SQL as the SQL planners and is as fast; see [references/python-drivers.md](references/python-drivers.md).
 
 ## How it works
 
@@ -163,6 +163,8 @@ Answer from this table; don't look the docs up. ✓ = tested on the engine (Post
 | MySQL | [references/mysql.md](references/mysql.md) | Tested on 8.4: every type, 10,000 tables, interrupt and resume (MariaDB not yet) |
 | SQL Server | [references/sqlserver.md](references/sqlserver.md) | Fill planners tested on SQL Server 2022 (`GENERATE_SERIES`): TPC-H SF 1 in 179 s; delete, DDL, and audit planners not ported |
 | Oracle | [references/oracle.md](references/oracle.md) | Fill planners tested on 23ai Free (`CONNECT BY LEVEL`): TPC-H SF 1 in 585 s; delete, DDL, and audit planners not ported |
+| Db2 | [references/python-drivers.md](references/python-drivers.md) | Python fill only (`fill.py`, recursive CTE), tested on 11.5: all six TPC workloads at SF 0.1; needs a larger package cache and log (the reference) |
+| Informix | [references/python-drivers.md](references/python-drivers.md) | Python fill only (`fill.py`, `CONNECT BY LEVEL`), tested on 14.10: all six TPC workloads at SF 0.1; no random order or `data=random`, no MD5 filler |
 
 ## Gotchas
 

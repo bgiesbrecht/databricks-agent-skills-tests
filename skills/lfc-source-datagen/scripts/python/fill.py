@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+# fill.py <engine> <schema> [fill | plan | status]: fill.sh in Python, through a driver instead of the database's CLI
+# (references/python-drivers.md). Engines: postgres, mysql, sqlserver, oracle, db2, informix (or pg, my, ms, ora, ifx).
+#   fill (default): fill every table of the schema to its target (lfc:rows), one level at a time: a level starts only
+#     when every table of the level before is complete; at most --rows per statement and --sessions statements at once,
+#     each on its own connection; rounds repeat until every table of the level is at its target, and it stops if a
+#     round adds no rows. --mode append adds --rows rows to every table instead, once.
+#   plan: print the statements, one per line (each starts with /* lfc level N */).
+#   status: print table|min|max|rows|target, as fill.sh does.
+# The schema is a Postgres schema (in --database), a MySQL database, a SQL Server schema (in --database), an Oracle or
+# Db2 schema (user), or an Informix database. The connection: --host, --port, --user, --database (Oracle: the service,
+# e.g. FREEPDB1), --password-file (or LFC_PASSWORD_FILE); Informix also --server (the DBSERVERNAME). Run it with the
+# engine's driver installed, e.g.  uv run --with psycopg2-binary fill.py pg tpch --host db --user postgres --password-file pg.pw
+import argparse, os, sys, threading, time
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import planner, drivers
+from engines import ENGINES
+
+ap = argparse.ArgumentParser(description="fill a schema's tables to their lfc:rows targets, through a driver")
+ap.add_argument("engine"); ap.add_argument("schema"); ap.add_argument("action", nargs="?", default="fill", choices=["fill", "plan", "status"])
+ap.add_argument("--host", default="127.0.0.1"); ap.add_argument("--port", type=int); ap.add_argument("--user"); ap.add_argument("--database")
+ap.add_argument("--password-file"); ap.add_argument("--server", help="Informix DBSERVERNAME (default informix)")
+ap.add_argument("--trust-server-certificate", action="store_true", help="SQL Server: accept a self-signed certificate")
+ap.add_argument("--rows", type=int, help="rows per statement (default: the engine's)"); ap.add_argument("--sessions", type=int, default=4)
+ap.add_argument("--mode", default="fill", choices=["fill", "append"]); ap.add_argument("--order", default="random", choices=["random", "asc", "desc"])
+ap.add_argument("--data", default="scramble", choices=["seq", "scramble", "random"]); ap.add_argument("--plain-every", type=int, default=4)
+ap.add_argument("--block", type=int, default=1000); ap.add_argument("--lob-len", type=int, default=100); ap.add_argument("--seed", type=int, default=0)
+a = ap.parse_args()
+eng = ENGINES[a.engine]()
+if not a.database and hasattr(eng, "default_db"): a.database = eng.default_db(a.schema)   # Informix: the schema is the database
+o = planner.Opts(rows=a.rows or eng.rows, mode=a.mode, order=a.order, data=a.data, plain_every=a.plain_every, block=a.block, lob_len=a.lob_len, seed=a.seed)
+sch = eng.schema(a.schema) if hasattr(eng, "schema") else a.schema
+con = drivers.connect(eng.name, a); cur = con.cursor()
+if hasattr(eng, "session"): eng.session(cur)
+tabs = eng.catalog(cur, sch)
+if not tabs: sys.exit(f"no tables in {sch}")
+stmts = planner.plan(eng, tabs, sch, o)
+for line in planner.report(tabs): print(line, file=sys.stderr)
+planned = [t for t in tabs if not t.skipped]
+
+
+def status(ts):                                    # {table: (lo, hi)}
+    out = {}
+    for q in eng.status(sch, ts):
+        cur.execute(q)
+        out.update({r[0].strip(): (r[1], r[2]) for r in cur.fetchall()})
+    return out
+
+
+def show(st):
+    for t in sorted(planned, key=lambda t: t.name):
+        lo, hi = st.get(t.name, (None, None))
+        print(f"{t.name}|{'' if lo is None else int(lo)}|{'' if hi is None else int(hi)}|{0 if lo is None else int(hi) - int(lo) + 1}|{t.target or ''}")
+
+
+if a.action == "plan":
+    for _, _, s in stmts: print(s + ";")
+    sys.exit(0)
+if a.action == "status":
+    show(status(planned)); sys.exit(0)
+
+eng.prepare(cur, o)
+errors = []
+def run(batch):                                    # the statements, --sessions at a time, each session its own connection
+    q, lock = list(batch), threading.Lock()
+    def worker():
+        c = drivers.connect(eng.name, a); k = c.cursor()
+        if hasattr(eng, "session"): eng.session(k)
+        while True:
+            with lock:
+                if not q: break
+                name, s = q.pop(0)
+            t0 = time.time()
+            try:
+                for part in eng.split(s) if hasattr(eng, "split") else [s]: k.execute(part)
+                print(f"  {name}: {time.time() - t0:.1f} s", flush=True)
+            except Exception as x:
+                errors.append(name); print(f"  {name}: {type(x).__name__}: {' '.join(str(x).split())[:400]}", file=sys.stderr, flush=True)
+        c.close()
+    ts = [threading.Thread(target=worker) for _ in range(min(a.sessions, len(q)))]
+    for t in ts: t.start()
+    for t in ts: t.join()
+
+
+T0 = time.time()
+for lv in sorted({l for l, _, _ in stmts}):
+    batch = [(n, s) for l, n, s in stmts if l == lv]
+    names = {n for n, _ in batch}
+    ts = [t for t in planned if t.name in names]
+    for rnd in range(10 ** 6):
+        st = status(ts)
+        rows = lambda n: 0 if st.get(n, (None,))[0] is None else int(st[n][1]) - int(st[n][0]) + 1
+        todo = [(n, s) for n, s in batch if a.mode == "append" or rows(n) < next(t.target for t in ts if t.name == n)]
+        if not todo or (a.mode == "append" and rnd > 0): break
+        print(f"level {lv}, round {rnd + 1}: {len(todo)} tables ({time.time() - T0:.0f} s)", flush=True)
+        run(todo)
+        if status(ts) == st:                       # a round that adds nothing would repeat forever: stop and show why
+            sys.exit(f"level {lv}: no rows added; fix the failing statements above, then rerun")
+show(status(planned))
+print(f"done in {time.time() - T0:.0f} s" + (f", {len(errors)} statement errors" if errors else ""))
+sys.exit(1 if errors else 0)
