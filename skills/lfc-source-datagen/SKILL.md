@@ -10,6 +10,8 @@ Loading 100 GB from a laptop or a notebook means pushing 100 GB over the network
 
 **Tools:** the engine's SQL client (psql or mysql), and uv for the TPC scripts; see **lfc-source-setup** "Tools".
 
+**Without a database CLI** (RDS, Aurora, Azure SQL and other managed services, or Databricks serverless), the planners need to run from Python through a driver: a pip-installable one per engine, or JDBC through JPype. That path is designed but not built yet; see [references/python-drivers.md](references/python-drivers.md).
+
 ## How it works
 
 - **Every row comes from one integer `n`.** Each column's value is a cast of `n` to its type, for example `n % 32767` for `smallint`, `date '1970-01-01' + n % 2932896` for `date`, or a zero-padded `n` followed by MD5 filler for text. Every cast in the engine references has been run at `n` = 1, 2, 10⁶, 10¹², 2⁶², and 2⁶³ − 2 on the live engine, and stays valid for all of them.
