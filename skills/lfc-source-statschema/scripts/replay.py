@@ -27,8 +27,13 @@ def parse(q):                                   # Postgres' typed placeholders (
     return sqlglot.parse_one(q, read=SRC)
 def tables(t): return sorted({x.name for x in t.find_all(exp.Table) if x.name})
 
+def tables_of(q):                               # a query sqlglot can't parse keeps its SQL, with no tables, and is reported
+    try: return tables(parse(q["sql"]))
+    except sqlglot.errors.ParseError as err:
+        print(f"-- query {q['id']}: not parsed ({str(err).splitlines()[0]}); kept without tables", file=sys.stderr); return []
+
 if a.cmd == "yaml":                             # statschema's QueryWorkload format
-    out = [{"id": str(q["id"]), "source_dialect": SRC, "sql": q["sql"], "tables": tables(parse(q["sql"])), "calls": q.get("calls", 0),
+    out = [{"id": str(q["id"]), "source_dialect": SRC, "sql": q["sql"], "tables": tables_of(q), "calls": q.get("calls", 0),
             "total_elapsed_ms": q.get("total_elapsed_ms", 0.0), "mean_elapsed_ms": q.get("mean_elapsed_ms", 0.0),
             "rank_by": q.get("rank_by", "total_time")} for q in W["queries"]]
     yaml.safe_dump({"source_dialect": SRC, "queries": out}, sys.stdout, sort_keys=False, width=10**9); sys.exit()

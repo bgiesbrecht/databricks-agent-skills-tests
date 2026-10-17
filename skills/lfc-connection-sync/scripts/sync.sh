@@ -13,7 +13,8 @@ class() { case "$1" in
   *"not supported"*|*"does not support"*) echo unsupported_option ;;
   *"invalid access token"*|*"token"*|*"401"*|*"Unauthorized"*) echo auth ;;
   *) echo other ;; esac; }
-while IFS=$'\t' read -r profile name type host port user pwfile extra; do
+# split on a non-whitespace separator: with IFS=tab, read merges runs of tabs, so an empty column shifted every later field
+while IFS= read -r line; do IFS=$'\x1f' read -r profile name type host port user pwfile extra <<< "${line//$'\t'/$'\x1f'}"
   case "$profile" in ''|'#'*) continue ;; esac
   [ -r "$pwfile" ] || { echo "$profile $name: FAILED missing_password_file: $pwfile"; continue; }
   opts=$(PW="$(cat "$pwfile")" H="$host" PO="$port" U="$user" E="${extra:-{\}}" yq -n -o json -I0 '{"host": strenv(H), "port": strenv(PO), "user": strenv(U), "password": strenv(PW)} * (strenv(E) | from_json)')

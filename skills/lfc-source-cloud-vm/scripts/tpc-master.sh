@@ -16,12 +16,14 @@
 set -uo pipefail
 E=$1; NAME=$2; shift 2; WL=${*:-tpcb tpcc tpch tpcds tpce tpcdi}
 DDL=${DDL:-/tmp/dg/ddl}; DG=${DG:-/tmp/dg}; DATA=${DATA:-/var/lib/containers/lfc-data}; OUT=${OUT:-/mnt/jfs/masters}
-SECRETS=${SECRETS:-/root/lfc-src}; JC=${JC:-/var/lib/containers/jfs/cache}; SESSIONS=${SESSIONS:-4}
+SECRETS=${SECRETS:-/root/lfc-src}; JC=${JC:-/var/lib/containers/jfs/cache}; SESSIONS=${SESSIONS:-4}   # MySQL: MY_SESSIONS (default 2)
 M=$DATA/build-$NAME; C=build-$NAME; W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 # wait until a check passes, while the container is still running (else show why it stopped, and stop)
 wait_for() { until "$@" > /dev/null 2>&1; do
   [ "$(podman container inspect -f '{{.State.Running}}' $C 2>/dev/null)" = true ] || { echo "$C stopped:"; podman logs --tail 20 $C 2>&1; exit 1; }
   sleep 3; done; }
+# the DDL's output, checked for errors: sqlcmd and SQL*Plus print them and carry on
+ddl_ok() { if grep -E "^(Msg [0-9]+, Level 1[1-9]|ORA-[0-9]+|SP2-[0-9]+)" $W/ddl.out; then echo "DDL for $1 failed (above)"; return 1; fi; }
 t() { local s=$(date +%s); "$@"; local r=$?; echo "  [$(( $(date +%s) - s )) s] $*" | cut -c1-120; return $r; }
 [ -f "$SECRETS/$E.env" ] || { echo "missing $SECRETS/$E.env"; exit 2; }
 [ -e "$OUT/$NAME" ] && { echo "$OUT/$NAME exists: remove it first"; exit 2; }
@@ -49,7 +51,7 @@ mysql)
     echo "CREATE TABLE lfc_seed.seed_r (i bigint PRIMARY KEY, r bigint NOT NULL);"       # r: a random permutation, for shuffled keys
     echo "INSERT INTO lfc_seed.seed_r SELECT i, ROW_NUMBER() OVER (ORDER BY RAND()) FROM lfc_seed.seed;"
     echo "DROP TABLE lfc_seed.seed; RENAME TABLE lfc_seed.seed_r TO lfc_seed.seed;"; } | $MY || exit 1
-  load() { { echo "CREATE DATABASE $1; USE $1;"; cat $DDL/$1-mysql.sql; } | $MY && MYSQL="$MY" DIR=$DG/mysql SESSIONS=2 bash $DG/fill.sh my $1; }
+  load() { { echo "CREATE DATABASE $1; USE $1;"; cat $DDL/$1-mysql.sql; } | $MY && MYSQL="$MY" DIR=$DG/mysql SESSIONS=${MY_SESSIONS:-2} bash $DG/fill.sh my $1; }   # 2: MySQL's best on 4 vCPUs (lfc-source-datagen calibrate.md)
   finish() { for w in $WL; do $MY -N -e "SELECT CONCAT('ANALYZE TABLE \`', table_schema, '\`.\`', table_name, '\`;') FROM information_schema.tables WHERE table_schema = '$w'" | $MY > /dev/null; done
              $MY -e "DROP TABLE lfc_seed.seed" && podman stop -t 300 $C > /dev/null; } ;;
 sqlserver)
@@ -62,9 +64,9 @@ exec podman exec -i $C bash -c 'f=\$(mktemp); cat > \$f; SQLCMDPASSWORD=\$MSSQL_
 Q
   chmod 700 $W/sq; SQ=$W/sq
   sq_ok() { echo "SELECT 1" | $SQ; }; wait_for sq_ok
-  load() { echo "CREATE DATABASE [$1]; ALTER DATABASE [$1] SET RECOVERY SIMPLE;" | $SQ > /dev/null && $SQ $1 < $DDL/$1-tsql.sql > $W/ddl.out &&
+  load() { echo "CREATE DATABASE [$1]; ALTER DATABASE [$1] SET RECOVERY SIMPLE;" | $SQ > /dev/null && $SQ $1 < $DDL/$1-tsql.sql > $W/ddl.out && ddl_ok $1 &&
            { printf '#!/bin/bash\nexec %s %s\n' $SQ $1 > $W/sq-$1; chmod 700 $W/sq-$1; MSSQL=$W/sq-$1 DIR=$DG/sqlserver SESSIONS=$SESSIONS bash $DG/fill.sh ms dbo; }; }
-  finish() { for w in $WL; do echo "EXEC sp_updatestats;" | $SQ $w > /dev/null; done; echo "SHUTDOWN;" | $SQ > /dev/null; podman stop -t 120 $C > /dev/null; } ;;
+  finish() { for w in $WL; do echo "EXEC sp_updatestats;" | $SQ $w > /dev/null || return 1; done; echo "SHUTDOWN;" | $SQ > /dev/null; podman stop -t 120 $C > /dev/null; } ;;
 oracle)
   chown 54321:54321 $M
   podman run -d --name $C --memory 4g --shm-size 2g --env-file $SECRETS/$E.env -v $M:/opt/oracle/oradata:Z docker.io/gvenzl/oracle-free:23-slim > /dev/null
@@ -77,18 +79,19 @@ Q
   load() { local S=$(echo $1 | tr a-z A-Z)
            { echo "SET DEFINE OFF"; echo "CREATE USER $S NO AUTHENTICATION QUOTA UNLIMITED ON USERS DEFAULT TABLESPACE USERS;"
              echo "ALTER SESSION SET CURRENT_SCHEMA = $S;"; cat $DDL/$1-oracle.sql; } | $SQ > $W/ddl.out
-           grep -E "^(ORA|SP2)-" $W/ddl.out | sort | uniq -c
+           ddl_ok $1 || return 1
            ORACLE=$SQ DIR=$DG/oracle SESSIONS=$SESSIONS bash $DG/fill.sh ora $S; }
   finish() { for w in $WL; do printf "EXEC DBMS_STATS.GATHER_SCHEMA_STATS('%s')\n" $(echo $w | tr a-z A-Z) | $SQ; done; podman stop -t 120 $C > /dev/null; } ;;
 *) echo "engine: postgres, mysql, sqlserver, or oracle"; exit 2 ;;
 esac
 for w in $WL; do echo "== $w"; t load $w > $W/load.out 2>&1; r=$?; grep -v -E "^\(?[0-9]+ rows? affected\)?$|^$" $W/load.out | tail -40
                   [ $r = 0 ] || { echo "$w failed"; exit 1; }; done
-echo "== statistics, clean stop"; t finish
+echo "== statistics, clean stop"; t finish || { echo "statistics or the clean stop failed: not copied; the build is still in $M (container $C)"; exit 1; }
 podman rm $C > /dev/null 2>&1
 echo "master on disk: $(du -sh $M | cut -f1), files $(find $M -type f | wc -l)"
 # into JuiceFS (then wait until its write-back staging is uploaded), or a reflink copy when $OUT is on the same XFS
-t cp -a --reflink=auto $M $OUT/$NAME && until ! find $JC -path '*rawstaging*' -type f 2>/dev/null | grep . > /dev/null; do sleep 2; done
+t cp -a --reflink=auto $M $OUT/$NAME || { echo "copy to $OUT/$NAME failed: the build is still in $M"; exit 1; }
+until ! find $JC -path '*rawstaging*' -type f 2>/dev/null | grep . > /dev/null; do sleep 2; done
 echo "copied to $OUT/$NAME: $(juicefs info -r $OUT/$NAME 2>/dev/null | awk '/size:/ {print $2 $3; exit}')"
 rm -rf $M
 echo "MASTER DONE $NAME"

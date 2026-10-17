@@ -177,8 +177,10 @@ for tn in order:
         if name in fkcol and dist in ("block", "sequential"):   # wrap at the parent column's range, so every value is a parent key
             f, pc = fkcol[name]; pg = next((x.get("generation") or {} for x in T[f["parent_table"]]["columns"] if x["name"] == pc), {})
             if pg.get("distribution") == "cyclic" and pg.get("max_value") is not None:
-                span = int(pg["max_value"]) - int(pg["min_value"]) + 1
-                if dist == "block": return "v", f"{lo} + ((x.n - 1) DIV {pr['block_size']}) % {span}", ("block", lo, int(pr["block_size"]), span)
+                span = int(pg["max_value"]) - int(pg.get("min_value") or 0) + 1      # (a cyclic parent's min defaults to 0, as below)
+                b0 = lo if lo is not None else int(pg.get("min_value") or 0)          # (and the child starts where the parent does)
+                if dist == "block" and "block_size" in pr:
+                    return "v", f"{b0} + ((x.n - 1) DIV {pr['block_size']}) % {span}", ("block", b0, int(pr["block_size"]), span)
         if dist == "sequential": return "v", f"{lo if lo is not None else 1} + x.n - 1", ("seq", lo if lo is not None else 1, 1, None)
         if dist == "cyclic" and lo is not None and hi is not None: return "v", f"{lo} + (x.n - 1) % {hi - lo + 1}", ("cyc", lo, 1, hi - lo + 1)
         if dist == "block" and "block_size" in pr:
