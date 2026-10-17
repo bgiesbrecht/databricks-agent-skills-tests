@@ -87,6 +87,13 @@ def codec(c, rows):                         # a key column: (kind, n back from t
             return "e", b36n(name, L), (lambda i, L=L: b36(L).replace("x.n", f"({i})")), 36 ** L
         if 0 < L < 19: return "v", f"CAST({name} AS SIGNED)", (lambda i: i), 10 ** L - 1
         return "v", f"CAST(LEFT({name}, 19) AS SIGNED)", (lambda i: i), None
+    if k in ("date", "ts") and g.get("min_value") and g.get("max_value"):
+        # days (seconds) from the rule's range, so the key has as many values as the range holds: without it, a composite
+        # key's date took one day per row and ran past 9999-12-31 (TPC-E daily_market: duplicate keys)
+        e0 = datetime.datetime(1970, 1, 1); sec = lambda x: int((datetime.datetime.fromisoformat(str(x)) - e0).total_seconds())
+        lo, hi = (sec(g[x]) // (1 if k == "ts" else 86400) for x in ("min_value", "max_value"))
+        f = "LFC_EPOCH" if k == "ts" else "LFC_DAYS"
+        return "v", f"{f}({name}) - {lo - 1}", (lambda i, lo=lo: f"({lo - 1} + {i})"), hi - lo + 1
     if k == "date": return "v", f"LFC_DAYS({name})", (lambda i: i), None
     if k == "ts": return "v", f"LFC_EPOCH({name})", (lambda i: i), None
     return "v", name, (lambda i: i), None

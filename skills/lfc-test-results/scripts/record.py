@@ -26,7 +26,7 @@ TESTS = {"connection", "qbc", "icdc", "scdc", "fcqbc", "dml", "source-setup",   
          "rclone-pull", "reflink-isolation", "juicefs-clone", "disk-restore",      # branch layers
          "snapshot-read", "write-tps", "load", "other"}                            # performance; add new names here in the same PR
 ALLOWED_KEYS = REQUIRED | {"host", "workspace", "setup", "metrics", "error", "skills", "docs", "notes"}
-SETUP_KEYS = {"storage", "network", "credentials", "workload", "dml", "contributor"}   # documented; others allowed (warned)
+SETUP_KEYS = {"storage", "network", "credentials", "workload", "dml", "tool", "contributor"}   # documented; others allowed (warned)
 
 # Anything matching these is internal or secret; use placeholders (see SKILL.md)
 LEAKS = [

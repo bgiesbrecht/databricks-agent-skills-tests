@@ -92,7 +92,7 @@ SELECT format('/* lfc level %s */ INSERT INTO %I.%I (%s)%s SELECT %s FROM (SELEC
          CASE :'data' WHEN 'random' THEN ', floor(random() * 2147483647)::bigint AS r' ELSE '' END,
          CASE :'mode' WHEN 'fill' THEN format('least(%s, greatest(%s - coalesce(hi - lo + 1, 0), 0))', :rows, target) ELSE :'rows' END,
          hi_q, lo_q,
-         CASE WHEN :'src' <> 'seed' THEN 'generate_series(1, b.need) g(i)'
+         CASE WHEN :'src' <> 'seed' THEN 'generate_series(1::bigint, b.need::bigint) g(i)'
               WHEN :'order' = 'random' THEN 'lfc_seed.seed g WHERE g.r <= b.need' ELSE 'lfc_seed.seed g WHERE g.i <= b.need' END,
          CASE :'order' WHEN 'asc' THEN ' ORDER BY g.i' WHEN 'desc' THEN ' ORDER BY g.i DESC'
                        ELSE CASE WHEN :'src' <> 'seed' THEN ' ORDER BY random()' ELSE '' END END)

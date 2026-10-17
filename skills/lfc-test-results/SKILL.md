@@ -50,7 +50,7 @@ Record every cell you ran, including the ones that stopped (`expected-stop`) or 
 | `result` | yes | what happened, with counts: `snapshot 10/10; 3 inserts, 2 updates, 2 deletes applied (11/11)` |
 | `host` | | where the source ran: `azure-vm-podman`, `azure-flexserver`, `aws-rds`, `local-podman`, `lakebase` |
 | `workspace` | | `{"cloud": "azure", "region": "centralus", "env": "fevm", "compute": "serverless-only", "catalog": "own managed storage"}`; descriptions, never names or IDs |
-| `setup` | | the rest of the test's setup: `storage`, `network`, `credentials`, `workload` (`{"name": "tpch", "sf": 1}`), `dml` (`{"rate_per_s": 100}`), `contributor` (a handle). New keys are allowed; `record.py` notes them, and they get documented in [test-matrix.md](references/test-matrix.md) |
+| `setup` | | the rest of the test's setup: `storage`, `network`, `credentials`, `workload` (`{"name": "tpch", "sf": 1}`), `dml` (`{"rate_per_s": 100}`), `tool` (the script that ran it, e.g. `lfc-source-cloud-vm scripts/tpc-master.sh`), `contributor` (a handle). New keys are allowed; `record.py` notes them, and they get documented in [test-matrix.md](references/test-matrix.md) |
 | `metrics` | | numbers: `{"rows": 5000000, "clone_s": 0.1, "tps": 234}` |
 | `error` | non-pass | the exact error text, with names and IDs replaced (`<connection>`, `<pipeline-id>`) |
 | `skills` | auto | both repos' commits; `record.py` fills it in from the checkouts next to each other |

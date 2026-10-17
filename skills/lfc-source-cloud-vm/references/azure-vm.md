@@ -53,6 +53,8 @@ eval "$(az vm list-ip-addresses \
 echo "VM ready at: $AZURE_PUBLIC_IP"
 ```
 
+**`Premium_LRS` at 128 GiB is a P10: 500 IOPS.** Enough to hold a database, too slow to load one: a MySQL TPC-E SF 1 fill took 3.3 times as long as on AWS's default gp3 (3,000 IOPS). For loads and CDC tests, use a Premium SSD v2 disk (`--sku PremiumV2_LRS`, 3,000 IOPS and 125 MB/s included at any size; it needs a VM in an availability zone, `--zone 1`) or a P30 (1 TiB, 5,000 IOPS). See [disk-io-limits.md](disk-io-limits.md) (not yet tested here).
+
 Next, for Podman: format the data disk (LUN 0, `/dev/disk/azure/scsi1/lun0`) as XFS with the block in [disk-setup.md](disk-setup.md), before installing anything. Don't use `/dev/sdb`: on this size it's the temporary disk.
 
 ## Add labels

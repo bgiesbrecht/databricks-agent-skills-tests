@@ -24,9 +24,7 @@ This file contains detailed startup commands, environment variables, readiness t
 **Startup:**
 
 ```bash
-# Create password file with restricted permissions
-umask 077
-echo "root_password_here" > mysql.pw
+# mysql.pw and mysql.env: as in the note at the top (a generated password, mode 600)
 
 # Run container with password from file
 podman run -d \
@@ -36,8 +34,6 @@ podman run -d \
   --env-file mysql.env \
   -v jane-doe-mysql-8.0-dockerhub-host-local-812-data:/var/lib/mysql \
   docker.io/library/mysql:8.0
-
-rm mysql.pw
 ```
 
 **Readiness:** MySQL accepts TCP connections on port 3306 and responds to `SELECT 1`.
@@ -55,9 +51,7 @@ rm mysql.pw
 **Startup:**
 
 ```bash
-# Create password file with restricted permissions
-umask 077
-echo "pg_password_here" > postgres.pw
+# postgres.pw and postgres.env: as in the note at the top (a generated password, mode 600)
 
 # Run container with password from file
 podman run -d \
@@ -67,15 +61,13 @@ podman run -d \
   --env-file postgres.env \
   -v jane-doe-pg-16-dockerhub-host-local-812-data:/var/lib/postgresql/data \
   docker.io/library/postgres:16
-
-rm postgres.pw
 ```
 
 **Readiness:** PostgreSQL responds to `pg_isready` health check; verify with `pg_isready -h 127.0.0.1 -p 30002`.
 
 ## SQL Server (2017, 2019, 2022, 2025)
 
-> **Unverified:** SQL Server x86_64-only; on macOS Apple Silicon, runs under Rosetta2 in Lima. Empirically confirmed to work; timing notes below.
+> **Tested on macOS:** SQL Server is x86_64-only; on Apple Silicon it runs under Rosetta 2 in the Lima VM. The macOS Homebrew `sqlcmd` reaches it at `127.0.0.1,30003`.
 
 **Image:** `mcr.microsoft.com/mssql/server:{version}-latest` or specific tag (e.g., `2025-CU7-ubuntu-24.04`)
 
@@ -90,26 +82,24 @@ rm postgres.pw
 **Startup:**
 
 ```bash
-# Create password file with restricted permissions (must meet MSSQL requirements)
-umask 077
-echo "SqlPassword1" > mssql.pw
+# The env file the run reads: a generated password (meets SQL Server's rules), readable only by you
+(umask 077; printf 'ACCEPT_EULA=Y\nMSSQL_SA_PASSWORD=Lfc1%s\n' "$(openssl rand -hex 12)" > mssql.env)
 
 # Run container with password from file
 podman run -d \
   --name jane-doe-mssql-2022-mcr-host-local-812 \
   --cpus 4 --memory 4g \
   -p 30003:1433 \
-  -e ACCEPT_EULA=Y \
   --env-file mssql.env \
   -v jane-doe-mssql-2022-mcr-host-local-812-data:/var/opt/mssql \
   mcr.microsoft.com/mssql/server:2022-latest
-
-rm mssql.pw
 ```
+
+Keep `mssql.env`: it's how you (and scripts) get the password later, without it ever appearing on a command line.
 
 **Readiness timing:**
 - Native amd64 Linux: ~4 s first start, ~90 s timeout
-- Rosetta2 (macOS): ~30 s first start, ~300 s timeout (includes Rosetta warmup)
+- Rosetta2 (macOS, Lima): 7 s from start to answering a query (tested: 2022 CU27, 16.0.4305.5, `x86_64` inside); the first pull of the 1.7 GB image took 111 s; ~300 s timeout
 
 **SQL Server Always On Availability Groups (Podman only):** Setup involves three containers on a shared Podman network: two replicas (primary + secondary) and a Linux-based load-balancer sidecar. Requires network creation, multi-node cluster configuration, and T-SQL setup for availability group membership. Consult the Lakeflow Connect database connectors reference for current support.
 
@@ -149,9 +139,8 @@ rm mssql.pw
 **Startup (gvenzl 26ai Free, arm64 native):**
 
 ```bash
-# Create password file with restricted permissions
-umask 077
-echo "OraclePassword1" > oracle.pw
+# The env file the run reads: generated passwords, readable only by you (APP_USER: an ordinary user in FREEPDB1)
+(umask 077; printf 'ORACLE_PASSWORD=Lfc1%s\nAPP_USER=lfc\nAPP_USER_PASSWORD=Lfc1%s\n' "$(openssl rand -hex 12)" "$(openssl rand -hex 12)" > oracle.env)
 
 # Run container with password from file
 podman run -d \
@@ -162,12 +151,11 @@ podman run -d \
   --env-file oracle.env \
   -v jane-doe-ora-26ai-gvenzl-host-local-812-data:/opt/oracle/oradata \
   docker.io/gvenzl/oracle-free:latest
-
-rm oracle.pw
 ```
 
 **Readiness:**
-- Fresh start: 5–10 min (arm64 native), 5–60 min (Enterprise DBCA)
+- Fresh start, gvenzl Free: the image ships a created database, so 15 s from start to `DATABASE IS READY TO USE` (tested: `oracle-free:23-slim` on arm64 in Lima, which now reports `26ai Free Release 23.26.3`; the 0.9 GB pull took 23 s)
+- Fresh start, Enterprise or XE under Rosetta: 5–60 min (DBCA creates the database)
 - Restart from snapshot: ~30 s
 
 **PDB/CDB names (for UC connection):**
@@ -187,9 +175,7 @@ rm oracle.pw
 **Startup:**
 
 ```bash
-# Create password file with restricted permissions
-umask 077
-echo "mariadb_password" > mariadb.pw
+# mariadb.pw and mariadb.env: as in the note at the top (a generated password, mode 600)
 
 # Run container with password from file
 podman run -d \
@@ -199,8 +185,6 @@ podman run -d \
   --env-file mariadb.env \
   -v jane-doe-mariadb-11.4-dockerhub-host-local-812-data:/var/lib/mysql \
   docker.io/library/mariadb:11.4
-
-rm mariadb.pw
 ```
 
 ## MongoDB (7, 8)
@@ -246,9 +230,7 @@ podman exec jane-doe-mongo-8-dockerhub-host-local-812 \
 **Startup:**
 
 ```bash
-# Create password file with restricted permissions
-umask 077
-echo "Db2Password1" > db2.pw
+# db2.pw and db2.env: as in the note at the top (a generated password, mode 600)
 
 # Run container with password from file
 podman run -d \
@@ -259,8 +241,6 @@ podman run -d \
   -e LICENSE=accept \
   -v jane-doe-db2-11.5-icr-host-local-812-data:/database \
   icr.io/db2_community/db2:11.5.9.0
-
-rm db2.pw
 ```
 
 **Readiness:** ~15 min first start (slow initialization); ~60 s restart

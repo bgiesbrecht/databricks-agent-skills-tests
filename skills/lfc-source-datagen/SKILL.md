@@ -60,13 +60,15 @@ A typical request: *"Create 100 tables, rows uniformly distributed up to 1 milli
 
 ### Fill level by level
 
-When columns have formulas that point at a parent (`lfc:v`), the parent must be complete before its children start. `fill.sh` fills one level at a time and moves on only when every table of the level is at its target; it re-plans every round, so a rerun resumes. It reads the planner files from `DIR` (`scripts/postgres` or `scripts/mysql`), and stops if a round adds no rows.
+When columns have formulas that point at a parent (`lfc:v`), the parent must be complete before its children start. `fill.sh` fills one level at a time and moves on only when every table of the level is at its target; it re-plans every round, so a rerun resumes. It reads the planner files from `DIR` (`scripts/postgres`, `scripts/mysql`, `scripts/sqlserver`, or `scripts/oracle`), and stops if a round adds no rows.
 
 [`scripts/fill.sh`](scripts/fill.sh):
 
 ```bash
 DIR=scripts/postgres bash scripts/fill.sh pg tpch                                    # Postgres: psql, connection from PGHOST, PGUSER, ...
 DIR=scripts/mysql MYSQL="mysql -h db.example.com -u lfc" bash scripts/fill.sh my tpch   # MySQL: password from MYSQL_PWD
+MSSQL=./sq DIR=scripts/sqlserver bash scripts/fill.sh ms dbo                         # SQL Server: a client script (references/sqlserver.md)
+ORACLE=./sq DIR=scripts/oracle bash scripts/fill.sh ora tpch                         # Oracle: a client script (references/oracle.md)
 ```
 
 ## Random values per row
@@ -157,8 +159,8 @@ Answer from this table; don't look the docs up. ✓ = tested on the engine (Post
 |---|---|---|
 | PostgreSQL | [references/postgres.md](references/postgres.md) | Tested on 16: every type family, 10,000 tables, 50.5M-row dataset |
 | MySQL | [references/mysql.md](references/mysql.md) | Tested on 8.4: every type, 10,000 tables, interrupt and resume (MariaDB not yet) |
-| SQL Server | [references/sqlserver.md](references/sqlserver.md) | Limits and types from the docs; casts not tested yet (on macOS: Lima VM, Rosetta) |
-| Oracle | [references/oracle.md](references/oracle.md) | Limits and types from the docs; casts not tested yet (on macOS: Lima VM, arm64 image) |
+| SQL Server | [references/sqlserver.md](references/sqlserver.md) | Fill planners tested on SQL Server 2022 (`GENERATE_SERIES`): TPC-H SF 1 in 179 s; delete, DDL, and audit planners not ported |
+| Oracle | [references/oracle.md](references/oracle.md) | Fill planners tested on 23ai Free (`CONNECT BY LEVEL`): TPC-H SF 1 in 585 s; delete, DDL, and audit planners not ported |
 
 ## Gotchas
 

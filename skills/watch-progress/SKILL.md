@@ -42,6 +42,9 @@ ssh <vm> 'systemctl show lfc-<job> -p Result -p ExecMainStatus'                 
 | `tmux new -d -s <name> '<cmd>'` | yes | `tmux attach -t <name>` | interactive work you want to look at |
 | SSH keepalives (`-o ServerAliveInterval=30`) | drops less often | | on top of one of the above, never instead |
 
+- **Don't leave a container running from inside the unit.** When the unit ends, systemd kills everything in its cgroup, including the container's `conmon` and the database. Podman isn't told, so `podman ps` still says `Up`, `podman exec` fails with "container ... is not running", and `podman stop` / `start` stick at `Stopping`. Seen in practice: a test job's last step restarted the source databases, and Oracle died silently when the job finished. Start containers the job leaves running from a plain SSH call (`podman run -d` and `podman start` return once the container is up), or run the unit with `-p KillMode=none`. To recover, `podman rm -f` it and run it again with the same arguments on the same volume (`podman inspect -f '{{.Config.CreateCommand}}' <name>` shows them).
+- **The reverse: stopping a unit doesn't stop what it ran with `podman exec`.** Those processes run in the container's cgroup, so `systemctl stop` leaves the database sessions working (and holding locks: a following `DROP USER` failed with `ORA-00054`). End them in the database (`pg_terminate_backend`, `KILL`, `ALTER SYSTEM KILL SESSION`) before rerunning; slim images often have no `ps` or `pkill`.
+
 - **The watcher must also notice the job ending badly**: check the unit's state (or the process) as well as the output, so a dead job reports as dead, not "still running".
 - **Make long steps resumable** (like `lfc-source-datagen`'s `fill.sh`, which continues from what's already there), and split the tail of a job into steps that can be rerun on their own.
 
