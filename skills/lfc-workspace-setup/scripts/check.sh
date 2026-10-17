@@ -34,25 +34,32 @@ for e in sql_server mysql oracle; do has icdc || break
   [ "$v" = true ] && row PASS "integrated CDC preview: $e" "on" || row WARN "integrated CDC preview: $e" "${v:-not found}" "enable it (lfc-workspace-setup step 1), or ask the account team"
 done
 
+CALLER=$(databricks current-user me --profile $P -o json 2>/dev/null | yq -p json -o tsv '.userName // ""'); SELF=no; [ "$CALLER" = "$WHO" ] && SELF=yes
 # --- login: assigned (directly or through a group), and entitlements. Fields are joined with '|': read collapses empty tab-separated ones
 api /api/2.0/preview/permissionassignments > $T/pa.json
 assigned=$(yq -p json -o tsv '.permission_assignments[] | (.principal.display_name // .principal.user_name // "") + "|" + (.principal.user_name // "") + "|" + (.permissions | join(","))' $T/pa.json \
   | while IFS='|' read -r n u perm; do if mine "$n" || [ "$u" = "$WHO" ]; then printf '%s:%s ' "$n" "$perm"; fi; done)
-[ -n "$assigned" ] && row PASS "assigned to the workspace" "$assigned" \
-  || row FAIL "assigned to the workspace" "not directly or through a group" "databricks api put /api/2.0/preview/permissionassignments/principals/$ID --json '{\"permissions\": [\"USER\"]}' --profile $P"
+READABLE=yes; yq -p json -e '.permission_assignments' $T/pa.json > /dev/null 2>&1 || READABLE=no      # non-admins get nothing back
+if [ -n "$assigned" ]; then row PASS "assigned to the workspace" "$assigned"
+elif [ $SELF = yes ]; then row PASS "assigned to the workspace" "you're logged in, so through a group ($(api /api/2.0/preview/scim/v2/Me | yq -p json -o tsv '[.groups[]?.display] | .[0:4] | join(", ")'))"
+elif [ $READABLE = no ]; then row WARN "assigned to the workspace" "can't read assignments without workspace admin"
+else row FAIL "assigned to the workspace" "not directly or through a group" "databricks api put /api/2.0/preview/permissionassignments/principals/$ID --json '{\"permissions\": [\"USER\"]}' --profile $P"; fi
 admin=no; case "$assigned" in *ADMIN*) admin=yes;; esac
 ents=$( { [ $KIND = user ] && api "/api/2.0/preview/scim/v2/Users?filter=$(q "userName eq \"$WHO\"")&attributes=entitlements" | yq -p json -o tsv '[.Resources[0].entitlements[]?.value] | join(" ")'
           for g in $( [ $KIND = group ] && echo "$ID" ); do api "/api/2.0/preview/scim/v2/Groups/$g?attributes=entitlements" | yq -p json -o tsv '[.entitlements[]?.value] | join(" ")'; done
           yq -p json -o tsv '.permission_assignments[] | select(.principal.group_name != null) | (.principal.principal_id | tostring) + "|" + .principal.display_name' $T/pa.json \
           | while IFS='|' read -r a n; do mine "$n" && api "/api/2.0/preview/scim/v2/Groups/$a?attributes=entitlements" | yq -p json -o tsv '[.entitlements[]?.value] | join(" ")'; done; } | tr '\n' ' ')
+[ $SELF = yes ] && ents="$ents $(api /api/2.0/preview/scim/v2/Me | yq -p json -o tsv '[.entitlements[]?.value] | join(" ")') $(api /api/2.0/preview/scim/v2/Me | yq -p json -o tsv '.groups[]?.value' | while read g; do api "/api/2.0/preview/scim/v2/Groups/$g?attributes=entitlements" | yq -p json -o tsv '[.entitlements[]?.value] | join(" ")'; done | tr '\n' ' ')"
 for e in workspace-access databricks-sql-access; do
   if [ $admin = yes ] || inp "$ents" $e; then row PASS "entitlement $e" "$([ $admin = yes ] && echo 'as workspace admin' || echo granted)"
+  elif [ $SELF = yes ] && [ $e = workspace-access ]; then row PASS "entitlement $e" "you're logged in"
+  elif [ $READABLE = no ] || [ $SELF = yes ]; then row WARN "entitlement $e" "not visible to a non-admin; try it (open a SQL editor) or ask an admin"
   else row FAIL "entitlement $e" "missing" "PATCH it onto $WHO's group (lfc-workspace-setup step 3; built-in users/admins may be locked)"; fi; done
 
 # --- Unity Catalog: metastore, connection, catalog
 m=$(eff metastore "$MS"); MSOWN=$(databricks metastores get "$MS" --profile $P -o json 2>/dev/null | yq -p json -o tsv '.owner // ""'); mine "$MSOWN" && m="$m ALL_PRIVILEGES"
 inp "$m" CREATE_CONNECTION && row PASS "CREATE CONNECTION on the metastore" "$(mine "$MSOWN" && echo "metastore owner: $MSOWN")" || row WARN "CREATE CONNECTION on the metastore" "no: can only use existing connections" "GRANT CREATE CONNECTION ON METASTORE TO \`$WHO\`"
-if has fcqbc; then inp "$m" CREATE_CATALOG && row PASS "CREATE CATALOG on the metastore (foreign catalog)" "" || row FAIL "CREATE CATALOG on the metastore (foreign catalog)" "no" "GRANT CREATE CATALOG ON METASTORE TO \`$WHO\`"; fi
+if has fcqbc; then inp "$m" CREATE_CATALOG && row PASS "CREATE CATALOG on the metastore (foreign catalog)" "" || row WARN "CREATE CATALOG on the metastore (foreign catalog)" "no: needs an existing foreign catalog to use" "GRANT CREATE CATALOG ON METASTORE TO \`$WHO\`, or GRANT USE CATALOG on an existing foreign catalog"; fi
 if [ -n "$CONN" ]; then c=$(eff connection "$CONN"); own=$(databricks connections get "$CONN" --profile $P -o json 2>/dev/null | yq -p json -o tsv '.owner // ""')
   if mine "$own" || inp "$c" USE_CONNECTION; then row PASS "USE CONNECTION on $CONN" "${own:+owner $own}"; else row FAIL "USE CONNECTION on $CONN" "no" "GRANT USE CONNECTION ON CONNECTION \`$CONN\` TO \`$WHO\`"; fi
   if has fcqbc; then { inp "$c" CREATE_FOREIGN_CATALOG || mine "$own"; } && row PASS "CREATE FOREIGN CATALOG on $CONN" "" || row FAIL "CREATE FOREIGN CATALOG on $CONN" "no" "GRANT CREATE FOREIGN CATALOG ON CONNECTION \`$CONN\` TO \`$WHO\`"; fi

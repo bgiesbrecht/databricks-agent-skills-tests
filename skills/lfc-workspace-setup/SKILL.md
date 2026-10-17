@@ -10,21 +10,19 @@ A fresh workspace usually needs three things before Lakeflow Connect tests run: 
 
 ## 1. Connector previews (Settings API)
 
-Each Lakeflow Connect connector in preview is a workspace setting. List them, read their values, and enable the ones a test needs (workspace admin):
+Each Lakeflow Connect connector in preview is a workspace setting. The CLI's `workspace-settings-v2` commands list, read and change them (workspace admin); they page through the list themselves:
 
 ```bash
-P=<PROFILE>; tok=; : > settings.jsonl
-while :; do                                                  # the token is the next setting's name: pass it as is
-  databricks api get "/api/2.1/settings-metadata?page_size=100${tok:+&page_token=$tok}" --profile $P -o json > page.json || break
-  yq -p json -o json -I0 '.settings_metadata[]' page.json >> settings.jsonl
-  tok=$(yq -p json '.next_page_token // ""' page.json); [ -n "$tok" ] || break
-done
-yq -p json -o tsv 'select(((.display_name // "") + " " + (.description // "")) | downcase | (test("lakeflow connect") or (test("join pushdown") and test("federat")))) | [.name, .display_name]' settings.jsonl
-databricks api get /api/2.1/settings/<name> --profile $P -o json \
+P=<PROFILE>
+databricks workspace-settings-v2 list-workspace-settings-metadata --profile $P -o json \
+  | yq -p json -o tsv '.[] | select(((.display_name // "") + " " + (.description // "")) | downcase | (test("lakeflow connect") or (test("join pushdown") and test("federat")))) | [.name, .display_name]'
+databricks workspace-settings-v2 get-public-workspace-setting integrated_cdc_oracle_connector --profile $P -o json \
   | yq -p json 'with(select(has("boolean_val")); .v = .boolean_val.value) | with(select(has("boolean_val") | not); .v = .effective_boolean_val.value) | .v'
-echo '{"name": "<name>", "boolean_val": {"value": true}}' > s.json
-databricks api patch /api/2.1/settings/<name> --json @s.json --profile $P       # enable
+databricks workspace-settings-v2 patch-public-workspace-setting integrated_cdc_oracle_connector \
+  --json '{"name": "integrated_cdc_oracle_connector", "boolean_val": {"value": true}}' --profile $P                 # enable
 ```
+
+The same calls work through `databricks api get|patch /api/2.1/settings-metadata` and `/api/2.1/settings/<name>`; there, the list's `page_token` is the next setting's name, passed as is.
 
 - About 65 of 275 settings match on both test workspaces. The ones that matter for database sources: `integrated_cdc_sql_server_connector`, `integrated_cdc_mysql_connector`, `integrated_cdc_oracle_connector` (integrated CDC per engine), `direct_cdc_connector`, `conn_cdc_col_select` (column selection for database sources), and `ds_v2_join_pushdown` (join pushdown for federated queries, off by default).
 - A value is either `boolean_val` (set on this workspace) or `effective_boolean_val` (inherited). Read both; don't use a "first non-null" shortcut, because `false` counts as missing in `yq` and `jq` `//`.
@@ -122,6 +120,8 @@ bash $S/grant.sh ... --apply                                                    
 ```
 
 [`check.sh`](scripts/check.sh) is read-only. It prints one line per requirement (`PASS`, `FAIL`, `WARN`) with the command or SQL that fixes each failure, and exits 1 if anything fails. It works on effective privileges, so grants that come through a group count, and it counts ownership: owning a securable gives every privilege on it, but Unity Catalog's effective-privileges API doesn't report it. On both test sandboxes the metastore's owner was `account users`, so everyone in the account could create connections and catalogs, while the target catalog still needed grants. [`grant.sh`](scripts/grant.sh) gives exactly the chosen level: `login` (assignment and entitlements), `qbc` (plus connection and catalog privileges), `cdc` (plus `CREATE VOLUME`). It prints its plan and changes nothing without `--apply`. Grants go through the Unity Catalog REST API, so no SQL warehouse is needed.
+
+**Run as a non-admin**, the workspace returns no assignments and the account directory hides other people's groups, so `check.sh` doesn't count "can't read" as "no": checking yourself, being logged in proves the assignment and `workspace-access`, and your groups come from `/api/2.0/preview/scim/v2/Me`; anything it can't see is a `WARN` ("not visible to a non-admin"), never a `FAIL`. Run it as a workspace admin to check other principals.
 
 Tested on an Azure serverless-only and an AWS classic sandbox. A workspace admin who owns the connection and the catalog passed every check. `account users` passed login (after step 3) and the metastore checks (as the metastore's owner), and failed exactly the connection and catalog grants, each with its fix. `grant.sh --apply` for a user went through every call.
 
