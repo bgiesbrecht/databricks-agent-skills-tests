@@ -5,8 +5,9 @@
 # The schema is a database (Informix has no schemas inside one); names are unquoted (Informix stores them lower case).
 # Rows come from CONNECT BY LEVEL on sysmaster:sysdual. Informix has no ORDER BY in a subquery (the probes use MAX and
 # MIN), no %, no GREATEST or LEAST, and no random function: keys go in ascending order and data=random isn't available.
-# n is cast to INT8: a key formula (lfc:n) is DECIMAL there, and MOD of a DECIMAL is NULL. Each INSERT is one transaction: the default logical logs (10 x 10 MB, a long transaction from 70%) hold about
-# 200,000 narrow rows; --rows defaults to 100,000.
+# n is cast to INT8: a key formula (lfc:n) is DECIMAL there, and MOD of a DECIMAL is NULL. Each INSERT is one transaction,
+# and every session's share the logical logs (10 x 10 MB in the developer image, a long transaction from 70%): two
+# sessions of 100,000 TPC-H partsupp rows each aborted with -458, so --rows defaults to 50,000.
 import re
 from planner import Col, Table
 
@@ -26,7 +27,7 @@ def qual(n):                                      # a DATETIME qualifier from it
 
 class Engine:
     name = "informix"
-    rows = 100000
+    rows = 50000
 
     def default_db(self, s): return s
 

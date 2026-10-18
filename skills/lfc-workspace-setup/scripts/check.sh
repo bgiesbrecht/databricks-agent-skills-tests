@@ -14,7 +14,9 @@ q() { printf '%s' "$1" | jq -sRr @uri; }
 eff() { databricks grants get-effective "$1" "$2" --principal "$WHO" --profile $P -o json 2>/dev/null \
         | yq -p json -o tsv '[.privilege_assignments[]?.privileges[]?.privilege] | unique | join(" ")'; }
 inp() { case " $1 " in *" $2 "*|*" ALL_PRIVILEGES "*) return 0;; esac; return 1; }
-mine() { [ -n "$1" ] && { [ "$1" = "$WHO" ] || case "|$PGROUPS|" in *"|$1|"*) true;; *) false;; esac; }; }   # $1 is the principal or one of its groups
+# $1 is the principal or one of its groups; or the workspace's admins group (_workspace_admins_<name>_<workspace id>,
+# which owns the catalog a workspace is created with) when the principal is a workspace admin
+mine() { [ -n "$1" ] && { [ "$1" = "$WHO" ] || case "|$PGROUPS|" in *"|$1|"*) true;; *) case "$1" in _workspace_admins_*_"$WSID") [ "${WSADMIN:-no}" = yes ];; *) false;; esac;; esac; }; }
 
 echo "== $WHO in $P (modes: $MODES${CAT:+, catalog $CAT}${CONN:+, connection $CONN})"
 # --- the principal, and the groups it's in (users: from the account; a group or "account users": itself)
@@ -35,6 +37,9 @@ for e in sql_server mysql oracle; do has icdc || break
 done
 
 CALLER=$(databricks current-user me --profile $P -o json 2>/dev/null | yq -p json -o tsv '.userName // ""'); SELF=no; [ "$CALLER" = "$WHO" ] && SELF=yes
+WSADMIN=no                                                       # in the workspace's own admins group
+if [ $SELF = yes ]; then api /api/2.0/preview/scim/v2/Me | yq -p json -e '.groups[]? | select(.display == "admins")' > /dev/null 2>&1 && WSADMIN=yes
+elif [ $KIND = user ]; then api "/api/2.0/preview/scim/v2/Users?filter=$(q "userName eq \"$WHO\"")&attributes=groups" | yq -p json -e '.Resources[0].groups[]? | select(.display == "admins")' > /dev/null 2>&1 && WSADMIN=yes; fi
 # --- login: assigned (directly or through a group), and entitlements. Fields are joined with '|': read collapses empty tab-separated ones
 api /api/2.0/preview/permissionassignments > $T/pa.json
 assigned=$(yq -p json -o tsv '.permission_assignments[] | (.principal.display_name // .principal.user_name // "") + "|" + (.principal.user_name // "") + "|" + (.permissions | join(","))' $T/pa.json \

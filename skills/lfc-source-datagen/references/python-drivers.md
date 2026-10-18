@@ -51,7 +51,7 @@ Only the fill planner is ported: insert, status, and the report of skipped table
 | SQL Server | `GENERATE_SERIES` (compatibility level 160) | 1,000,000 |
 | Oracle | `CONNECT BY LEVEL` on `DUAL` | 1,000,000 |
 | Db2 | a recursive common table expression (1M rows in 0.5 s) | 100,000 |
-| Informix | `CONNECT BY LEVEL` on `sysmaster:sysdual` | 100,000 |
+| Informix | `CONNECT BY LEVEL` on `sysmaster:sysdual` | 50,000 (two sessions of 100,000 wide rows each filled the developer image's logical log: -458, long transaction aborted) |
 
 ## Tested
 
@@ -78,6 +78,7 @@ Db2 and Informix are slow on TPC-E: at SF 0.1, 433 s and 1,650 s, against 45 s o
 |---|---|---|
 | All | Oracle and MySQL take one statement per `execute()`; SQL Server takes a batch | Each INSERT is one statement; SQL Server's `SET IDENTITY_INSERT` rides in the same batch |
 | SQL Server | `mssql-python` refuses a self-signed certificate; a just-started server refuses the handshake for some seconds | `--trust-server-certificate`; `drivers.py` retries the connection |
+| SQL Server on Linux | `mssql-python` imports, then fails every connection with `Failed to load the driver`: its ODBC driver (in the separate `mssql-python-odbc` wheel from 1.16) needs `libltdl.so.7`, which isn't in the wheel or in Ubuntu 24.04's cloud image. On macOS the wheel has it | Install the OS package once: `sudo apt-get install -y libltdl7` (RHEL: `libtool-ltdl`). Not pip-only on Linux. Check `ldd` on the driver's `libmsodbcsql-*.so` for anything `not found` |
 | Oracle | Positional binds (`:1`) count each use, not each name | Named binds |
 | Db2 | `ibm_db_dbi`'s `.autocommit = True` does nothing (nothing commits, even DDL) | `set_autocommit(True)` |
 | Db2 | A long INSERT (19 KB for TPC-H's `part`) fails with SQL0973N: the package cache was too small, and self-tuning memory shrank an `AUTOMATIC` setting back to 320 pages | `CALL SYSPROC.ADMIN_CMD('UPDATE DB CFG FOR <db> USING PCKCACHESZ 16384')`, fixed, not `AUTOMATIC` |
@@ -94,13 +95,13 @@ Db2 and Informix are slow on TPC-E: at SF 0.1, 433 s and 1,650 s, against 45 s o
 
 ## Pip-installable drivers
 
-Every engine has a driver that installs with `pip` alone, with no OS packages and no JVM. These are the versions tested here, the same ones [forgedb2](https://github.com/rsleedbx/forgedb2) uses (its `src/forgedb/sqlcli.py` has the connect calls, and `src/forgedb/dbkit/` a small connection layer modeled on SQLAlchemy):
+Every engine has a driver that installs with `pip` alone, with no JVM, and with no OS packages except `libltdl7` for SQL Server on Linux. These are the versions tested here, the same ones [forgedb2](https://github.com/rsleedbx/forgedb2) uses (its `src/forgedb/sqlcli.py` has the connect calls, and `src/forgedb/dbkit/` a small connection layer modeled on SQLAlchemy):
 
 | Engine | Package | What's inside | Connect |
 |---|---|---|---|
 | PostgreSQL, and Postgres-protocol engines (CockroachDB, YugabyteDB) | `psycopg2-binary` 2.9.12 | libpq, built into the wheel | `psycopg2.connect(host=, port=, user=, password=, dbname=)` |
 | MySQL, MariaDB | `pymysql` 1.2.0 | Pure Python | `pymysql.connect(host=, port=, user=, password=, database=, charset="utf8mb4")` |
-| SQL Server, Azure SQL | `mssql-python` 1.11.0 | Microsoft's ODBC driver and driver manager, inside the wheel | `mssql_python.connect("Server=host,port;Database=;UID=;PWD={...};Encrypt=yes", autocommit=True)` |
+| SQL Server, Azure SQL | `mssql-python` 1.11.0 (macOS), 1.16.0 (Linux) | Microsoft's ODBC driver and driver manager, inside the wheel (from 1.16, in the `mssql-python-odbc` wheel it pulls in). **On Linux it also needs the OS library `libltdl.so.7`** (`apt-get install libltdl7`) | `mssql_python.connect("Server=host,port;Database=;UID=;PWD={...};Encrypt=yes", autocommit=True)` |
 | Oracle | `oracledb` 4.0.2 | Thin mode is pure Python (no Instant Client; Oracle 12.1 and later) | `oracledb.connect(user=, password=, dsn="host:port/service")` |
 | Db2 | `ibm-db` 3.2.9 | IBM's C client (`clidriver`), downloaded by `pip install`; installs on Apple Silicon | `ibm_db_dbi.connect("DATABASE=;HOSTNAME=;PORT=;PROTOCOL=TCPIP;UID=;PWD=;", "", "")` |
 | Informix | `informix-driver` 2026.5.8.1 | Pure Python: speaks Informix's SQLI protocol over a socket, no client SDK | `informix_db.connect(host=, port=, user=, password=, database=, server=, autocommit=True)`; `server` is the `onsoctcp` name in `sqlhosts` |

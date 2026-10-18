@@ -25,7 +25,7 @@ ap.add_argument("--rows", type=int, help="rows per statement (default: the engin
 ap.add_argument("--mode", default="fill", choices=["fill", "append"]); ap.add_argument("--order", default="random", choices=["random", "asc", "desc"])
 ap.add_argument("--data", default="scramble", choices=["seq", "scramble", "random"]); ap.add_argument("--plain-every", type=int, default=4)
 ap.add_argument("--block", type=int, default=1000); ap.add_argument("--lob-len", type=int, default=100); ap.add_argument("--seed", type=int, default=0)
-a = ap.parse_args()
+a = ap.parse_intermixed_args()                     # the action can come after the options too
 eng = ENGINES[a.engine]()
 if not a.database and hasattr(eng, "default_db"): a.database = eng.default_db(a.schema)   # Informix: the schema is the database
 o = planner.Opts(rows=a.rows or eng.rows, mode=a.mode, order=a.order, data=a.data, plain_every=a.plain_every, block=a.block, lob_len=a.lob_len, seed=a.seed)
