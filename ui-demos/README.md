@@ -7,8 +7,9 @@ Screenshots of the Lakeflow Connect UI for database sources, one folder per data
 | Database | Mode | Folder |
 |---|---|---|
 | PostgreSQL | query-based (QBC) | [db/postgres/qbc](db/postgres/qbc/README.md) |
+| SQL Server | query-based (QBC) | [db/sqlserver/qbc](db/sqlserver/qbc/README.md) |
 
-Planned, one at a time: QBC for SQL Server, MySQL and Oracle; then integrated CDC (gateway) and QBC through a foreign catalog for each.
+Planned, one at a time: QBC for MySQL and Oracle; then integrated CDC (gateway) and QBC through a foreign catalog for each.
 
 `lfc_ui/` holds the shared helpers: `capture.py` (after the screenshots: redacted copies, the time between screenshots in `metrics.yaml`, GIFs) and `image_redact.py` (redacted copies: known digit IDs, such as account and workspace IDs, are masked with the last four digits kept; names and hosts stay readable). Both come from the lfc-faq notes' Google Ads demo.
 
@@ -35,6 +36,10 @@ On workspaces whose single sign-on checks the device (seen: Okta device trust on
 4. **Turn remote debugging off when done:** while it's on, any local program can drive that Chrome and its signed-in sessions.
 
 Don't use Playwright for these demos: its browser can't sign in, and its saved logins (`auth.json`) don't help.
+
+## Source tables
+
+By convention every demo source has the same two tables in a schema named `lfcddemo` (in MySQL, which has no schema level, the database `lfcddemo`): `intpk` (primary key `pk`, cursor `dt`, ingested as SCD type 1) and `dtix` (no key, cursor `dt`, ingested append-only). Only the connection and, where there is one, the database differ.
 
 ## Names
 

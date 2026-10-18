@@ -30,6 +30,8 @@ Take the epoch once, when the user says yes to the plan, and use one name for th
 EPOCH=$(date +%s); NAME=janedoe_lfcddemo_azure_pg_$EPOCH; RUN=ui-demos/db/postgres/qbc/runs/$NAME; mkdir -p $RUN/clear
 ```
 
+**Source tables:** by convention `intpk` and `dtix` in schema `lfcddemo` (MySQL: database `lfcddemo`); see `ui-demos/README.md`. Set `dtix` to `scd_type: APPEND_ONLY` in the YAML view before the first run: the wizard has no append-only choice.
+
 **Ask before creating anything** in a shared workspace: say the name, catalog, and tables, and wait for one yes. "Create pipeline and continue" in the wizard creates the pipeline.
 
 ## 3. Screenshot each step, then finish
@@ -52,6 +54,7 @@ PYTHONPATH=../../.. ../../../../.venv/bin/python -m lfc_ui.capture runs/$NAME \
 - `fill` on a field that already has text **adds to it**, and `Meta+A` doesn't select the text either. To replace a value, set it the React way in `evaluate_script`: the `HTMLInputElement` value setter, then `input` and `change` events. Check the value before clicking Create or Save.
 - Dropdown options (catalog, cursor column, primary key) often aren't in `take_snapshot`: open the list, then click the `[role="option"]` whose text matches, in `evaluate_script`.
 - The YAML and JSON views are Monaco editors with no global `monaco`. The first edit turns the view into a diff ("Unsaved changes") and only the first typed character lands: focus the right-hand editor's `textarea`, move with the arrow keys, type the rest, and read the visible `.view-line` elements to check it.
+- A native browser dialog (for example switching the wizard to YAML) freezes every tool call until it's answered: `handle_dialog`.
 - The REST API rejects the browser session (401), so read pipelines and jobs from the UI or with the CLI.
 
 It writes `redacted/` (digit IDs masked, last four kept), `metrics.yaml` (seconds between screenshots), and both GIFs. Captures stay local (`runs/` is gitignored): share only the redacted copies.
