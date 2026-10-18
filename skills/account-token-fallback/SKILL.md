@@ -35,6 +35,15 @@ One `databricks auth profiles -o json` (it validates every profile, a few second
 
 The standard name is **`account-<cloud>-<account-id>`**, logged in to the cloud's account host (`https://accounts.cloud.databricks.com`, `https://accounts.azuredatabricks.net`, `https://accounts.gcp.databricks.com`) with `--account-id`. If a valid account profile for that account already exists, whatever its name, it's reused and nothing is added. If only expired ones exist, it logs in to one of them again rather than adding a duplicate. Existing profiles keep their names, since other tools may refer to them; the standard name is for accounts that have none yet. The login opens a browser, so run it in your own terminal (in Claude Code: `! bash .../add-account.sh <id> <cloud>`). `--dry-run` shows the command. The account ID of a workspace profile is its `account_id` in `~/.databrickscfg`, which `databricks auth login` writes; `profiles-check.sh` prints the ones that need an account profile.
 
+## When a login never finishes
+
+`databricks auth login` (and `add-account.sh`) opens a browser, which returns to a local port, `127.0.0.1:8020` by default, when you sign in. If another program holds that port, the browser says you're signed in but the command keeps waiting, and the profile isn't saved. Check with `lsof -nP -iTCP -sTCP:LISTEN | grep ':80[23][0-9]'`.
+
+- **Seen holding it:** another program on the laptop, restarted within a second by its launch agent when stopped, holding 8020, 8021 and 8022; and old `databricks auth login` processes, from the CLI or an IDE extension, left waiting for weeks. Stop the stale logins.
+- **Another port:** the CLI takes `DATABRICKS_OAUTH_CALLBACK_PORT`, and since v0.265.0 falls back through ports from 8020 on its own, but a program holding several ports in a row defeats that. `add-account.sh` picks the first free port from 8021 to 8030 itself, and leaves the program alone (tested 2026-10: an AWS account login completed on port 8023 while another program held 8020 to 8022). With `--free-port` it stops the program instead and starts the login right away, before the program comes back; ask the user first, since it can belong to another app.
+- **Finish the sign-in in the newest tab.** A tab from a login that was stopped returns to nothing: the browser says you're signed in, and nothing is saved.
+- **Check which CLI runs:** `which -a databricks`. An older second copy (seen: v0.209.1 in `/usr/local/bin` next to v1.21.0 from Homebrew) has no port fallback.
+
 ## Rules
 
 - A minted token lasts about an hour. Rerun `ws-token.sh` when calls start failing, or before a long run.
