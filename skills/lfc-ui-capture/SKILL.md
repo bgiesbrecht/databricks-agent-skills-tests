@@ -30,7 +30,7 @@ Take the epoch once, when the user says yes to the plan, and use one name for th
 EPOCH=$(date +%s); NAME=janedoe_lfcddemo_azure_pg_$EPOCH; RUN=ui-demos/db/postgres/qbc/runs/$NAME; mkdir -p $RUN/clear
 ```
 
-**Source tables:** by convention `intpk` and `dtix` in schema `lfcddemo` (MySQL: database `lfcddemo`); see `ui-demos/README.md`. Set `dtix` to `scd_type: APPEND_ONLY` in the YAML view before the first run: the wizard has no append-only choice.
+**Source tables:** by convention `intpk` and `dtix` in schema `lfcddemo` (MySQL: database `lfcddemo`); see `ui-demos/README.md`. The wizard has no append-only choice, so set `dtix` to `scd_type: APPEND_ONLY` in the YAML view before the first run, in this order: pick both tables in the wizard, **Save and continue** on Destination (its validation fails on `dtix` but saves the tables; switching to YAML before a save drops them), switch to YAML, add the line, **Save and run pipeline**.
 
 **Ask before creating anything** in a shared workspace: say the name, catalog, and tables, and wait for one yes. "Create pipeline and continue" in the wizard creates the pipeline.
 

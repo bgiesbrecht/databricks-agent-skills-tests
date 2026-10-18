@@ -8,8 +8,9 @@ Screenshots of the Lakeflow Connect UI for database sources, one folder per data
 |---|---|---|
 | PostgreSQL | query-based (QBC) | [db/postgres/qbc](db/postgres/qbc/README.md) |
 | SQL Server | query-based (QBC) | [db/sqlserver/qbc](db/sqlserver/qbc/README.md) |
+| MySQL | query-based (QBC) | [db/mysql/qbc](db/mysql/qbc/README.md) |
 
-Planned, one at a time: QBC for MySQL and Oracle; then integrated CDC (gateway) and QBC through a foreign catalog for each.
+Planned, one at a time: QBC for Oracle; then integrated CDC (gateway) and QBC through a foreign catalog for each.
 
 `lfc_ui/` holds the shared helpers: `capture.py` (after the screenshots: redacted copies, the time between screenshots in `metrics.yaml`, GIFs) and `image_redact.py` (redacted copies: known digit IDs, such as account and workspace IDs, are masked with the last four digits kept; names and hosts stay readable). Both come from the lfc-faq notes' Google Ads demo.
 
