@@ -2,3 +2,4 @@
 # old Playwright logins (Playwright is no longer used)
 auth*.json
 runs/
+auth-check.png

@@ -50,9 +50,18 @@ The pipeline, its schema, and its schedule job get the same name, the one the **
 
 `lfc_ui/wizard.py` drives the wizard with Playwright **attached to your own signed-in Chrome** (it never launches a browser, so single sign-on isn't involved), boxes each step in red, saves the PNGs, runs the pipeline once, then deletes the job and the pipeline (`--keep` keeps them; the schema always stays). Measured: 27 steps in 2.5 minutes on PostgreSQL, against about 20 by hand.
 
-1. In Chrome, `chrome://inspect/#remote-debugging` on, signed in to the workspace.
-2. **Turn the Chrome DevTools MCP server off** (`/mcp`): Chrome allows one client on its debug socket, and a second one gets 403.
-3. `cd ui-demos && ../.venv/bin/python -m lfc_ui.wizard postgres` (or `sqlserver`, `mysql`), and click **Allow** in Chrome's "Allow remote debugging?" prompt. That prompt is Chrome's own, so no script can click it.
+**Usual way, no prompt:** save the workspace session once, then each run starts Playwright's own browser with it (headless, 1600x900; `--headed` to watch). The Chrome DevTools MCP server can stay on.
+
+```bash
+cd ui-demos
+../.venv/bin/python -m lfc_ui.auth save      # once, and again when check fails: attaches to your Chrome, click Allow
+../.venv/bin/python -m lfc_ui.auth check     # Playwright's Chromium opens the workspace signed in
+../.venv/bin/python -m lfc_ui.wizard postgres --launch      # or sqlserver, mysql
+```
+
+`auth save` keeps only the workspace host's cookies, in `auth.json` (mode 600, gitignored): a live session, so never share it, and `rm auth.json` when done. Tested 2026-10-18: Playwright's Chromium with it opened the workspace signed in, and a PostgreSQL run completed in 2.4 minutes.
+
+**Without a saved session:** run without `--launch` to attach to your own Chrome: `chrome://inspect/#remote-debugging` on, the Chrome DevTools MCP server **off** (Chrome allows one client on its debug socket; a second gets 403), and click **Allow** in Chrome's "Allow remote debugging?" prompt (Chrome's own, so no script can click it).
 
 On failure it stops and leaves `fail.png`, `fail.aria.txt` (the accessibility tree) and `trace.zip` (`../.venv/bin/playwright show-trace <run>/trace.zip`) in the run folder. Turn the MCP server back on, get past the changed screen by hand (the steps below), then fix that step in `wizard.py`.
 

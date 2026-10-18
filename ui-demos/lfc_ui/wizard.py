@@ -301,15 +301,22 @@ def main() -> int:
     ap.add_argument("source", choices=sorted(SOURCES))
     ap.add_argument("--owner", default=re.sub(r"[^a-z0-9]", "", getpass.getuser().lower()))
     ap.add_argument("--keep", action="store_true", help="keep the pipeline and job")
+    ap.add_argument("--launch", action="store_true", help="start Playwright's own browser with auth.json (lfc_ui.auth save) instead of attaching to Chrome: no Allow prompt, and the Chrome DevTools MCP server can stay on")
+    ap.add_argument("--headed", action="store_true", help="with --launch: show the browser window")
     a = ap.parse_args()
     src = SOURCES[a.source]
     name = re.sub(r"[^a-z0-9]", "_", f"{a.owner}_{src['connection']}_{int(time.time())}".lower())
     folder = REPO / "ui-demos/db" / a.source / "qbc/runs" / name
     print(name, flush=True)
-    port, path = (pathlib.Path.home() / "Library/Application Support/Google/Chrome/DevToolsActivePort").read_text().split()[:2]
+    port, path = ("", "") if a.launch else (pathlib.Path.home() / "Library/Application Support/Google/Chrome/DevToolsActivePort").read_text().split()[:2]
     with sync_playwright() as pw:
-        browser = pw.chromium.connect_over_cdp(f"ws://127.0.0.1:{port}{path}", timeout=60_000)
-        ctx = browser.contexts[0]
+        if a.launch:
+            auth = REPO / "ui-demos/auth.json"
+            browser = pw.chromium.launch(headless=not a.headed)
+            ctx = browser.new_context(storage_state=str(auth), viewport={"width": 1600, "height": 900})
+        else:
+            browser = pw.chromium.connect_over_cdp(f"ws://127.0.0.1:{port}{path}", timeout=60_000)
+            ctx = browser.contexts[0]
         ctx.tracing.start(screenshots=True, snapshots=True)
         page = ctx.new_page()
         page.set_default_timeout(30_000)
@@ -326,6 +333,8 @@ def main() -> int:
             return 1
         ctx.tracing.stop(path=str(folder / "trace.zip"))
         page.close()
+        if a.launch:
+            browser.close()
     print(json.dumps(result, indent=1))
     if not a.keep and result.get("state") == "Completed":
         cleanup(name, result["pipeline_id"])
