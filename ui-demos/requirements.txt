@@ -1,0 +1,4 @@
+playwright>=1.47
+pillow>=10
+PyYAML>=6.0.1,<7
+pytesseract>=0.3.10
