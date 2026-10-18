@@ -36,7 +36,9 @@ echo "### done  $(date -u +%H:%M:%S)  results: ${RESULTS_ROOT:-/tmp}"
 if [ -n "${LFC_NAME_PREFIX:-}" ]; then
   out="${RESULTS_ROOT:-/tmp}/compute.tsv"
   echo "### compute readback  $(date -u +%H:%M:%S)  (serverless asked: ${LFC_SERVERLESS:-?})"
-  "$ROOT/bin/compute_report.sh" "$PIPELINE_WS" "$LFC_NAME_PREFIX-" "$START" | tee "$out" | column -t -s $'\t'
+  WS_CFG=$(bash "$ROOT/skills/account-token-fallback/scripts/ws-token.sh" "$PIPELINE_WS")     # the login may have expired by now
+  DATABRICKS_CONFIG_FILE=${WS_CFG:-${DATABRICKS_CONFIG_FILE:-$HOME/.databrickscfg}} \
+    "$ROOT/bin/compute_report.sh" "$PIPELINE_WS" "$LFC_NAME_PREFIX-" "$START" | tee "$out" | column -t -s $'\t'
   echo "saved $out; again later: bin/compute_report.sh $PIPELINE_WS $LFC_NAME_PREFIX- $START"
 else
   echo "### compute readback skipped: LFC_NAME_PREFIX is unset"

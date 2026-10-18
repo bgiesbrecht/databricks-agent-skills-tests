@@ -64,6 +64,11 @@ echo "Prompts:     $PROMPTS"
 echo "Results:     $RESULTS_DIR"
 echo "Pipeline WS: $PIPELINE_WS  (DATABRICKS_CONFIG_PROFILE for Claude)"
 echo "Work dir:    $WORK_DIR"
+# An expired workspace login: mint a token from the account login for the same account (account-token-fallback),
+# so the sessions' --profile "$PIPELINE_WS" keeps working. Nothing changes while the profile's own login works.
+WS_CFG=$(bash "$SCRIPT_DIR/skills/account-token-fallback/scripts/ws-token.sh" "$PIPELINE_WS") || {
+  echo "ERROR: $PIPELINE_WS can't log in (see above): databricks auth login --profile $PIPELINE_WS"; exit 1; }
+if [ -n "$WS_CFG" ]; then export DATABRICKS_CONFIG_FILE="$WS_CFG"; echo "Auth:        token minted from the account login (about an hour)"; fi
 [ -n "$CLAUDE_ALLOWED_TOOLS" ] && echo "Allowed:     $CLAUDE_ALLOWED_TOOLS"
 [ -n "$CLAUDE_ARGS" ] && echo "Claude args: $CLAUDE_ARGS"
 echo ""

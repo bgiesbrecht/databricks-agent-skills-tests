@@ -92,6 +92,8 @@ cp env.example.sh env.local.sh    # fill in profiles, catalog, connections (neve
 source env.sh
 ```
 
+When the workspace profile's OAuth login has expired, `run.sh` mints a token from your account login for the same account and keeps going ([account-token-fallback](skills/account-token-fallback/SKILL.md)); log in to the account once with `databricks auth login --host <accounts-url> --account-id <id> --profile <name>`.
+
 `run.sh` copies the skills repo's `skills/` into the Claude plugin cache before each run, so
 sessions test your local edits. Sessions run in a scratch `WORK_DIR` under `/tmp`, outside both
 repos, so skills load from the plugin cache and generated bundles stay out of git.
