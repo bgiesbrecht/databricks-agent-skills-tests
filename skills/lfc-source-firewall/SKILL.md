@@ -14,7 +14,7 @@ A source database has to accept connections from two places: **your laptop**, so
 |---|---|---|
 | Your laptop | `curl -fsS https://api.ipify.org` (fallback `https://ifconfig.me/ip`), as a `/32` | Setting up the database, seeding, running test DML |
 | Workspace **serverless** egress | Databricks' public [ip-ranges.json](https://www.databricks.com/networking/v1/ip-ranges.json), outbound IPv4 for the workspace's cloud and region | Query-based pipelines, integrated CDC on serverless, `remote_query`, serverless gateways |
-| Workspace **classic** compute egress | Not published. It's the workspace's NAT / egress IP, set per workspace (see [Classic compute egress](#classic-compute-egress)) | Standard CDC gateways on classic compute, integrated CDC with `serverless: false`, anything else running on classic clusters |
+| Workspace **classic** compute egress | Not published. It's the workspace's NAT / egress IP, set per workspace (see [Classic compute egress](#classic-compute-egress)) | Standard CDC gateways and integrated CDC that run on classic compute: `serverless: false`, or `serverless` unset on a workspace with classic (seen on Azure), and anything else running on classic clusters. The test prompts set `serverless: true` so this isn't needed |
 
 Open only the database port, only to these addresses. Never open `0.0.0.0/0`.
 
@@ -47,7 +47,7 @@ Counts are from `ip-ranges.json` at the time of writing; recount with the comman
 | Database port | 5432 Postgres, 3306 MySQL, 1433 SQL Server, 1521 Oracle, 3342 SQL Managed Instance public endpoint |
 | Azure resource group and NSG | Ask whether the user has their own resource group. If not, use the shared test group `forgedb-rg` (check it exists: `az group show -n forgedb-rg`) and its shared NSG for the VM's region (`az network nsg list -g forgedb-rg`). The user is free to choose a different group. Don't create resource groups or NSGs without asking |
 | Scope | This workspace's region (default), or every serverless region for a shared source |
-| Does the pipeline use classic compute? | Standard CDC gateway on classic, integrated CDC with `serverless: false`, or classic query-based (Beta) |
+| Does the pipeline use classic compute? | A standard CDC gateway or integrated CDC with `serverless: false`, or unset on a workspace with classic compute; or classic query-based (Beta). Read `update.config.serverless` from `pipelines get-update` |
 | Classic egress IPs | Only if classic compute is used: from the user, or found as below |
 
 Shared resource groups can hit their quotas. If creation fails with a quota or limit error in the shared group, ask for another resource group rather than deleting someone else's resources.
@@ -190,8 +190,10 @@ Show the user the full list of rules you'll add or remove (counts per group, the
 
 ## Gotchas
 
-- **Laptop IPs change** (new network, VPN). Rerun Step 1 and replace the `lfc-myip-*` rule when setup commands start timing out.
-- **VPN egress:** behind a corporate VPN, `api.ipify.org` returns the VPN's egress IP, which other people share. Prefer the narrowest IP that works, and remove it when you're done.
+- **The laptop's IP changes, even without moving.** A corporate VPN hands out a different egress IP from a pool from one session to the next: seen on the same day, `203.0.113.82` then `203.0.113.16`, and SSH to the AWS VM timed out until the rule moved. So **check the laptop IP at the start of every session**, before the first SSH or SQL connection: rerun Step 1, and if it changed, add the new IP and remove the old one in each `lfc-myip-*` rule, keeping the rule's name or description (on AWS, authorize the new CIDR with the same description, then revoke the old one). A timeout on SSH or the database port, where it worked before, usually means this.
+- **VPN egress is shared:** behind a corporate VPN, `api.ipify.org` returns the VPN's egress IP, which other people share. Prefer the narrowest IP that works, and remove it when you're done.
+- **A VPN may not reach every cloud.** On one corporate VPN (full tunnel), SSH from the laptop reached AWS and Azure VMs, but packets to a GCP VM's public IP never arrived. A logged firewall rule for the laptop's egress IP saw nothing, while SSH to GitHub over the same VPN worked. There was also no VPN route into the VPC's private range. Either connect without the VPN for setup, use the cloud's own tunnel (GCP: `gcloud compute ssh --tunnel-through-iap`, which needs `roles/iap.tunnelResourceAccessor` and an ingress rule from `35.235.240.0/20`), or drive the VM without SSH (a startup script, read back through the serial console). Lakeflow Connect itself doesn't care: serverless reaches the database from the workspace's egress ranges, not through your laptop.
+- **To see whether packets arrive at all**, turn on logging for the rule that should allow them (GCP `--enable-logging`; AWS and Azure flow logs). A log with no entry from you means the traffic never reached the cloud, so no rule change will help. A low-priority logged deny rule only sees what higher rules didn't match.
 - **`ip-ranges.json` changes** as Databricks adds regions and capacity. Rerun the sync before a demo rather than trusting old rules.
 - **GCP Cloud SQL `--authorized-networks` replaces the whole list.** Always include the existing entries you want to keep.
 - **AWS limits:** 60 inbound rules per security group and 5 groups per instance by default (about 300 CIDRs), and AWS caps the product of the two. Reuse existing groups first and check quotas before adding a large list (see [references/aws.md](references/aws.md)).

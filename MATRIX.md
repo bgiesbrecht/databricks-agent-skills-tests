@@ -92,6 +92,22 @@ Additional criteria per mode:
   on LakeFlow Connect pipelines"); query-based cells work on either.
 - **Feature gates:** standard CDC for Postgres and MySQL is enabled per workspace. Where it isn't,
   the expected result is a clean 403 stop.
+- **Compute: `LFC_SERVERLESS`** (in `env.sh`; `true` by default) fills `${LFC_COMPUTE_ASK}` in every
+  VM-source prompt: `true` or `false` asks for that setting on every pipeline and gateway, `unset`
+  asks to leave it out and take the product's default. `true` is the default only because of the
+  test setup: lfc-source-firewall opens the sources to the workspace's serverless egress ranges,
+  not to its classic egress IP, so a pipeline the default puts on classic starts and then can't
+  reach the source. The public skill leaves `serverless` unset. A run with another setting writes
+  to `/tmp/lfc-tests/<name>-serverless-<setting>/`, so the two can be compared.
+- **Record compute for every pipeline cell**, from `bin/compute_report.sh <profile> <name-prefix>`:
+  what was sent (`unset`, `true`, `false`), what it ran on, whether the compute started, and
+  whether it then reached the source, plus the workspace type (`workspace.compute`:
+  `serverless-only` or `classic`). Keep these apart: **not started** (compute not allowed,
+  refused at create, in seconds), **started but the source unreachable** (the firewall; on
+  classic this shows only after the cluster's ~8 min start), and a rerun **switched** to
+  serverless because of the firewall (`switched_from`, `switch_reason: firewall`). To see what
+  the default picks on each workspace type, run the matrix with `LFC_SERVERLESS=unset`; with the
+  test firewall, a classic pick records as started, source not reached (firewall).
 - Record each run in `results/<date>-<workspace>.md`.
 
 ## Running it

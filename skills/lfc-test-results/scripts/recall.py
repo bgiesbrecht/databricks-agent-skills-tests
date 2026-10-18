@@ -11,6 +11,7 @@
   uv run recall.py --grep TLS                       # free text in result, error, notes
   uv run recall.py --coverage                       # test x engine grid: latest outcome per cell, across every setup
   uv run recall.py --workspace serverless --storage juicefs   # filter on workspace and setup fields too
+  uv run recall.py --compute unset                           # what an unset serverless ran on ("unset->classic")
 
 Filters combine. --all lists every matching record instead of the latest per cell. --json prints records.
 """
@@ -20,9 +21,22 @@ from pathlib import Path
 RUNS = Path(__file__).resolve().parents[3] / "results" / "runs"
 ICON = {"pass": "✅", "fail": "❌", "blocked": "⛔", "expected-stop": "✅ stop", "partial": "⚠️"}
 
+def comp(r):                                         # "unset->classic, source not reached (firewall)", "; gw ..." for a gateway
+    c = r.get("compute") or {}
+    if not c: return ""
+    def one(x):
+        t = f"{x.get('serverless')}->{x.get('ran_on')}"
+        if x.get("started") is False: t += ", not started"
+        elif x.get("reached_source") is False: t += ", source not reached"
+        if x.get("blocked_by"): t += f" ({x['blocked_by']})"
+        if x.get("switched_from"): t += f"; was {x['switched_from']} ({x.get('switch_reason', '')})"
+        return t
+    g = c.get("gateway")
+    return one(c) + (f"; gw {one(g)}" if isinstance(g, dict) else "")
+
 def main():
     ap = argparse.ArgumentParser()
-    for k in ("engine", "test", "outcome", "host", "run", "grep", "since", "workspace", "storage"): ap.add_argument(f"--{k}")
+    for k in ("engine", "test", "outcome", "host", "run", "grep", "since", "workspace", "storage", "compute"): ap.add_argument(f"--{k}")
     ap.add_argument("--all", action="store_true"); ap.add_argument("--json", action="store_true"); ap.add_argument("--coverage", action="store_true")
     a = ap.parse_args()
     lines = [l for f in sorted(RUNS.glob("*.jsonl")) for l in f.read_text().splitlines() if l.strip()] if RUNS.exists() else []
@@ -37,6 +51,7 @@ def main():
             and (not a.since or r["date"] >= a.since)
             and (not a.workspace or a.workspace.lower() in json.dumps(r.get("workspace", {})).lower())
             and (not a.storage or a.storage.lower() in str(r.get("setup", {}).get("storage", "")).lower())
+            and (not a.compute or a.compute.lower() in comp(r).lower())
             and (not a.grep or a.grep.lower() in " ".join(str(r.get(k, "")) for k in ("result", "error", "notes")).lower()))
     recs = sorted(filter(keep, recs), key=lambda r: (r["date"], r["_line"]), reverse=True)   # newest first; later lines win ties
     if a.coverage:                                   # newest outcome per test x engine, any host or setup
@@ -56,11 +71,11 @@ def main():
     if a.json:
         for r in recs: r.pop("_line"); print(json.dumps(r))
         return
-    print("| Date | Test | Engine | Host | Outcome | Result | Run |\n|---|---|---|---|---|---|---|")
+    print("| Date | Test | Engine | Host | Workspace | Compute | Outcome | Result | Run |\n|---|---|---|---|---|---|---|---|---|")
     for r in recs:
         s = r["subject"]; eng = " ".join(x for x in (s.get("engine"), s.get("version")) if x)
         res = r["result"] + (f" — {r['error']}" if r.get("error") else "")
-        print(f"| {r['date']} | {r['test']} | {eng} | {r.get('host', '')} | {ICON.get(r['outcome'], r['outcome'])} | {res} | {r['run']} |")
+        print(f"| {r['date']} | {r['test']} | {eng} | {r.get('host', '')} | {(r.get('workspace') or {}).get('compute', '')} | {comp(r)} | {ICON.get(r['outcome'], r['outcome'])} | {res} | {r['run']} |")
     print(f"\n{len(recs)} result(s)")
 
 if __name__ == "__main__":

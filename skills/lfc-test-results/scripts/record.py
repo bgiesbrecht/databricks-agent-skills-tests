@@ -25,7 +25,15 @@ TESTS = {"connection", "qbc", "icdc", "scdc", "fcqbc", "dml", "source-setup",   
          "secret-by-reference", "network", "compat",                                  # credentials, network path, versions
          "rclone-pull", "reflink-isolation", "juicefs-clone", "disk-restore",      # branch layers
          "snapshot-read", "write-tps", "load", "other"}                            # performance; add new names here in the same PR
-ALLOWED_KEYS = REQUIRED | {"host", "workspace", "setup", "metrics", "error", "skills", "docs", "notes"}
+ALLOWED_KEYS = REQUIRED | {"host", "workspace", "setup", "compute", "metrics", "error", "skills", "docs", "notes"}
+# compute: what the run set (serverless), what the latest update ran on (ran_on, from pipelines get-update
+# .update.config.serverless), whether that compute came up (started) and then connected to the source
+# (reached_source), and if not, why (blocked_by). A rerun that changed the setting says from what and why
+# (switched_from, switch_reason). gateway: the same for a standard CDC gateway. bin/compute_report.sh reads them.
+SERVERLESS = {"unset", "true", "false"}
+RAN_ON = {"serverless", "classic", "not-started", "unknown"}   # unknown: not read back
+BLOCKED_BY = {"compute-not-allowed", "firewall", "feature-gate", "other"}
+PIPELINE_TESTS = {"qbc", "fcqbc", "icdc", "scdc", "dml"}
 SETUP_KEYS = {"storage", "network", "credentials", "workload", "dml", "tool", "contributor"}   # documented; others allowed (warned)
 
 # Anything matching these is internal or secret; use placeholders (see SKILL.md)
@@ -65,8 +73,22 @@ def problems(rec):
     if not isinstance(rec.get("subject"), dict) or "engine" not in rec.get("subject", {}): out.append("subject needs an engine")
     if rec.get("outcome") != "pass" and not rec.get("error") and not rec.get("notes"): out.append("a non-pass needs error or notes")
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}-[a-z0-9-]+", str(rec.get("run", ""))): out.append("run must be <YYYY-MM-DD>-<topic> in lowercase kebab case")
-    for k in ("workspace", "setup", "metrics"):
+    for k in ("workspace", "setup", "compute", "metrics"):
         if k in rec and not isinstance(rec[k], dict): out.append(f"{k} must be an object")
+    c = rec.get("compute")
+    if isinstance(c, dict):
+        for name, part in (("compute", c), ("compute.gateway", c.get("gateway"))):
+            if part is None: continue
+            if not isinstance(part, dict): out.append(f"{name} must be an object"); continue
+            if part.get("serverless") not in SERVERLESS: out.append(f"{name}.serverless must be one of {sorted(SERVERLESS)}")
+            if part.get("ran_on") not in RAN_ON: out.append(f"{name}.ran_on must be one of {sorted(RAN_ON)}")
+            for k in ("started", "reached_source"):
+                if k in part and not isinstance(part[k], bool): out.append(f"{name}.{k} must be true or false")
+            if "blocked_by" in part and part["blocked_by"] not in BLOCKED_BY: out.append(f"{name}.blocked_by must be one of {sorted(BLOCKED_BY)}")
+            if (part.get("started") is False or part.get("reached_source") is False) and "blocked_by" not in part:
+                out.append(f"{name}: not started or source not reached needs blocked_by")
+            if "switched_from" in part and (part["switched_from"] not in SERVERLESS or not part.get("switch_reason")):
+                out.append(f"{name}.switched_from must be one of {sorted(SERVERLESS)}, with a switch_reason")
     return out + [f"looks internal: {w}" for w in leaks(rec)]
 
 def head(path):
@@ -96,6 +118,8 @@ def main():
     for i, r in enumerate(recs):
         extra = set(r.get("setup", {})) - SETUP_KEYS if isinstance(r, dict) and isinstance(r.get("setup"), dict) else set()
         if extra: print(f"record {i + 1}: note: new setup keys {sorted(extra)}; document them in SKILL.md", file=sys.stderr)
+        if isinstance(r, dict) and r.get("test") in PIPELINE_TESTS and r.get("outcome") not in ("blocked", "expected-stop") and "compute" not in r and "--check" not in sys.argv:
+            print(f"record {i + 1}: note: no compute (what serverless was set to, what it ran on: bin/compute_report.sh)", file=sys.stderr)
     for i, p in bad: print(f"record {i + 1}: {p}", file=sys.stderr)
     if bad: sys.exit(1)
     if "--check" in sys.argv: print(f"{len(recs)} records OK"); return

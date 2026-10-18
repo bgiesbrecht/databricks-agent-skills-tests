@@ -19,9 +19,20 @@ export LFC_ENV="${LFC_ENV:-default}"
 export SKILLS_REPO="${SKILLS_REPO:-$_ENV_DIR/../databricks-agent-skills}"
 export OMNIGENT_WS="${OMNIGENT_WS:-DEFAULT}"   # profile for the workspace file bridge (sync.sh)
 export PIPELINE_WS="${PIPELINE_WS:-DEFAULT}"   # profile passed to Claude as DATABRICKS_CONFIG_PROFILE
-export RESULTS_ROOT="${RESULTS_ROOT:-/tmp/lfc-tests/$LFC_ENV}"
+# What the matrix prompts ask for compute (MATRIX.md, "Workspace requirements"): true (the default: the test firewall
+# allows only the serverless ranges), false, or unset (take the product's default; record what it ran on)
+export LFC_SERVERLESS="${LFC_SERVERLESS:-true}"
+case $LFC_SERVERLESS in
+  true|false) export LFC_COMPUTE_ASK="Set serverless: $LFC_SERVERLESS on every pipeline and gateway." ;;
+  unset)      export LFC_COMPUTE_ASK="Leave serverless unset on every pipeline and gateway, to take the default." ;;
+  *) echo "ERROR: LFC_SERVERLESS must be true, false or unset"; return 1 2>/dev/null || exit 1 ;;
+esac
+# a run with another setting gets its own results dir, so the two can be compared
+_SUFFIX=; [ "$LFC_SERVERLESS" != true ] && _SUFFIX="-serverless-$LFC_SERVERLESS"
+export RESULTS_ROOT="${RESULTS_ROOT:-/tmp/lfc-tests/$LFC_ENV$_SUFFIX}"
 
 echo "LFC_ENV=$LFC_ENV"
 echo "SKILLS_REPO=$SKILLS_REPO"
 echo "PIPELINE_WS=$PIPELINE_WS"
 echo "RESULTS_ROOT=$RESULTS_ROOT"
+echo "LFC_SERVERLESS=$LFC_SERVERLESS"
