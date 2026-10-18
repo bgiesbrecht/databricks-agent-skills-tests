@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# compute_report.sh <profile> <name-prefix>: for each pipeline whose name starts with <name-prefix>, what the run set
+# compute_report.sh <profile> <name-prefix> [<since>]: for each pipeline whose name starts with <name-prefix> (and,
+# with <since>, an ISO UTC time such as 2026-10-18T02:47:00Z, whose latest update started after it), what the run set
 # serverless to, what its latest update ran on, whether that compute started, and whether it then reached the source,
 # for the records' "compute" field (lfc-test-results). Read-only.
 #   Prints TSV:
@@ -13,13 +14,15 @@
 #
 #   bin/compute_report.sh <profile> janedoe-mssql-azvm
 set -uo pipefail
-P=$1; PREFIX=$2; T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+P=$1; PREFIX=$2; SINCE=${3:-}; T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 printf 'name\tkind\tserverless\tran_on\tstarted\treached_source\tupdate_state\terror\n'
 databricks pipelines list-pipelines --filter "name LIKE '$PREFIX%'" --profile "$P" -o json \
   | yq -p json -o tsv '.[] | .pipeline_id' | while read -r id; do
   databricks pipelines get "$id" --profile "$P" -o json > "$T/p.json" 2> /dev/null || continue
   eval "$(yq -p json -o shell '{"name": .name, "set": (.spec.serverless | tostring),
-          "upd": (.latest_updates[0].update_id // ""), "st": (.latest_updates[0].state // "")}' "$T/p.json")"
+          "upd": (.latest_updates[0].update_id // ""), "st": (.latest_updates[0].state // ""),
+          "created": (.latest_updates[0].creation_time // "")}' "$T/p.json")"
+  if [ -n "$SINCE" ] && [[ "$created" < "$SINCE" ]]; then continue; fi     # ISO UTC times compare as strings
   [ "$set" = null ] && set=unset             # tostring keeps false (yq's // would turn false into the default)
   kind=pipeline; [ "$(yq -p json -o tsv '.spec.gateway_definition.connection_name // ""' "$T/p.json")" ] && kind=gateway
   ran=not-started; started=unknown; reached=unknown; err=

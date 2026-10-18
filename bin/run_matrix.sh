@@ -14,6 +14,7 @@
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 M="$ROOT/prompts/lfc-matrix"
 if [ $# -gt 0 ]; then batches=("$@"); else batches=(qbc fcqbc icdc scdc dml); fi
+START=$(date -u +%Y-%m-%dT%H:%M:%SZ)          # for the compute readback at the end
 
 for b in "${batches[@]}"; do
   case $b in
@@ -28,3 +29,15 @@ for b in "${batches[@]}"; do
   "$ROOT/bin/run_batch.sh" "${files[@]}"
 done
 echo "### done  $(date -u +%H:%M:%S)  results: ${RESULTS_ROOT:-/tmp}"
+
+# Read back, right away, what compute each pipeline of this run asked for and got: whether it started and reached the
+# source (the records' "compute" field). Sandbox workspaces can disappear within hours, and a classic update takes about
+# 8 minutes before it fails, so a pipeline still WAITING_FOR_RESOURCES here shows started=unknown: rerun the same command.
+if [ -n "${LFC_NAME_PREFIX:-}" ]; then
+  out="${RESULTS_ROOT:-/tmp}/compute.tsv"
+  echo "### compute readback  $(date -u +%H:%M:%S)  (serverless asked: ${LFC_SERVERLESS:-?})"
+  "$ROOT/bin/compute_report.sh" "$PIPELINE_WS" "$LFC_NAME_PREFIX-" "$START" | tee "$out" | column -t -s $'\t'
+  echo "saved $out; again later: bin/compute_report.sh $PIPELINE_WS $LFC_NAME_PREFIX- $START"
+else
+  echo "### compute readback skipped: LFC_NAME_PREFIX is unset"
+fi

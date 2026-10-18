@@ -128,6 +128,30 @@ Classic clusters leave the workspace through its own NAT / egress IP, which isn'
   A workspace normally has one NAT IP, but a cluster in another subnet can leave from a second one: if a gateway still can't connect (`INCORRECT_SOURCE_HOSTNAME_OR_PORT_SPECIFIED_FAILURE`), run the job again and compare.
 - **Can't determine it:** add the laptop and serverless IPs anyway, and **warn the user** that any part of the pipeline that runs on classic compute (for example a standard CDC gateway) may not be able to reach the database until its egress IP is added. Serverless parts will still work.
 
+**When a pipeline on classic can't reach the source.** In the event log it shows as `Extractor STARTED`, then about a minute later `Extractor FAILED` with `INGESTION_GATEWAY_CONNECTION_ERROR.INCORRECT_SOURCE_HOSTNAME_OR_PORT_SPECIFIED_FAILURE`. `bin/compute_report.sh` reads it as `ran_on classic`, `started yes`, `reached_source no`. There are two fixes, and the records keep them apart (lfc-test-results, `compute`):
+
+1. **Allow the classic egress IP**, found with one of the ways above, then rerun with the same setting (`serverless` unset). If the rerun reaches the source, record it as such: no `switched_from`, plus `notes` saying the classic IP was added.
+2. **Switch to serverless**, which the test matrix does by default (`LFC_SERVERLESS=true`): record `switched_from: unset`, `switch_reason: firewall`.
+
+Use 1 to test what the default does on a classic workspace, and 2 when only the data path matters.
+
+## Private paths instead of allowlisting (not tested yet)
+
+Two Databricks features let serverless reach a source without the published ranges in its firewall. Both are set up by an **account admin** on an NCC (network connectivity configuration) attached to the workspace, so `ready.sh` can't see them as a workspace admin. Ask the user whether the workspace has either.
+
+| | Private network gateway | PrivateLink to a load balancer |
+|---|---|---|
+| Clouds | Azure: Public Preview (25 regions, centralus included). AWS: Private Preview, through the account team. GCP: in development (2026-10) | AWS (Enterprise plan) |
+| What you set up | One subnet (`/28` or larger) delegated to `Microsoft.Databricks/workspaces`; Databricks runs the gateway in it. Serverless then reaches whatever that subnet can, including peered VNets and on-premises over ExpressRoute or VPN | An internal NLB in front of the database, a VPC endpoint service that allows the Databricks role, and a private endpoint rule on the NCC for the database's FQDN |
+| What the source's firewall allows | The gateway subnet's private range: one stable range you own, nothing to refresh | The NLB's traffic, from inside the VPC |
+| Routing | `SPECIFIC_DESTINATIONS` routes DNS names only (`destination_type: DNS_NAME`), so a connection on an IP address needs a DNS name (an Azure private DNS zone linked to the VNet), or `ALL_TRAFFIC`, which sends all serverless egress through it | the FQDNs in the rule |
+| Lakeflow Connect | Database ingestion is named in the announcement; serverless only, so not for a classic gateway | not stated in the docs |
+| Other requirements | Premium plan; the VNet's subscription in the same Entra ID tenant as the workspace's; billed from 2026-12-01 | one NLB and endpoint service per target |
+
+Docs: [private network gateway](https://learn.microsoft.com/en-us/azure/databricks/security/network/serverless-network-security/private-network-gateway), [configure it](https://learn.microsoft.com/en-us/azure/databricks/security/network/serverless-network-security/private-network-gateway/configure-private-network-gateway), [announcement](https://www.databricks.com/blog/introducing-private-network-gateway), [AWS PrivateLink to your VPC](https://docs.databricks.com/aws/en/security/network/serverless-network-security/pl-to-internal-network).
+
+The FEVM test workspaces can't use either today: the account APIs refused a non-admin (`This API is disabled for users without account admin status`). Testing needs a Databricks account where the tester is account admin, or an admin to set up the NCC. The plan is in lfc-test-results [test-matrix.md](../lfc-test-results/references/test-matrix.md#planned).
+
 Then record the full wanted list:
 
 ```bash
@@ -194,7 +218,8 @@ Show the user the full list of rules you'll add or remove (counts per group, the
 - **VPN egress is shared:** behind a corporate VPN, `api.ipify.org` returns the VPN's egress IP, which other people share. Prefer the narrowest IP that works, and remove it when you're done.
 - **A VPN may not reach every cloud.** On one corporate VPN (full tunnel), SSH from the laptop reached AWS and Azure VMs, but packets to a GCP VM's public IP never arrived. A logged firewall rule for the laptop's egress IP saw nothing, while SSH to GitHub over the same VPN worked. There was also no VPN route into the VPC's private range. Either connect without the VPN for setup, use the cloud's own tunnel (GCP: `gcloud compute ssh --tunnel-through-iap`, which needs `roles/iap.tunnelResourceAccessor` and an ingress rule from `35.235.240.0/20`), or drive the VM without SSH (a startup script, read back through the serial console). Lakeflow Connect itself doesn't care: serverless reaches the database from the workspace's egress ranges, not through your laptop.
 - **To see whether packets arrive at all**, turn on logging for the rule that should allow them (GCP `--enable-logging`; AWS and Azure flow logs). A log with no entry from you means the traffic never reached the cloud, so no rule change will help. A low-priority logged deny rule only sees what higher rules didn't match.
-- **`ip-ranges.json` changes** as Databricks adds regions and capacity. Rerun the sync before a demo rather than trusting old rules.
+- **`ip-ranges.json` changes**: as often as every 30 days, and new ranges become active as soon as 60 days after they're published ([docs](https://learn.microsoft.com/en-us/azure/databricks/resources/ip-domain-region)). Rerun the sync at least monthly and before a demo. To see whether it changed without syncing, keep the list with the public skill's `serverless-egress.sh <cloud> <region> --state <file>` (databricks-lakeflow-connect `scripts/`, also run by `ready.sh --egress-file <file>`): it lists added (`+`) and removed (`-`) ranges and exits 3 when there are any.
+- **Azure service tags don't fit these sources.** `AzureDatabricksServerless` (regional: `AzureDatabricksServerless.CentralUS`) is supported only in a network security perimeter for Azure Storage, not in the shared NSG or a Flexible Server / Azure SQL firewall, and it isn't the published list: in centralus (2026-10) it held 70 prefixes and covered 11 of the 31 published egress ranges. `AzureDatabricks` covers classic compute's traffic to the control plane. So the sync keeps using `ip-ranges.json`.
 - **GCP Cloud SQL `--authorized-networks` replaces the whole list.** Always include the existing entries you want to keep.
 - **AWS limits:** 60 inbound rules per security group and 5 groups per instance by default (about 300 CIDRs), and AWS caps the product of the two. Reuse existing groups first and check quotas before adding a large list (see [references/aws.md](references/aws.md)).
 - **Private connectivity instead of public IPs:** a Databricks network connectivity configuration (NCC) with private endpoints avoids public firewall rules entirely, but it's set up on the account and per workspace; it's out of scope here.

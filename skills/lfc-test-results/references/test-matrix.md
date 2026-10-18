@@ -29,12 +29,16 @@ In rough order; each line becomes records when it runs.
 2. **Sizing guidance:** for each size, snapshot and CDC throughput on `xfs`, `juicefs` and `rclone-pull`, to say what size can stay on a branch, what should be copied down, and how long a copy takes.
 3. **Change-rate tests:** CDC lag and pipeline duration at fixed DML rates on each engine.
 4. **Secrets by reference:** UC connections whose password comes from an Azure Key Vault secret and an AWS Secrets Manager secret, on each engine.
-5. **Private network gateway** instead of public IPs, on AWS and Azure.
-6. **Version compatibility:** the supported versions of each engine in Podman (JuiceFS branches make many versions cheap to keep), published as a version × mode grid.
-7. **Dogfood workspaces** (AWS, Azure) alongside FEVM, classic and serverless-only.
+5. **Private network gateway** instead of public IPs, on AWS and Azure. Needs an account where the tester is account admin (Premium), or an admin to set up the NCC: delegate a `/28` in the test VNet (same region and Entra ID tenant as the workspace), create the gateway, give the VM a DNS name (private DNS zone) or use `ALL_TRAFFIC`, and allow only the gateway subnet in the VM's NSG. Then run the matrix with `LFC_SERVERLESS=true` and record `setup.network: private-network-gateway`. On AWS (Private Preview, through the account team), the same, plus PrivateLink to an NLB as `privatelink`. See lfc-source-firewall, "Private paths instead of allowlisting".
+6. **The default on a classic workspace, reaching the source:** add the classic egress IP to the firewall (lfc-source-firewall, "Classic compute egress"), run the matrix with `LFC_SERVERLESS=unset`, and record what each pipeline ran on and whether it reached the source.
+7. **Version compatibility:** the supported versions of each engine in Podman (JuiceFS branches make many versions cheap to keep), published as a version × mode grid.
+8. **Dogfood workspaces** (AWS, Azure) alongside FEVM, classic and serverless-only.
 
 ## Known so far
 
 - Workspaces refuse some modes until the account team enables them: the error is `Ingestion source '<ENGINE>' is not supported in your workspace`. Record it as `blocked` with the exact text.
 - CDC needs a catalog with its own managed storage; query-based doesn't.
 - A serverless-only workspace rejects classic gateways; `serverless: true` works for SQL Server standard CDC.
+- On a workspace with classic compute, `serverless` left unset put integrated CDC (MySQL, SQL Server) and the gateway on classic (Azure, 2026-10). With the test firewall allowing only the serverless ranges, they started and then couldn't reach the source; with `serverless: true` they passed. Query-based ran serverless.
+- Classic took about 8 minutes to start; serverless 10 s to 1 min 20 s.
+- Sandbox workspaces can disappear within hours: read back compute and row counts right after a run (`run_matrix.sh` now does the compute part).
