@@ -7,6 +7,10 @@ description: "Capture the Lakeflow Connect UI wizard as numbered PNGs, redacted 
 
 The demos, their folders, and the finishing script are in [`ui-demos/`](../../ui-demos/README.md). This skill is the procedure.
 
+## 0. QBC on PostgreSQL, SQL Server, MySQL: run the script
+
+`ui-demos/lfc_ui/wizard.py` does sections 2 to 4 below on its own, in about 3 minutes: Playwright attached to your Chrome (`connect_over_cdp` to the socket in Chrome's `DevToolsActivePort` file; it never launches a browser). Turn the Chrome DevTools MCP server **off** first (Chrome allows one client; a second gets 403), run `cd ui-demos && ../.venv/bin/python -m lfc_ui.wizard <postgres|sqlserver|mysql>`, and have the user click **Allow** in Chrome's prompt (no script can). On failure it leaves `fail.png`, `fail.aria.txt` and `trace.zip` in the run folder: turn the MCP server back on, do that step by hand as below, and fix the step in `wizard.py`. For a new source or mode, do it by hand once, then add it to the script.
+
 ## 1. Attach to your Chrome (check every session)
 
 ```bash

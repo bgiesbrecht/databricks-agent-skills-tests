@@ -1,3 +1,4 @@
+playwright>=1.47        # attaches to your own Chrome (lfc_ui.wizard); it never launches a browser
 pillow>=10
 PyYAML>=6.0.1,<7
 pytesseract>=0.3.10

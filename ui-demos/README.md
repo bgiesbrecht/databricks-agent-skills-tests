@@ -46,7 +46,17 @@ By convention every demo source has the same two tables in a schema named `lfcdd
 
 The pipeline, its schema, and its schedule job get the same name, the one the **databricks-lakeflow-connect** skill gives them from a bundle or the REST API (see **Default names** there), so a UI demo and a scripted run line up: `[firstname][lastname]_[connection name]_[epoch]`, every character that isn't a letter or digit turned into `_`, and `[epoch]` the seconds since the epoch, taken once (`date +%s`) before the first click and reused for every object and the run folder. For example `janedoe_lfcddemo_azure_pg_1792351234`. The event log and the tables go into that schema in the workspace's default catalog.
 
-## Run
+## Run a capture with the script (QBC: PostgreSQL, SQL Server, MySQL)
+
+`lfc_ui/wizard.py` drives the wizard with Playwright **attached to your own signed-in Chrome** (it never launches a browser, so single sign-on isn't involved), boxes each step in red, saves the PNGs, runs the pipeline once, then deletes the job and the pipeline (`--keep` keeps them; the schema always stays). Measured: 27 steps in 2.5 minutes on PostgreSQL, against about 20 by hand.
+
+1. In Chrome, `chrome://inspect/#remote-debugging` on, signed in to the workspace.
+2. **Turn the Chrome DevTools MCP server off** (`/mcp`): Chrome allows one client on its debug socket, and a second one gets 403.
+3. `cd ui-demos && ../.venv/bin/python -m lfc_ui.wizard postgres` (or `sqlserver`, `mysql`), and click **Allow** in Chrome's "Allow remote debugging?" prompt. That prompt is Chrome's own, so no script can click it.
+
+On failure it stops and leaves `fail.png`, `fail.aria.txt` (the accessibility tree) and `trace.zip` (`../.venv/bin/playwright show-trace <run>/trace.zip`) in the run folder. Turn the MCP server back on, get past the changed screen by hand (the steps below), then fix that step in `wizard.py`.
+
+## Run by hand
 
 1. Take the epoch once (`date +%s`) and make the name (see Names); the run folder is `db/<database>/<mode>/runs/<name>/`.
 2. Drive the wizard in the attached Chrome with the Chrome DevTools tools. Before each click, save a screenshot with `take_screenshot` to `runs/<name>/clear/NNN_<step>.png` (`001_add_data.png`, `002_select_connection.png`, ...).
