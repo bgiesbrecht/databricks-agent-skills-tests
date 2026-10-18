@@ -12,6 +12,50 @@ Each skills-repo PR that these tests back has a summary in [pr-notes/](pr-notes/
 [lfc-query-based-lakebase-demo](pr-notes/lfc-query-based-lakebase-demo.md), with the full test
 matrix and results.
 
+## How to use this repo
+
+The test space is large: where the source runs, which engine and version, which ingestion mode, which cloud and kind of workspace, which compute, network path, credentials, storage under the database, and how much data. Nobody can run every combination, so the repo works like a shared notebook:
+
+1. **Check what's already known** before testing anything: `uv run skills/lfc-test-results/scripts/recall.py --coverage` (test × engine), or `--all` with filters (`--engine`, `--workspace`, `--host`, `--storage`, `--compute`). The table below summarizes it.
+2. **Pick the values you want to cover**, one per axis, preferably ones nobody has tested yet. The axes and their planned values are in [test-matrix.md](skills/lfc-test-results/references/test-matrix.md).
+3. **Run** the Lakeflow Connect matrix against one workspace (see [Deploy tests](#deploy-tests-the-lakeflow-connect-matrix)), or one of the skills' own scripts.
+4. **Record** each cell with `record.py`, and write up the run in `results/<date>-<topic>.md` ([Test results](#test-results)). Records are per run, so people testing in parallel never edit the same file.
+
+## Test axes: what's been tested and works
+
+From `results/runs/*.jsonl`, 2026-10. Each line is a value that passed at least once; a value that's missing hasn't been tested yet, which doesn't mean it fails. Blocked results aren't listed: a mode the workspace hasn't enabled, a missing grant, or a firewall that doesn't allow the compute's IP all work once fixed.
+
+| Axis | Tested and works |
+|---|---|
+| Where the source runs | Podman on an Azure VM and on an AWS VM; Lakebase; Azure managed databases (Flexible Server for Postgres and MySQL, Azure SQL Database); Podman in a laptop Lima VM (data generation only) |
+| Engine and version | PostgreSQL 16, MySQL 8.4, SQL Server 2022, Oracle 23ai Free, Lakebase. For data generation and branch layers only: Db2 11.5, Informix 14.10, CockroachDB 25, YugabyteDB 2025 |
+| Workspace | AWS and Azure field sandboxes (FEVM), each serverless-only and with classic compute; target catalog with its own managed storage (every mode) or on Default Storage (query-based only) |
+| Compute | `serverless: true` on every pipeline and gateway. Left unset: query-based ran serverless; integrated CDC and the gateway ran classic on a classic workspace (Azure), which needs the classic egress IP in the source's firewall: that path isn't tested yet |
+| Network path | public IP, firewall open to the workspace's serverless egress ranges; also cross-cloud (an AWS workspace reading the Azure VM) |
+| Credentials | password stored in the UC connection |
+| Storage under the database | local XFS; XFS reflink clones of a master; JuiceFS branches (object storage); rclone copies of a master |
+| Data | seed tables (`intpk`, `dtix`); TPC-B, -C, -H, -DS, -E and -DI at SF 0.1 and SF 1; pgbench |
+| Data generation | the CLI planners (psql, mysql, sqlcmd, sqlplus) and the Python planner through pip drivers, on six engines |
+
+Lakeflow Connect modes, by engine (✅ passed; workspaces: AWS and Azure, serverless-only and classic):
+
+| Engine | Connection + `remote_query` | Query-based | Query-based via foreign catalog | Integrated CDC | Standard CDC (gateway) |
+|---|---|---|---|---|---|
+| PostgreSQL 16 | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | not offered | not enabled on any test workspace |
+| MySQL 8.4 | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | not enabled on any test workspace |
+| SQL Server 2022 | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure (serverless gateway) |
+| Oracle 23ai Free | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | not offered |
+| Lakebase | ✅ Azure (the query-based demo creates it) | ✅ Azure, with a DML round trip | ✅ Azure | not offered | Lakebase refuses `CREATE PUBLICATION`: the skill stops |
+
+**Doesn't work, by design** (the product refuses it; as of 2026-10):
+
+- CDC (integrated or standard) into a catalog on Default Storage: `Default Storage for Unity Catalog is not supported on LakeFlow Connect pipelines`. Query-based works there.
+- Classic compute, including a classic gateway, on a serverless-only workspace: `You must use serverless compute in this workspace`.
+- `system` and `hive_metastore` as the target catalog.
+- Modes the product doesn't offer for a source (integrated CDC from PostgreSQL or Lakebase; standard CDC from Oracle), and standard CDC from Lakebase, which refuses the publication it needs: the skill should say so and create nothing, which the matrix checks.
+
+GCP, private network paths (private network gateway, PrivateLink), secrets by reference, other engine versions, managed services on AWS and GCP, and larger data volumes aren't tested yet: see the plan in [test-matrix.md](skills/lfc-test-results/references/test-matrix.md#planned).
+
 ## Layout
 
 ```
@@ -20,14 +64,18 @@ summarize.py           # skills loaded, reference files read, answer preview
 env.sh                 # sources env.local.sh, sets SKILLS_REPO / OMNIGENT_WS / PIPELINE_WS
 env.example.sh         # copy to env.local.sh (gitignored) and fill in
 sync.sh                # workspace file bridge for sandboxes without git push
+bin/run_matrix.sh      # the whole Lakeflow Connect matrix, one batch per mode, then a compute readback
 bin/run_batch.sh       # run several prompt files in parallel, each in its own scratch dir
+bin/compute_report.sh  # per pipeline: serverless asked, ran on, started, reached the source
 bin/stop_after.sh      # stop pipeline updates that run past N minutes
 bin/test_scripts.sh    # regression tests for the skills' scripts (offline, or on Postgres and MySQL)
 bin/check_links.py     # every relative link in every skill
 pr-notes/              # PR descriptions with the test matrix, one per skills-repo branch
 prompts/
   lakeflow-connect.txt # routing / guidance prompts (no resources created)
-  lfc-matrix/          # Lakeflow Connect deploy tests: 4 sources x 3 modes, plus DML
+  lfc-matrix/          # Lakeflow Connect deploy tests: 5 sources x 4 modes, plus DML (MATRIX.md)
+results/               # runs/<run>.jsonl records and <date>-<topic>.md write-ups
+skills/                # test-only skills: source setup, data generation, firewall, results
 ```
 
 ## Setup
@@ -75,32 +123,23 @@ No resources created:
 plain request (the skill must ask before creating anything), then the answers and go-ahead.
 `${VAR}` placeholders come from `env.local.sh`.
 
-Run one mode per batch, so tests on the same connection don't race for the same default
-pipeline name (the skill names pipelines `<firstname><lastname>-<connection>`, then `-2`, `-3`;
-standard CDC uses `-gw` / `-ap`):
+Run the whole matrix with `bin/run_matrix.sh` ([MATRIX.md](MATRIX.md) has every cell and its pass criteria). It runs one mode per batch, so tests on the same connection don't race for the same default pipeline name (the skill names pipelines `<firstname><lastname>-<connection>`, then `-2`, `-3`; standard CDC uses `-gw` / `-ap`), and ends by reading back what compute each pipeline ran on:
 
 ```bash
-bin/run_batch.sh prompts/lfc-matrix/qbc-*.txt     # query-based
-bin/run_batch.sh prompts/lfc-matrix/icdc-*.txt    # integrated CDC
-bin/run_batch.sh prompts/lfc-matrix/scdc-*.txt    # standard CDC (gateway + ingestion)
-bin/run_batch.sh prompts/lfc-matrix/dml-lakebase.txt   # generate DML, run it, check the pipeline saw it
+LFC_ENV=<name> source env.sh
+bin/run_matrix.sh                                  # qbc -> fcqbc -> icdc -> scdc -> dml
+bin/run_matrix.sh icdc scdc                        # only some modes
+LFC_SERVERLESS=unset bin/run_matrix.sh icdc        # take the product's compute default instead of serverless: true
+bin/run_batch.sh prompts/lfc-matrix/qbc-*.txt      # one batch by hand
 ```
+
+The prompts ask for `serverless: true` by default (`LFC_SERVERLESS`), because the test firewall allows only the serverless ranges; see "Workspace requirements" in MATRIX.md. Check the workspace first with the skills repo's `ready.sh` (databricks-lakeflow-connect `scripts/`): previews, compute, target catalog, grants, egress ranges.
 
 Integrated CDC updates can run a long time on an idle source. Stop them after 30 minutes:
 
 ```bash
 bin/stop_after.sh 30 <pipeline-id> <pipeline-id>
 ```
-
-Expected results, from a workspace where query-based and integrated CDC are enabled but the
-Postgres and MySQL CDC gateways aren't:
-
-| | Query-based | Integrated CDC | Standard CDC |
-|---|---|---|---|
-| Lakebase | works (bare "demo" prompt creates the Lakebase project) | not available for Postgres; nothing created | publication refused by Lakebase; stops, nothing created |
-| Postgres | works | not available for Postgres; nothing created | 403 at deploy; nothing created on the source |
-| MySQL | works | works (`-2` name) | 403 at deploy if the gateway isn't enabled |
-| SQL Server | works | works (`-2` name) | works (`-gw` / `-ap`) |
 
 What to check in each result (`/tmp/<name>-results/p1.json`, or the session's final answer):
 
