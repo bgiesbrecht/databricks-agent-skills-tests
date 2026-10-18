@@ -12,40 +12,31 @@ Each skills-repo PR that these tests back has a summary in [pr-notes/](pr-notes/
 [lfc-query-based-lakebase-demo](pr-notes/lfc-query-based-lakebase-demo.md), with the full test
 matrix and results.
 
-## How to use this repo
-
-The test space is large: where the source runs, which engine and version, which ingestion mode, which cloud and kind of workspace, which compute, network path, credentials, storage under the database, and how much data. Nobody can run every combination, so the repo works like a shared notebook:
-
-1. **Check what's already known** before testing anything: `uv run skills/lfc-test-results/scripts/recall.py --coverage` (test × engine), or `--all` with filters (`--engine`, `--workspace`, `--host`, `--storage`, `--compute`). The table below summarizes it.
-2. **Pick the values you want to cover**, one per axis, preferably ones nobody has tested yet. The axes and their planned values are in [test-matrix.md](skills/lfc-test-results/references/test-matrix.md).
-3. **Run** the Lakeflow Connect matrix against one workspace (see [Deploy tests](#deploy-tests-the-lakeflow-connect-matrix)), or one of the skills' own scripts.
-4. **Record** each cell with `record.py`, and write up the run in `results/<date>-<topic>.md` ([Test results](#test-results)). Records are per run, so people testing in parallel never edit the same file.
-
 ## Test axes: what's been tested and works
 
 From `results/runs/*.jsonl`, 2026-10. Each line is a value that passed at least once; a value that's missing hasn't been tested yet, which doesn't mean it fails. Blocked results aren't listed: a mode the workspace hasn't enabled, a missing grant, or a firewall that doesn't allow the compute's IP all work once fixed.
 
 | Axis | Tested and works |
 |---|---|
-| Where the source runs | Podman on an Azure VM and on an AWS VM; Lakebase; Azure managed databases (Flexible Server for Postgres and MySQL, Azure SQL Database); Podman in a laptop Lima VM (data generation only) |
-| Engine and version | PostgreSQL 16, MySQL 8.4, SQL Server 2022, Oracle 23ai Free, Lakebase. For data generation and branch layers only: Db2 11.5, Informix 14.10, CockroachDB 25, YugabyteDB 2025 |
+| Where the source runs | Azure managed databases (Azure SQL Database; Flexible Server for MySQL and PostgreSQL); Lakebase; Podman on an AWS VM and on an Azure VM; Podman in a laptop Lima VM (data generation only) |
+| Database and version | Lakebase, MySQL 8.4, Oracle 23ai Free, PostgreSQL 16, SQL Server 2022. For data generation and branch layers only: CockroachDB 25, Db2 11.5, Informix 14.10, YugabyteDB 2025 |
 | Workspace | AWS and Azure field sandboxes (FEVM), each serverless-only and with classic compute; target catalog with its own managed storage (every mode) or on Default Storage (query-based only) |
 | Compute | `serverless: true` on every pipeline and gateway. Left unset: query-based ran serverless; integrated CDC and the gateway ran classic on a classic workspace (Azure), which needs the classic egress IP in the source's firewall: that path isn't tested yet |
 | Network path | public IP, firewall open to the workspace's serverless egress ranges; also cross-cloud (an AWS workspace reading the Azure VM) |
 | Credentials | password stored in the UC connection |
 | Storage under the database | local XFS; XFS reflink clones of a master; JuiceFS branches (object storage); rclone copies of a master |
 | Data | seed tables (`intpk`, `dtix`); TPC-B, -C, -H, -DS, -E and -DI at SF 0.1 and SF 1; pgbench |
-| Data generation | the CLI planners (psql, mysql, sqlcmd, sqlplus) and the Python planner through pip drivers, on six engines |
+| Data generation | the CLI planners (psql, mysql, sqlcmd, sqlplus) and the Python planner through pip drivers, on six databases |
 
-Lakeflow Connect modes, by engine (✅ passed; workspaces: AWS and Azure, serverless-only and classic):
+Lakeflow Connect modes, by database (✅ passed; workspaces: AWS and Azure, serverless-only and classic):
 
-| Engine | Connection + `remote_query` | Query-based | Query-based via foreign catalog | Integrated CDC | Standard CDC (gateway) |
+| Database | UC connection, queried with [`remote_query`](https://docs.databricks.com/aws/en/query-federation/remote-queries) | Query-based | Query-based via foreign catalog | Integrated CDC | Standard CDC (gateway) |
 |---|---|---|---|---|---|
-| PostgreSQL 16 | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | not offered | not enabled on any test workspace |
-| MySQL 8.4 | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | not enabled on any test workspace |
-| SQL Server 2022 | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure (serverless gateway) |
-| Oracle 23ai Free | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | not offered |
 | Lakebase | ✅ Azure (the query-based demo creates it) | ✅ Azure, with a DML round trip | ✅ Azure | not offered | Lakebase refuses `CREATE PUBLICATION`: the skill stops |
+| MySQL 8.4 | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | not enabled on any test workspace |
+| Oracle 23ai Free | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | not offered |
+| PostgreSQL 16 | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | not offered | not enabled on any test workspace |
+| SQL Server 2022 | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure (serverless gateway) |
 
 **Doesn't work, by design** (the product refuses it; as of 2026-10):
 
@@ -54,7 +45,16 @@ Lakeflow Connect modes, by engine (✅ passed; workspaces: AWS and Azure, server
 - `system` and `hive_metastore` as the target catalog.
 - Modes the product doesn't offer for a source (integrated CDC from PostgreSQL or Lakebase; standard CDC from Oracle), and standard CDC from Lakebase, which refuses the publication it needs: the skill should say so and create nothing, which the matrix checks.
 
-GCP, private network paths (private network gateway, PrivateLink), secrets by reference, other engine versions, managed services on AWS and GCP, and larger data volumes aren't tested yet: see the plan in [test-matrix.md](skills/lfc-test-results/references/test-matrix.md#planned).
+GCP, private network paths (private network gateway, PrivateLink), secrets by reference, other database versions, managed services on AWS and GCP, and larger data volumes aren't tested yet: see the plan in [test-matrix.md](skills/lfc-test-results/references/test-matrix.md#planned).
+
+## How to use this repo
+
+The test space is large: where the source runs, which database and version, which ingestion mode, which cloud and kind of workspace, which compute, network path, credentials, storage under the database, and how much data. Nobody can run every combination, so the repo works like a shared notebook:
+
+1. **Check what's already known** before testing anything: `uv run skills/lfc-test-results/scripts/recall.py --coverage` (test × database), or `--all` with filters (`--engine` for the database, `--workspace`, `--host`, `--storage`, `--compute`). The tables above summarize it.
+2. **Pick the values you want to cover**, one per axis, preferably ones nobody has tested yet. The axes and their planned values are in [test-matrix.md](skills/lfc-test-results/references/test-matrix.md).
+3. **Run** the Lakeflow Connect matrix against one workspace (see [Deploy tests](#deploy-tests-the-lakeflow-connect-matrix)), or one of the skills' own scripts.
+4. **Record** each cell with `record.py`, and write up the run in `results/<date>-<topic>.md` ([Test results](#test-results)). Records are per run, so people testing in parallel never edit the same file.
 
 ## Layout
 
