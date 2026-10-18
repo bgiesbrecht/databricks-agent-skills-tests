@@ -48,9 +48,18 @@ class Run:
     def box(self, *locs: Locator | None) -> None:
         """Thick red box around each element, replacing the previous step's boxes; they ignore the mouse."""
         locs = [loc for loc in locs if loc is not None]
+
+        def quiet(f):  # an element the page is re-rendering: retry once, then leave its box out
+            for _ in range(2):
+                try:
+                    return f()
+                except Exception:
+                    time.sleep(0.5)
+            return None
+
         for loc in reversed(locs):  # scroll first (the next click last wins), then measure: scrolling moves boxes
-            loc.scroll_into_view_if_needed()
-        rects = [b for loc in locs if (b := loc.bounding_box())]
+            quiet(lambda: loc.scroll_into_view_if_needed(timeout=5_000))
+        rects = [b for loc in locs if (b := quiet(lambda: loc.bounding_box(timeout=5_000)))]
         self.page.evaluate(
             """rects => {
                 document.querySelectorAll('[data-lfc-highlight]').forEach(e => e.remove());
@@ -157,7 +166,15 @@ def wizard(r: Run, src: dict, name: str) -> dict:
         r.shot("add_database", db, add)
         add.click()
     expand = p.get_by_role("button", name=f"Expand {SCHEMA}", exact=True)
-    expand.wait_for(timeout=LONG)
+    p.get_by_role("button", name=re.compile("^Expand ")).first.wait_for(timeout=LONG)
+    for _ in range(60):  # the schema list is virtualized: a big database renders only the first rows
+        if expand.count():
+            break
+        rows = p.get_by_role("button", name=re.compile("^Expand "))
+        rows.last.scroll_into_view_if_needed()
+        p.mouse.wheel(0, 600)
+        time.sleep(0.5)
+    expand.wait_for(timeout=30_000)
     r.shot("source_schema", row(expand))
     expand.click()
 
@@ -303,6 +320,8 @@ def main() -> int:
     ap.add_argument("--keep", action="store_true", help="keep the pipeline and job")
     ap.add_argument("--launch", action="store_true", help="start Playwright's own browser with auth.json (lfc_ui.auth save) instead of attaching to Chrome: no Allow prompt, and the Chrome DevTools MCP server can stay on")
     ap.add_argument("--headed", action="store_true", help="with --launch: show the browser window")
+    ap.add_argument("--width", type=int, default=1600, help="with --launch: page width in pixels (PNG size at 1x)")
+    ap.add_argument("--height", type=int, default=900, help="with --launch: page height in pixels")
     a = ap.parse_args()
     src = SOURCES[a.source]
     name = re.sub(r"[^a-z0-9]", "_", f"{a.owner}_{src['connection']}_{int(time.time())}".lower())
@@ -313,7 +332,7 @@ def main() -> int:
         if a.launch:
             auth = REPO / "ui-demos/auth.json"
             browser = pw.chromium.launch(headless=not a.headed)
-            ctx = browser.new_context(storage_state=str(auth), viewport={"width": 1600, "height": 900})
+            ctx = browser.new_context(storage_state=str(auth), viewport={"width": a.width, "height": a.height})
         else:
             browser = pw.chromium.connect_over_cdp(f"ws://127.0.0.1:{port}{path}", timeout=60_000)
             ctx = browser.contexts[0]
