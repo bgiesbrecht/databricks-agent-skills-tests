@@ -34,6 +34,8 @@ podman system connection add lfc-test-podman "unix://$HOME/.lima/lfc-test-podman
 
 Size it for what runs at once: SQL Server and Oracle take 4 GB each (`--memory 10` holds both plus a small engine; the default is 4 GiB). `--tty=false` skips the interactive confirmation, for scripts and agents. Tested (macOS 26, Apple Silicon, Lima 2.1): the VM starts in 44 s, rootful Podman on Fedora 44 with kernel 6.19 and Rosetta registered (`/proc/sys/fs/binfmt_misc/rosetta`). Container ports bound in the VM (`-p 30003:1433`) are forwarded to the Mac's `127.0.0.1` with nothing more to set up.
 
+You don't need Podman Desktop for any of this. If it's installed, remove it first: it starts its own `podman machine` VM next to Lima, whose disk keeps growing (**podman-desktop-remove**).
+
 Without `template:podman-rootful` the VM has no Podman and no socket. An existing VM created this way under another name (for example `forgedb-lima-rosetta2-podman`) works the same: use its name.
 
 Verify:
@@ -287,4 +289,4 @@ databricks connections delete --name owner-engine-podman --profile DEFAULT
 
 **Ready for Lakeflow Connect?** Once the UC connection is registered, use the **databricks-lakeflow-connect** skill to configure the pipeline, apply pre-flight checks, and start ingestion.
 
-8. **The laptop's disk keeps filling, and nothing big shows up:** a VM whose disk file was deleted while it ran is still writing to it. See [Remove the VM, and get the laptop's disk back](#remove-the-vm-and-get-the-laptops-disk-back).
+8. **The laptop's disk keeps filling, and nothing big shows up:** a VM whose disk file was deleted while it ran is still writing to it. See [Remove the VM, and get the laptop's disk back](#remove-the-vm-and-get-the-laptops-disk-back). If Podman Desktop is installed, it may have started a VM you didn't: **podman-desktop-remove** reports every machine and its disk use.

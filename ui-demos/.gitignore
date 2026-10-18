@@ -1,3 +1,4 @@
 # browser logins and every capture stay local: screenshots show workspace URLs and other people's objects
+# old Playwright logins (Playwright is no longer used)
 auth*.json
 runs/

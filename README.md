@@ -73,6 +73,8 @@ bin/check_links.py     # every relative link in every skill
 pr-notes/              # PR descriptions with the test matrix, one per skills-repo branch
 prompts/
   lakeflow-connect.txt # routing / guidance prompts (no resources created)
+  podman-desktop-remove.txt # laptop disk: Podman Desktop and its VM (report only, nothing removed)
+  lfc-ui-capture.txt   # UI captures: is the Chrome tool attached to your Chrome (nothing created)
   lfc-matrix/          # Lakeflow Connect deploy tests: 5 sources x 4 modes, plus DML (MATRIX.md)
 results/               # runs/<run>.jsonl records and <date>-<topic>.md write-ups
 skills/                # test-only skills: source setup, data generation, firewall, results

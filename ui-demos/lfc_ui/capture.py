@@ -1,21 +1,24 @@
-"""Shared Playwright screenshot, click timing, and PNG redaction.
+"""Finish a captured run: redacted PNG copies, time between screenshots, and GIFs.
 
-Copied from the lfc-faq notes (scripts/lfc_playwright/capture.py, e9db42b). Changed: the redaction import, and
-DemoCapture takes the folder to write to (default runs/<pipeline>), so captures land in a gitignored place.
+The screenshots themselves are taken in the browser (the Chrome DevTools tools save each one to
+runs/<name>/clear/NNN_<step>.png); Playwright isn't used, since device-trust sign-in refuses the browsers it starts.
+Run from the demo's folder:  python -m lfc_ui.capture runs/<name> --secret <account-id> --secret <workspace-id>
+
+Adapted from the lfc-faq notes (scripts/lfc_playwright/capture.py, e9db42b): the GIF writer is theirs; the
+Playwright click capture is replaced by this pass over saved files, timed from their modification times.
 """
 
 from __future__ import annotations
 
+import argparse
 import re
-import time
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import yaml
 from .image_redact import redact_png
 from PIL import Image
-from playwright.sync_api import Locator, Page
 
 _MIN_FRAME_DURATION_MS = 400
 _LAST_FRAME_DURATION_MS = 1_000
@@ -74,84 +77,32 @@ def write_run_gifs(directory: Path) -> None:
     write_gif(directory / "redacted", directory / "redacted.gif", durations)
 
 
-class SequentialScreenshots:
-    def __init__(
-        self,
-        directory: Path,
-        *,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        self.directory = directory
-        self.clear_dir = directory / "clear"
-        self._n = 0
-        self._clock = clock
-        self._clicks: list[dict[str, Any]] = []
-        self._metadata: dict[str, Any] = {}
-        self._last_png: str | None = None
-        self._last_at: float | None = None
-        self.clear_dir.mkdir(parents=True, exist_ok=True)
-
-    def next_path(self, label: str) -> Path:
-        self._n += 1
-        return self.clear_dir / f"{self._n:03d}_{png_slug(label)}.png"
-
-    def record_click(self, png: Path, name: str) -> None:
-        now = self._clock()
-        filename = png.name
-        if self._last_png is not None and self._last_at is not None:
-            self._clicks.append(
-                {
-                    "after": self._last_png,
-                    "until": filename,
-                    "name": name,
-                    "wait_seconds": round(now - self._last_at, 3),
-                }
-            )
-            self._write()
-        self._last_png = filename
-        self._last_at = now
-
-    def _write(self) -> None:
-        payload = dict(self._metadata)
-        payload["clicks"] = self._clicks
-        (self.directory / "metrics.yaml").write_text(
-            yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
-            encoding="utf-8",
-        )
-
-    def finish(self, metadata: dict[str, Any] | None = None) -> None:
-        self._metadata.update(metadata or {})
-        self._write()
-        write_run_gifs(self.directory)
+def finish_run(directory: Path, secrets: Sequence[str], metadata: dict[str, Any] | None = None) -> None:
+    """Redact every clear PNG, write metrics.yaml (seconds between screenshots), and both GIFs."""
+    pngs = sorted((directory / "clear").glob("*.png"))
+    for png in pngs:
+        redact_png(png, directory / "redacted" / png.name, secrets)
+    clicks = [
+        {
+            "after": a.name,
+            "until": b.name,
+            "wait_seconds": round(b.stat().st_mtime - a.stat().st_mtime, 3),
+        }
+        for a, b in zip(pngs, pngs[1:])
+    ]
+    payload = dict(metadata or {})
+    payload["clicks"] = clicks
+    (directory / "metrics.yaml").write_text(
+        yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    write_run_gifs(directory)
 
 
-class DemoCapture:
-    def __init__(
-        self,
-        pipeline_name: str,
-        redact_secrets: Sequence[str],
-        directory: Path | None = None,
-    ) -> None:
-        pipeline_dir = directory or Path("runs") / pipeline_name
-        self._shots = SequentialScreenshots(pipeline_dir)
-        self._redacted_dir = pipeline_dir / "redacted"
-        self._secrets = tuple(redact_secrets)
-
-    def shot(self, target: Page, name: str) -> None:
-        png = self._shots.next_path(name)
-        target.screenshot(path=str(png))
-        self._shots.record_click(png, name=name)
-        self._after_clear(png)
-
-    def click(self, locator: Locator, name: str) -> None:
-        png = self._shots.next_path(name)
-        locator.page.screenshot(path=str(png))
-        locator.click()
-        self._shots.record_click(png, name=name)
-        self._after_clear(png)
-
-    def _after_clear(self, png: Path) -> None:
-        redact_png(png, self._redacted_dir / png.name, self._secrets)
-
-    def finish(self, metadata: dict[str, Any] | None = None) -> None:
-        self._shots.finish(metadata)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("directory", type=Path, help="the run folder, runs/<name>")
+    parser.add_argument("--secret", action="append", default=[], help="a digit ID to mask (repeatable)")
+    parser.add_argument("--meta", action="append", default=[], metavar="KEY=VALUE", help="added to metrics.yaml")
+    args = parser.parse_args()
+    finish_run(args.directory, args.secret, dict(m.split("=", 1) for m in args.meta))
