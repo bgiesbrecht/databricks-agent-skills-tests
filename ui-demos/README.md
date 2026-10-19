@@ -12,6 +12,7 @@ Screenshots of the Lakeflow Connect UI for database sources, one folder per data
 | SQL Server | integrated CDC | [db/sqlserver/cdc](db/sqlserver/cdc/README.md) |
 | MySQL | integrated CDC | [db/mysql/cdc](db/mysql/cdc/README.md) |
 | SQL Server | standard CDC (gateway) | [db/sqlserver/gateway](db/sqlserver/gateway/README.md) |
+| MySQL | standard CDC (gateway) | [db/mysql/gateway](db/mysql/gateway/README.md) |
 
 Planned, one at a time: QBC for Oracle; then integrated CDC (gateway) and QBC through a foreign catalog for each.
 
