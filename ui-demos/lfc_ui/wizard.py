@@ -28,6 +28,7 @@ from playwright.sync_api import Locator, Page, sync_playwright
 from .capture import finish_run
 
 HOST = "https://e2-demo-field-eng.cloud.databricks.com"
+CREATED: dict = {}  # a gateway runs (and bills) continuously: stopped if the run fails
 WORKSPACE_ID = "1444828305810485"
 PROFILE = "e2fieldeng"
 CATALOG = "main"
@@ -107,6 +108,8 @@ def pick(r: Run, combo: Locator, text: str, step: str, done: Locator | None = No
 def wizard(r: Run, src: dict, name: str, mode: str = "qbc", max_wait: int = 600) -> dict:
     """mode: qbc (query-based), cdc (integrated CDC, one pipeline), gateway (standard CDC: gateway + pipeline)."""
     p = r.page
+    base, epoch = name.rsplit("_", 1)
+    pipeline_name = f"{base}_ap_{epoch}" if mode == "gateway" else name  # standard CDC: applier and gateway
     p.goto(f"{HOST}/ingestion/add?o={WORKSPACE_ID}")
     tile = p.locator(f'a[href*="sourceType={src["type"]}"]').first
     tile.wait_for()
@@ -127,7 +130,7 @@ def wizard(r: Run, src: dict, name: str, mode: str = "qbc", max_wait: int = 600)
     kind.click()
     pname = p.get_by_role("textbox", name="Pipeline name", exact=True)
     r.shot("query_based_capture" if mode == "qbc" else "change_data_capture", kind, pname)
-    pname.fill(name)
+    pname.fill(pipeline_name)
     cat = p.get_by_role("textbox", name="Select catalog", exact=True).first  # CDC has a second pair for staging
     r.shot("pipeline_name", pname, cat)
     cat.click()
@@ -165,11 +168,24 @@ def wizard(r: Run, src: dict, name: str, mode: str = "qbc", max_wait: int = 600)
         if pm.count():  # PostgreSQL has no choice: gateway only
             pm.click()
             r.shot("pipeline_mode_" + mode, pm, go)
+    if mode == "gateway":
+        gname = p.get_by_role("textbox", name="Gateway name", exact=True)
+        gname.fill(f"{base}_gw_{epoch}")
+        for box in p.get_by_role("textbox", name="Select schema", exact=True).all():  # gateway mode leaves them empty
+            if not box.input_value():
+                box.click()
+                box.press_sequentially(name)
+                option(p, name).click()
+        r.shot("gateway_name_staging", gname, go)
     go.click()
 
     p.wait_for_url(re.compile("pipelineId="), timeout=LONG)
-    pipeline_id = re.search(r"pipelineId=([0-9a-f-]+)", p.url).group(1)
+    pipeline_id = re.search(r"[?&]pipelineId=([0-9a-f-]+)", p.url).group(1)
     print(f"  pipeline {pipeline_id}", flush=True)
+    gateway_id = None
+    if mode == "gateway":
+        gateway_id = CREATED["gateway"] = re.search(r"gatewayPipelineId=([0-9a-f-]+)", p.url).group(1)
+        print(f"  gateway {gateway_id}: {make_serverless(gateway_id)}", flush=True)
     p.wait_for_function("() => !/Waiting for compute|Loading source table skeleton|Validating pipeline/.test(document.querySelector('main')?.innerText || '')", timeout=LONG)
 
     if mode == "qbc" and src["database"]:  # CDC lists the connection's database directly
@@ -296,8 +312,22 @@ def wizard(r: Run, src: dict, name: str, mode: str = "qbc", max_wait: int = 600)
         final, step = f"Stopped after {round((time.time() - t0) / 60, 1)} min", "pipeline_graph_stopped"
     time.sleep(3)
     rows = [t for t in p.locator("main [role=row], main tr").all_inner_texts() if re.match(r"^(dtix|intpk)\b", t.strip())]
-    r.shot(step)
-    return {"pipeline_id": pipeline_id, "update": update_id, "state": final,
+    if gateway_id:  # the applier, with the gateway's status; then click through to the gateway, running
+        glink = p.locator("main a", has_text="_gw_").first
+        r.shot(step, p.get_by_text("Gateway status").first, glink)
+        with p.context.expect_page() as new:
+            glink.click()
+        g = new.value
+        g.set_viewport_size(p.viewport_size)
+        g.get_by_text(re.compile(r"^Running")).first.wait_for(timeout=LONG)
+        time.sleep(5)
+        r.page = g
+        r.shot("gateway_running", g.get_by_text(re.compile(r"^Running")).first)
+        r.page = p
+        g.close()
+    else:
+        r.shot(step)
+    return {"pipeline_id": pipeline_id, "gateway_id": gateway_id, "update": update_id, "state": final,
             "update_minutes": round((time.time() - t0) / 60, 1), "tables": [" ".join(t.split()) for t in rows]}
 
 
@@ -361,14 +391,28 @@ def cli(*args: str) -> str:
                           capture_output=True, text=True, env=_ENV, timeout=300).stdout
 
 
-def cleanup(name: str, pipeline_id: str) -> None:
+def make_serverless(pipeline_id: str) -> str:
+    """The wizard has no compute choice for the gateway (it's created classic): switch it to serverless."""
+    spec = json.loads(cli("pipelines", "get", pipeline_id))["spec"]
+    spec["serverless"] = True
+    spec.pop("clusters", None)
+    spec.pop("id", None)
+    f = REPO / "ui-demos" / f".gw-{pipeline_id}.json"
+    f.write_text(json.dumps(spec))
+    cli("pipelines", "update", pipeline_id, "--json", f"@{f}")
+    f.unlink()
+    return "serverless=" + str(json.loads(cli("pipelines", "get", pipeline_id))["spec"].get("serverless"))
+
+
+def cleanup(name: str, pipeline_id: str, gateway_id: str | None = None) -> None:
     """Delete the schedule job (first, or it runs the pipeline again), then the pipeline. The schema stays."""
     for job_name in (name, f"{name} job"):
         for j in json.loads(cli("jobs", "list", "--name", job_name) or "[]"):
             cli("jobs", "delete", str(j["job_id"]))
             print(f"  deleted job {j['job_id']}")
-    cli("pipelines", "delete", pipeline_id)
-    print(f"  deleted pipeline {pipeline_id}")
+    for pid in filter(None, (pipeline_id, gateway_id)):  # deleting the gateway also stops it
+        cli("pipelines", "delete", pid)
+        print(f"  deleted pipeline {pid}")
 
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -411,6 +455,9 @@ def main() -> int:
             page.screenshot(path=str(folder / "fail.png"))
             (folder / "fail.aria.txt").write_text(page.locator("body").aria_snapshot())
             ctx.tracing.stop(path=str(folder / "trace.zip"))
+            if gid := CREATED.get("gateway"):
+                cli("pipelines", "stop", gid)
+                print(f"  stopped gateway {gid} (delete it, and the applier, when done)", file=sys.stderr)
             print(f"FAILED after step {r.n:03d}: {type(e).__name__}: {e}\n  url: {page.url}\n  see {folder}/fail.png, fail.aria.txt, trace.zip", file=sys.stderr)
             return 1
         ctx.tracing.stop(path=str(folder / "trace.zip"))
@@ -420,7 +467,7 @@ def main() -> int:
     print(json.dumps(result, indent=1))
     done = result.get("state", "").startswith(("Completed", "Stopped"))
     if not a.keep and done:
-        cleanup(name, result["pipeline_id"])
+        cleanup(name, result["pipeline_id"], result.get("gateway_id"))
     finish_run(folder, [WORKSPACE_ID], {"workspace": HOST.split("//")[1].split(".")[0], "source": a.source,
                                         "connection": src["connection"], **result})
     return 0 if done else 1
