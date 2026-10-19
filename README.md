@@ -112,6 +112,10 @@ bin/check_links.py                     # every relative link in every skill
 
 With databases, it fills TPC-C and the TPC-H spec schema on each engine (schemas named `test_*`) and checks every table's target, the spec's rules, and the audit. Run it after changing a skill's scripts.
 
+## Schema-change tests
+
+Each script answers one schema-evolution question by running it on a fresh source database, prints one PASS or FAIL row per claim, and deletes everything it created. First: does `ADD COLUMN` on SQL Server need a full refresh (about 25 minutes). See [lfc-schema-change-test](skills/lfc-schema-change-test/SKILL.md) for what it needs and the command; it also has a prompt to hand the rerun to a coding agent.
+
 ## Guidance tests
 
 No resources created:
