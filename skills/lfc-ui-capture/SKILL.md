@@ -1,6 +1,6 @@
 ---
 name: lfc-ui-capture
-description: "Capture the Lakeflow Connect UI wizard as numbered PNGs, redacted copies, and GIFs, by driving your own signed-in Chrome with the Chrome DevTools tools (never Playwright: device-trust sign-in refuses the browsers automation starts). Covers attaching to Chrome and when to reconnect, the shared pipeline/schema/job name, the screenshot steps, and finishing a run. Use for 'capture the UI', 'UI demo', 'screenshots of the wizard', or when the Chrome tools show only about:blank."
+description: "Capture the Lakeflow Connect UI wizard as numbered, masked PNGs and GIFs, by driving your own signed-in Chrome with the Chrome DevTools tools (never Playwright: device-trust sign-in refuses the browsers automation starts). Covers attaching to Chrome and when to reconnect, the shared pipeline/schema/job name, the screenshot steps, and finishing a run. Use for 'capture the UI', 'UI demo', 'screenshots of the wizard', or when the Chrome tools show only about:blank."
 ---
 
 # Lakeflow Connect UI captures from your own Chrome
@@ -10,6 +10,8 @@ The demos, their folders, and the finishing script are in [`ui-demos/`](../../ui
 ## 0. QBC on PostgreSQL, SQL Server, MySQL: run the script
 
 `ui-demos/lfc_ui/wizard.py` does sections 2 to 4 below on its own, in about 3 minutes: Playwright attached to your Chrome (`connect_over_cdp` to the socket in Chrome's `DevToolsActivePort` file; it never launches a browser). Usual way: `../.venv/bin/python -m lfc_ui.auth check` (if it fails, `auth save`: attaches to the user's Chrome once, they click **Allow**, it writes the workspace's cookies to `auth.json`), then `cd ui-demos && ../.venv/bin/python -m lfc_ui.wizard <postgres|sqlserver|mysql> --launch`: Playwright's own headless browser with that session, no prompt, and the MCP server can stay on. Without `--launch` it attaches to the user's Chrome instead: turn the Chrome DevTools MCP server **off** first (Chrome allows one client; a second gets 403), and the user clicks **Allow** (no script can). On failure it leaves `fail.png`, `fail.aria.txt` and `trace.zip` in the run folder: turn the MCP server back on, do that step by hand as below, and fix the step in `wizard.py`. For a new source or mode, do it by hand once, then add it to the script.
+
+Script runs save `runs/<name>/png/`, masked in the page before every screenshot (list rows and options that don't name this run's objects, and every email but `--me`), so they can be committed; there's no `redacted/` copy. The steps below (hand captures) save `clear/`, which isn't masked: keep it local and share only `redacted/`.
 
 ## 1. Attach to your Chrome (check every session)
 

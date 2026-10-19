@@ -12,4 +12,5 @@ Captured with `python -m lfc_ui.wizard mysql --mode gateway --launch`. The wizar
 
 ## Captured runs
 
+- **Committed: [`runs/robertlee_lfcddemo_azure_mysql_1792373613/png/`](runs/robertlee_lfcddemo_azure_mysql_1792373613/png/)** (2026-10-18, masked in the page): 28 steps in 3.4 minutes; update Completed.
 - **2026-10-18, `<name>_1792370956`:** 28 steps in 3.6 minutes; the applier's update completed in 0.9 minutes, then the gateway was captured running. Unlike integrated CDC on this idle source (still running after 10 minutes), the applier ends on its own: the gateway does the reading. Job, applier, and gateway deleted afterwards.

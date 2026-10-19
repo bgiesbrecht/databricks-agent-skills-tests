@@ -11,6 +11,7 @@ The wizard is the same as for PostgreSQL and SQL Server (see [../../postgres/qbc
 
 ## Captured runs
 
+- **Committed: [`runs/robertlee_lfcddemo_azure_mysql_1792373142/png/`](runs/robertlee_lfcddemo_azure_mysql_1792373142/png/)** (2026-10-18, masked in the page): 24 steps in 2.0 minutes; update Completed.
 Runs are written to `runs/<name>/` (gitignored).
 
 - **2026-10-18, `<name>_1792358722`:** 25 steps with red boxes. One update, completed in 32 s: `intpk` 10 rows upserted, `dtix` 10 rows, both matching the source. The pipeline was deleted after the capture; no job was created.

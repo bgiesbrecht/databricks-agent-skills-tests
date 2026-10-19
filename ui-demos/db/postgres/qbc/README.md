@@ -11,6 +11,7 @@ Wizard steps seen: Connection (pick the connection), Ingestion setup (Change dat
 
 ## Captured runs
 
+- **Committed: [`runs/robertlee_lfcddemo_azure_pg_1792372175/png/`](runs/robertlee_lfcddemo_azure_pg_1792372175/png/)** (2026-10-18, masked in the page): 27 steps in 2.4 minutes; update Completed.
 Runs are written to `runs/<name>/` (gitignored).
 
 - **2026-10-18, `<name>_1792350190`:** 34 steps, from Add data to the graph of a completed update. Took two updates: the first loaded `intpk` (34K rows upserted) and failed on `dtix`; after `scd_type: APPEND_ONLY` was added in the YAML view, the second loaded `dtix` (39K rows) and completed.

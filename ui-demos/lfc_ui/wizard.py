@@ -4,7 +4,8 @@ Playwright attaches to the Chrome you already use (the socket named in its DevTo
 chrome://inspect/#remote-debugging), so no new browser has to get past single sign-on. Chrome allows one client on
 that socket: turn the Chrome DevTools MCP server off (/mcp) before a run, and back on for the fallback.
 
-Each step boxes the field just finished and the next click in red, saves runs/<name>/clear/NNN_<step>.png, then acts.
+Each step boxes the field just finished and the next click in red, blurs other people's objects, saves
+runs/<name>/png/NNN_<step>.png, then acts.
 On any failure it saves fail.png, fail.aria.txt (the accessibility tree) and trace.zip in the run folder and exits 1:
 get past the changed screen by hand, then fix that step here.
 
@@ -42,9 +43,9 @@ LONG = 180_000  # ms: pipeline create, compute start, an update
 
 
 class Run:
-    def __init__(self, page: Page, folder: pathlib.Path) -> None:
-        self.page, self.folder, self.n = page, folder, 0
-        (folder / "clear").mkdir(parents=True, exist_ok=True)
+    def __init__(self, page: Page, folder: pathlib.Path, keep: str = "", me: str = "") -> None:
+        self.page, self.folder, self.n, self.keep, self.me = page, folder, 0, keep, me.lower()
+        (folder / "png").mkdir(parents=True, exist_ok=True)
 
     def box(self, *locs: Locator | None) -> None:
         """Thick red box around each element, replacing the previous step's boxes; they ignore the mouse."""
@@ -76,10 +77,33 @@ class Run:
             rects,
         )
 
+    def mask(self) -> None:
+        """Blur what belongs to other people (this repository is public): rows and options of lists that don't
+        mention this run's own objects, and any email address but the owner's."""
+        self.page.evaluate(
+            """([keep, me]) => {
+                const own = new RegExp(keep, 'i');
+                const rows = document.querySelectorAll('main [role=row], main tr, [role=option], [role=listbox] li');
+                for (const r of rows) {
+                    if (r.querySelector('[role=columnheader], th')) continue;
+                    const t = r.innerText || '';
+                    if (t.trim() && !own.test(t)) r.style.filter = 'blur(6px)';
+                }
+                const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+                const email = /[\\w.+-]+@[\\w-]+\\.[\\w.]+/g;
+                for (let n; (n = walk.nextNode());) {
+                    const hits = (n.nodeValue.match(email) || []).filter(e => e.toLowerCase() !== me);
+                    if (hits.length && n.parentElement) n.parentElement.style.filter = 'blur(6px)';
+                }
+            }""",
+            [self.keep, self.me],
+        )
+
     def shot(self, step: str, *locs: Locator | None) -> None:
         self.box(*locs)
+        self.mask()
         self.n += 1
-        self.page.screenshot(path=str(self.folder / "clear" / f"{self.n:03d}_{step}.png"))
+        self.page.screenshot(path=str(self.folder / "png" / f"{self.n:03d}_{step}.png"))
         print(f"  {self.n:03d} {step}", flush=True)
 
     def clear(self) -> None:
@@ -331,19 +355,38 @@ def wizard(r: Run, src: dict, name: str, mode: str = "qbc", max_wait: int = 600)
             "update_minutes": round((time.time() - t0) / 60, 1), "tables": [" ".join(t.split()) for t in rows]}
 
 
-def editor_lines(p: Page) -> list[str]:
-    ed = p.locator(".monaco-editor").last
+def numbered_lines(p: Page) -> list[tuple[int, str]]:
+    """The YAML editor's rendered lines with their line numbers (from the gutter, so scrolling doesn't matter)."""
     return p.evaluate(
-        "ed => [...ed.querySelectorAll('.view-line')].sort((a, b) => parseInt(a.style.top) - parseInt(b.style.top)).map(e => e.innerText.replace(/\\u00a0/g, ' '))",
-        ed.element_handle(),
+        """ed => {
+            const lines = [...ed.querySelectorAll('.view-line')].map(e => [parseInt(e.style.top), e.innerText.replace(/\\u00a0/g, ' ')]);
+            const nums = Object.fromEntries([...ed.querySelectorAll('.line-numbers')].map(e => [parseInt(e.parentElement.style.top), parseInt(e.innerText)]));
+            return lines.filter(([t]) => nums[t]).sort((a, b) => a[0] - b[0]).map(([t, x]) => [nums[t], x]);
+        }""",
+        p.locator(".monaco-editor").last.element_handle(),
     )
 
 
-def to_line_from_end(p: Page, up: int) -> None:
-    p.locator(".monaco-editor").last.locator("textarea").focus()
-    p.keyboard.press("Meta+ArrowDown")
-    for _ in range(up):
-        p.keyboard.press("ArrowUp")
+def go_to_line(p: Page, n: int) -> None:
+    """Put the cursor at the end of line n of the last editor (the right-hand side once it's a diff view): scroll
+    until the line is drawn, click it, End. Monaco here has no Go to line shortcut."""
+    ed = p.locator(".monaco-editor").last
+    for _ in range(40):
+        nums = [k for k, _ in numbered_lines(p)]
+        if n in nums:
+            break
+        box = ed.bounding_box()
+        p.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        p.mouse.wheel(0, 200 if not nums or n > max(nums) else -200)
+        time.sleep(0.3)
+    top = p.evaluate(
+        """([ed, n]) => { for (const e of ed.querySelectorAll('.line-numbers')) if (parseInt(e.innerText) === n)
+            return parseInt(e.parentElement.style.top); return null; }""",
+        [ed.element_handle(), n],
+    )
+    if top is None:
+        raise RuntimeError(f"line {n} isn't drawn in the editor")
+    ed.locator(f'.view-line[style*="top:{top}px"]').first.click()
     p.keyboard.press("End")
 
 
@@ -351,28 +394,41 @@ def append_only(r: Run) -> None:
     """Add `scd_type: APPEND_ONLY` to dtix (keyless: SCD type 1 would merge duplicate rows) in the YAML editor."""
     p = r.page
     p.locator(".monaco-editor").last.wait_for()
-    p.locator(".monaco-editor").last.locator("textarea").focus()
-    p.keyboard.press("Meta+ArrowDown")
-    lines = editor_lines(p)
-    if not any(l.strip() == "source_table: dtix" for l in lines):
+    ed = p.locator(".monaco-editor").last
+    box = ed.bounding_box()
+    p.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    for _ in range(10):  # to the end, where dtix (the last table) is
+        p.mouse.wheel(0, 2000)
+        time.sleep(0.2)
+    lines = numbered_lines(p)
+    src = [n for n, l in lines if l.strip() == "source_table: dtix"]
+    if not src:
         raise RuntimeError("YAML has no dtix table: the wizard's choices weren't saved before switching")
-    i = max(k for k, l in enumerate(lines) if l.strip() == "source_table: dtix")
-    tc = next((k for k in range(i + 1, len(lines)) if lines[k].strip() == "table_configuration:"
-               and len(lines[k]) - len(lines[k].lstrip()) == len(lines[i]) - len(lines[i].lstrip())), None)
-    anchor = tc if tc is not None else i  # QBC has table_configuration (the cursor); CDC may not
-    up = len(lines) - 1 - anchor
-    first, rest = ("s", ["cd_type: APPEND_ONLY"]) if tc is not None else ("t", ["able_configuration:", "scd_type: APPEND_ONLY"])
-    to_line_from_end(p, up)
+    i = src[-1]
+    indent = next(len(l) - len(l.lstrip()) for n, l in lines if n == i)
+    tc = next((n for n, l in lines if n > i and l.strip() == "table_configuration:" and len(l) - len(l.lstrip()) == indent), None)
+    anchor = tc or i  # QBC has table_configuration (the cursor); CDC may not
+    first, rest = ("s", ["cd_type: APPEND_ONLY"]) if tc else ("t", ["able_configuration:", "scd_type: APPEND_ONLY"])
+    go_to_line(p, anchor)
     p.keyboard.press("Enter")
     p.keyboard.type(first)  # the first keystroke turns the view into a diff editor; type the rest in its right side
     time.sleep(1.5)
-    to_line_from_end(p, up)
+    go_to_line(p, anchor + 1)
     for k, text in enumerate(rest):
         if k:
             p.keyboard.press("Enter")
         p.keyboard.type(text)
-    if not any(l.strip() == "scd_type: APPEND_ONLY" for l in editor_lines(p)):
-        raise RuntimeError("scd_type line didn't land")
+    seen: list[str] = []
+    for _ in range(10):  # the editor redraws a moment after typing; the diff view has three editors: read them all
+        seen = p.evaluate("() => [...document.querySelectorAll('.monaco-editor .view-line')].map(e => e.innerText.replace(/\\u00a0/g, ' '))")
+        if any("scd_type: APPEND_ONLY" in l for l in seen):
+            break
+        time.sleep(0.5)
+    else:
+        raise RuntimeError("scd_type line didn't land; editor shows: " + " / ".join(l.strip() for l in seen[-14:]))
+    got = dict(numbered_lines(p))
+    if got.get(anchor + 1, "").strip() != "scd_type: APPEND_ONLY" and got.get(anchor + 2, "").strip() != "scd_type: APPEND_ONLY":
+        raise RuntimeError(f"scd_type landed in the wrong place: line {anchor + 1} reads {got.get(anchor + 1)!r}")
 
 
 _ENV: dict | None = None
@@ -425,6 +481,7 @@ def main() -> int:
     ap.add_argument("source", choices=sorted(SOURCES))
     ap.add_argument("--mode", choices=["qbc", "cdc", "gateway"], default="qbc", help="query-based, integrated CDC, or standard CDC (gateway)")
     ap.add_argument("--max-wait", type=float, default=10, help="minutes to wait once the update is Running (default 10); then capture it running, stop it, and go on")
+    ap.add_argument("--me", default=os.environ.get("LFC_UI_EMAIL", ""), help="your email: the only one left unblurred")
     ap.add_argument("--owner", default=re.sub(r"[^a-z0-9]", "", getpass.getuser().lower()))
     ap.add_argument("--keep", action="store_true", help="keep the job, pipelines, and schema")
     ap.add_argument("--launch", action="store_true", help="start Playwright's own browser with auth.json (lfc_ui.auth save) instead of attaching to Chrome: no Allow prompt, and the Chrome DevTools MCP server can stay on")
@@ -449,7 +506,10 @@ def main() -> int:
         page = ctx.new_page()
         page.set_default_timeout(30_000)
         page.on("dialog", lambda d: d.accept())
-        r = Run(page, folder)
+        base = name.rsplit("_", 1)[0]
+        keep = "|".join(map(re.escape, [base, SCHEMA, "intpk", "dtix", src["connection"], src["database"] or SCHEMA,
+                                        "staging", "extractor_", CATALOG + "."])) + f"|^{CATALOG}$"
+        r = Run(page, folder, keep, a.me)
         result: dict = {}
         try:
             result = wizard(r, src, name, a.mode, int(a.max_wait * 60))

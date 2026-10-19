@@ -12,6 +12,7 @@ Captured with `python -m lfc_ui.wizard sqlserver --mode cdc --launch`.
 
 ## Captured runs
 
+- **Committed: [`runs/robertlee_lfcddemo_azure_sqlserver_1792374946/png/`](runs/robertlee_lfcddemo_azure_sqlserver_1792374946/png/)** (2026-10-18, masked in the page): 27 steps in 14.8 minutes; update Stopped after 10.4 min.
 - **2026-10-18, `<name>_1792366433`:** 26 steps; the wizard took 4.2 minutes, then the update 20.8 minutes to Completed. `intpk` 4,894 rows (all), `dtix` 1,381 (see below). Job and pipeline deleted afterwards.
 
 ## What the wizard does (seen 2026-10-18)

@@ -12,6 +12,7 @@ Captured with `python -m lfc_ui.wizard mysql --mode cdc --launch` (it stops the 
 
 ## Captured runs
 
+- **Committed: [`runs/robertlee_lfcddemo_azure_mysql_1792373882/png/`](runs/robertlee_lfcddemo_azure_mysql_1792373882/png/)** (2026-10-18, masked in the page): 27 steps in 16.6 minutes; update Stopped after 10.2 min.
 - **2026-10-18, `<name>_1792368468`:** 26 steps, the last one the graph while the update was still running; stopped after 10 minutes. `intpk` 10 rows (all), `dtix` 1. Job and pipeline deleted afterwards.
 
 ## What the wizard does (seen 2026-10-18)

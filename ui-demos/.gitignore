@@ -1,5 +1,9 @@
-# browser logins and every capture stay local: screenshots show workspace URLs and other people's objects
-# old Playwright logins (Playwright is no longer used)
+# a saved browser session (lfc_ui.auth save): a live credential, never commit
 auth*.json
-runs/
+# runs/<name>/png/ is committed (other people's objects are blurred in the page before each screenshot);
+# the rest stays local: GIFs (large), traces (an unmasked replay of the page), failure dumps, metrics (workspace host)
+**/runs/**/*.gif
+**/runs/**/trace.zip
+**/runs/**/fail.*
+**/runs/**/metrics.yaml
 auth-check.png

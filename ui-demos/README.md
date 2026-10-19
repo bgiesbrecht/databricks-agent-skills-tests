@@ -2,7 +2,7 @@
 
 Screenshots of the Lakeflow Connect UI for database sources, one folder per database and mode, captured from your own Chrome through the Chrome DevTools tools (not Playwright: see Sign-in). Each run writes numbered PNGs (one per step), a clear and a redacted GIF, and `metrics.yaml`. At the end it opens the pipeline after its first run and saves the graph view of a successful update.
 
-**Captures stay local.** Every run goes to `runs/` next to its script, and `runs/` and `auth.json` are gitignored: screenshots show workspace URLs and other people's objects, and this repository is public. Commit scripts and READMEs only.
+**What's committed:** each script run's `png/` folder. This repository is public, so the script blurs other people's objects before every screenshot: list rows and options that don't name this run's own objects, and every email address but yours (`--me`). The GIFs, `trace.zip` (an unmasked replay), failure dumps, `metrics.yaml`, and `auth.json` stay local (gitignored). Captures made by hand aren't masked: don't commit those.
 
 | Database | Mode | Folder |
 |---|---|---|
@@ -16,14 +16,14 @@ Screenshots of the Lakeflow Connect UI for database sources, one folder per data
 
 Planned, one at a time: QBC for Oracle; then integrated CDC (gateway) and QBC through a foreign catalog for each.
 
-`lfc_ui/` holds the shared helpers: `capture.py` (after the screenshots: redacted copies, the time between screenshots in `metrics.yaml`, GIFs) and `image_redact.py` (redacted copies: known digit IDs, such as account and workspace IDs, are masked with the last four digits kept; names and hosts stay readable). Both come from the lfc-faq notes' Google Ads demo.
+`lfc_ui/` holds the shared helpers: `capture.py` (after the screenshots: the time between screenshots in `metrics.yaml`, GIFs, and redacted copies of hand captures) and `image_redact.py` (redacted copies: known digit IDs, such as account and workspace IDs, are masked with the last four digits kept; names and hosts stay readable). Both come from the lfc-faq notes' Google Ads demo.
 
 ## Setup (once)
 
 From the repository root:
 
 ```bash
-brew install tesseract                          # OCR for the redacted copies
+brew install tesseract                          # OCR for redacted copies of hand captures
 python3 -m venv .venv                           # gitignored
 .venv/bin/python -m pip install -r ui-demos/requirements.txt
 .venv/bin/python -c "import PIL, yaml, pytesseract; print('ok')"
@@ -82,10 +82,10 @@ PYTHONPATH=../../.. ../../../../.venv/bin/python -m lfc_ui.capture runs/<name> \
   --secret <account-id> --secret <workspace-id> --meta workspace=<host> --meta pipeline_id=<id>
 ```
 
-Each run ends with `clear/` and `redacted/` PNGs, `clear.gif`, `redacted.gif`, and `metrics.yaml` (the `--meta` values, and the seconds between screenshots, taken from the files' times).
+A hand run ends with `clear/` and `redacted/` PNGs (not masked in the page: keep them local), `clear.gif`, `redacted.gif`, and `metrics.yaml` (the `--meta` values, and the seconds between screenshots, taken from the files' times).
 
 ## Rules
 
 - **Ask before creating anything** in a shared workspace: say the pipeline and schema name (see Names) and the tables first. Once the completed update's graph is captured, delete the schedule job, then the pipelines, then the schema.
-- **Share only the redacted copies** outside the team: the clear ones keep account and workspace identifiers.
+- **Script runs (`png/`) are masked in the page** and can be shared. For hand captures, share only the redacted copies: the clear ones keep account and workspace identifiers and other people's objects.
 - The UI depends on the webapp version deployed to the workspace, not on DBR: `metrics.yaml` records the UI commit when the page exposes it.

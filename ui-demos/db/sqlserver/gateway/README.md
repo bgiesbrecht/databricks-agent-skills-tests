@@ -12,6 +12,7 @@ Captured with `python -m lfc_ui.wizard sqlserver --mode gateway --launch`.
 
 ## Captured runs
 
+- **Committed: [`runs/robertlee_lfcddemo_azure_sqlserver_1792373323/png/`](runs/robertlee_lfcddemo_azure_sqlserver_1792373323/png/)** (2026-10-18, masked in the page): 28 steps in 3.7 minutes; update Completed.
 - **2026-10-18, `<name>_1792370583`:** 28 steps in 3.7 minutes: the applier's update completed in under a minute; the last two screenshots are the applier's completed graph (with the gateway's status, Running) and the gateway itself, running. `intpk` 4,894 rows, `dtix` 1,381 (deduplicated, as with integrated CDC). Job, applier, and gateway deleted afterwards.
 
 ## What the wizard does (seen 2026-10-18)

@@ -1,11 +1,10 @@
-"""Finish a captured run: redacted PNG copies, time between screenshots, and GIFs.
+"""Finish a captured run: time between screenshots (metrics.yaml), GIFs, and for hand captures, redacted copies.
 
-The screenshots themselves are taken in the browser (the Chrome DevTools tools save each one to
-runs/<name>/clear/NNN_<step>.png); Playwright isn't used, since device-trust sign-in refuses the browsers it starts.
-Run from the demo's folder:  python -m lfc_ui.capture runs/<name> --secret <account-id> --secret <workspace-id>
+lfc_ui.wizard saves runs/<name>/png/NNN_<step>.png, already masked in the page, and calls this itself. Screenshots
+taken by hand with the Chrome DevTools tools go to runs/<name>/clear/; finish those from the demo's folder:
+    python -m lfc_ui.capture runs/<name> --secret <account-id> --secret <workspace-id>
 
-Adapted from the lfc-faq notes (scripts/lfc_playwright/capture.py, e9db42b): the GIF writer is theirs; the
-Playwright click capture is replaced by this pass over saved files, timed from their modification times.
+Adapted from the lfc-faq notes (scripts/lfc_playwright/capture.py, e9db42b): the GIF writer is theirs.
 """
 
 from __future__ import annotations
@@ -59,7 +58,7 @@ def write_gif(
 
 
 def write_run_gifs(directory: Path) -> None:
-    """Regenerate clear/redacted GIFs for an existing captured run."""
+    """Regenerate a run's GIFs: one per PNG folder it has (png/ from the script; clear/ and redacted/ by hand)."""
     metrics_path = directory / "metrics.yaml"
     payload = (
         yaml.safe_load(metrics_path.read_text(encoding="utf-8"))
@@ -74,15 +73,20 @@ def write_run_gifs(directory: Path) -> None:
         )
         for click in clicks or []
     }
-    write_gif(directory / "clear", directory / "clear.gif", durations)
-    write_gif(directory / "redacted", directory / "redacted.gif", durations)
+    for folder in ("png", "clear", "redacted"):
+        if (directory / folder).is_dir():
+            write_gif(directory / folder, directory / f"{folder}.gif", durations)
 
 
 def finish_run(directory: Path, secrets: Sequence[str], metadata: dict[str, Any] | None = None) -> None:
-    """Redact every clear PNG, write metrics.yaml (seconds between screenshots), and both GIFs."""
-    pngs = sorted((directory / "clear").glob("*.png"))
-    for png in pngs:
-        redact_png(png, directory / "redacted" / png.name, secrets)
+    """Write metrics.yaml (seconds between screenshots) and the GIFs. Script runs (png/) are masked in the page
+    before each screenshot, so they need nothing more. Hand captures (clear/) get redacted copies: digit IDs such
+    as the workspace ID, found by OCR, masked to their last four digits."""
+    folder = "png" if (directory / "png").is_dir() else "clear"
+    pngs = sorted((directory / folder).glob("*.png"))
+    if folder == "clear":
+        for png in pngs:
+            redact_png(png, directory / "redacted" / png.name, secrets)
     clicks = [
         {
             "after": a.name,

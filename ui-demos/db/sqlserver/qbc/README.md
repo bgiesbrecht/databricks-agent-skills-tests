@@ -11,6 +11,7 @@ The wizard is the same as for PostgreSQL (see [../../postgres/qbc/README.md](../
 
 ## Captured runs
 
+- **Committed: [`runs/robertlee_lfcddemo_azure_sqlserver_1792372945/png/`](runs/robertlee_lfcddemo_azure_sqlserver_1792372945/png/)** (2026-10-18, masked in the page): 25 steps in 2.3 minutes; update Completed.
 Runs are written to `runs/<name>/` (gitignored).
 
 - **2026-10-18, `<name>_1792356311`:** 27 steps, each with red boxes around the field just finished and the next click. One update, completed in 41 s: `intpk` 4.9K rows upserted, `dtix` 5.5K rows, both matching the source. The pipeline was deleted after the capture; no job was created (see below).
