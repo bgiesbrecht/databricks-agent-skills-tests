@@ -26,7 +26,7 @@ Never point these at a shared source: the DDL forces a full refresh on everyone'
 ```bash
 cd skills/lfc-schema-change-test
 export PROFILE=<cli-profile> CONNECTION=<uc-connection> CATALOG=<catalog> CONN_USER=<connection-login>
-export SRC_SQL="$PWD/scripts/vm-mssql.sh" VM_IP=<vm-ip> MSSQL_CONTAINER=<container-name>
+export SRC_SQL="$PWD/scripts/vm-mssql.sh" SRC_ENV="$PWD/scripts/vm-mssql.sh --env" VM_IP=<vm-ip> MSSQL_CONTAINER=<container-name>
 OUT=/tmp/addcol-result.md scripts/sqlserver-add-column.sh
 ```
 
@@ -39,5 +39,7 @@ Give Isaac (or another coding agent with this repository and a Databricks CLI lo
 > Re-validate the SQL Server ADD COLUMN FAQ: follow `skills/lfc-schema-change-test/SKILL.md` in rsleedbx/databricks-agent-skills-tests. Use CLI profile `<profile>`, connection `<connection>`, catalog `<catalog>`. Start the test VM and its SQL Server container first and stop the VM afterwards. Report the claim table and anything that differs from the last run.
 
 ## After running
+
+`SRC_ENV` adds the host OS, the Podman version and the container image with its digest to the result, so a reader can run the same image. Copy them into the run file and the FAQ entry's test section.
 
 Add the claim table as a new run file next to the FAQ entry's `validation.yaml`, update the entry's `## Validation` line and its `last_validated`, and say what changed since the last run.

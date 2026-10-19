@@ -6,6 +6,7 @@
 #             CONNECTION  UC SQLSERVER connection to the source
 #             CATALOG     catalog with its own storage (not Default Storage) and a working credential
 #             SRC_SQL     command that runs T-SQL from stdin on the source as an admin; first arg = database
+#   Optional: SRC_ENV     command that prints the source environment (host, Podman, image), one fact per line
 #                         (for a VM container: scripts/vm-mssql.sh)
 #             CONN_USER   the connection's login on the source
 #   Optional: PREFIX (default: the CLI user's firstnamelastname), WAREHOUSE (default: first serverless one),
@@ -162,6 +163,7 @@ R=$(q "SELECT SUM(CASE WHEN c3 IS NULL THEN 1 ELSE 0 END), SUM(CASE WHEN c3 = 5 
   echo
   echo "- Date (UTC): $(date -u +%F)"
   echo "- Mode: standard CDC, serverless gateway and ingestion pipeline"
+  [ -n "${SRC_ENV:-}" ] && $SRC_ENV | sed 's/^/- /'
   echo "- Source: $(printf 'SET NOCOUNT ON; SELECT LEFT(@@VERSION, CHARINDEX(' - ', @@VERSION) - 1);\n' | $SRC_SQL master | head -1); utility objects $UTIL"
   echo
   echo "| Claim | Result | Observation |"
