@@ -104,7 +104,7 @@ def pick(r: Run, combo: Locator, text: str, step: str, done: Locator | None = No
     r.page.keyboard.press("Escape")
 
 
-def wizard(r: Run, src: dict, name: str, mode: str = "qbc") -> dict:
+def wizard(r: Run, src: dict, name: str, mode: str = "qbc", max_wait: int = 600) -> dict:
     """mode: qbc (query-based), cdc (integrated CDC, one pipeline), gateway (standard CDC: gateway + pipeline)."""
     p = r.page
     p.goto(f"{HOST}/ingestion/add?o={WORKSPACE_ID}")
@@ -233,7 +233,7 @@ def wizard(r: Run, src: dict, name: str, mode: str = "qbc") -> dict:
         validate = p.get_by_role("button", name="Validate", exact=True)
         r.shot("database_setup", validate)
         validate.click()
-        p.wait_for_function("() => !/Pending validation|Validating/.test(document.querySelector('main')?.innerText || '')", timeout=LONG)
+        p.wait_for_function("() => !/Pending validation|Validating/.test(document.querySelector('main')?.innerText || '')", timeout=600_000)  # MySQL: over 3 minutes
         nxt = p.locator("button:not([data-component-id*=pagination])", has_text=re.compile("^Next$"))
         r.shot("database_validated", p.locator("main table").last, nxt)
         nxt.click()
@@ -276,12 +276,29 @@ def wizard(r: Run, src: dict, name: str, mode: str = "qbc") -> dict:
     update_id = re.search(r"/updates/([0-9a-f-]+)", p.url).group(1)
     print(f"  update {update_id}", flush=True)
     state = p.locator("main").get_by_text(re.compile(r"^(Completed|Failed|Canceled)$")).first
-    state.wait_for(timeout=600_000 if mode == "qbc" else 14_400_000)  # integrated CDC: until the lag converges or the cap
+    # the max-wait clock starts once the update is Running (not while it queues or waits for compute)
+    p.locator("main").get_by_text(re.compile(r"^(Running|Completed|Failed|Canceled)")).first.wait_for(timeout=LONG)
+    t0 = time.time()
+    try:
+        state.wait_for(timeout=max_wait * 1000)
+        final, step = state.inner_text().strip(), "pipeline_graph_completed"
+    except Exception:
+        # integrated CDC runs until its lag converges or its cap: capture it running, then stop it
+        p.reload()  # the update page doesn't always redraw its graph while it waits
+        p.get_by_role("button", name="Edit pipeline").wait_for(timeout=LONG)
+        time.sleep(5)
+        r.shot("pipeline_graph_running")
+        p.get_by_test_id("stop-pipeline-button").click()  # the header's; the Tables panel has another Stop
+        confirm = p.get_by_role("dialog").get_by_role("button", name=re.compile("^Stop"))
+        if confirm.count():
+            confirm.first.click()
+        state.wait_for(timeout=LONG)
+        final, step = f"Stopped after {round((time.time() - t0) / 60, 1)} min", "pipeline_graph_stopped"
     time.sleep(3)
     rows = [t for t in p.locator("main [role=row], main tr").all_inner_texts() if re.match(r"^(dtix|intpk)\b", t.strip())]
-    r.shot("pipeline_graph_completed")
-    return {"pipeline_id": pipeline_id, "update": update_id, "state": state.inner_text().strip(),
-            "tables": [" ".join(t.split()) for t in rows]}
+    r.shot(step)
+    return {"pipeline_id": pipeline_id, "update": update_id, "state": final,
+            "update_minutes": round((time.time() - t0) / 60, 1), "tables": [" ".join(t.split()) for t in rows]}
 
 
 def editor_lines(p: Page) -> list[str]:
@@ -361,6 +378,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("source", choices=sorted(SOURCES))
     ap.add_argument("--mode", choices=["qbc", "cdc", "gateway"], default="qbc", help="query-based, integrated CDC, or standard CDC (gateway)")
+    ap.add_argument("--max-wait", type=float, default=10, help="minutes to wait once the update is Running (default 10); then capture it running, stop it, and go on")
     ap.add_argument("--owner", default=re.sub(r"[^a-z0-9]", "", getpass.getuser().lower()))
     ap.add_argument("--keep", action="store_true", help="keep the pipeline and job")
     ap.add_argument("--launch", action="store_true", help="start Playwright's own browser with auth.json (lfc_ui.auth save) instead of attaching to Chrome: no Allow prompt, and the Chrome DevTools MCP server can stay on")
@@ -388,7 +406,7 @@ def main() -> int:
         r = Run(page, folder)
         result: dict = {}
         try:
-            result = wizard(r, src, name, a.mode)
+            result = wizard(r, src, name, a.mode, int(a.max_wait * 60))
         except Exception as e:  # leave everything needed to take over by hand
             page.screenshot(path=str(folder / "fail.png"))
             (folder / "fail.aria.txt").write_text(page.locator("body").aria_snapshot())
@@ -400,11 +418,12 @@ def main() -> int:
         if a.launch:
             browser.close()
     print(json.dumps(result, indent=1))
-    if not a.keep and result.get("state") == "Completed":
+    done = result.get("state", "").startswith(("Completed", "Stopped"))
+    if not a.keep and done:
         cleanup(name, result["pipeline_id"])
     finish_run(folder, [WORKSPACE_ID], {"workspace": HOST.split("//")[1].split(".")[0], "source": a.source,
                                         "connection": src["connection"], **result})
-    return 0 if result.get("state") == "Completed" else 1
+    return 0 if done else 1
 
 
 if __name__ == "__main__":
