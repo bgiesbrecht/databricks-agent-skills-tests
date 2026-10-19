@@ -65,4 +65,4 @@ It writes `redacted/` (digit IDs masked, last four kept), `metrics.yaml` (second
 
 ## 4. Clean up
 
-Once the graph of a completed update is saved, **delete the pipeline and its schedule job** (Jobs & Pipelines → the job → More actions → Delete job; the pipeline → More actions → Delete). Delete the job first, or it runs the pipeline again on its next tick (seen: the hourly job ran once before it was deleted). The schema stays unless the user asks to drop it. The PNGs stay in `runs/<name>/` on the laptop.
+Once the graph of a completed update is saved, **delete the pipeline and its schedule job** (Jobs & Pipelines → the job → More actions → Delete job; the pipeline → More actions → Delete). Delete the job first, or it runs the pipeline again on its next tick (seen: the hourly job ran once before it was deleted). Then drop the run's schema (`databricks schemas delete main.<name> --force`): it holds the tables, event log, and staging volume. The script does all three. The PNGs stay in `runs/<name>/` on the laptop.

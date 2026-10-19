@@ -52,7 +52,7 @@ The pipeline, its schema, and its schedule job get the same name, the one the **
 
 ## Run a capture with the script (QBC: PostgreSQL, SQL Server, MySQL)
 
-`lfc_ui/wizard.py` drives the wizard with Playwright **attached to your own signed-in Chrome** (it never launches a browser, so single sign-on isn't involved), boxes each step in red, saves the PNGs, runs the pipeline once, then deletes the job and the pipeline (`--keep` keeps them; the schema always stays). Measured: 27 steps in 2.5 minutes on PostgreSQL, against about 20 by hand.
+`lfc_ui/wizard.py` drives the wizard with Playwright **attached to your own signed-in Chrome** (it never launches a browser, so single sign-on isn't involved), boxes each step in red, saves the PNGs, runs the pipeline once, then deletes the job, the pipelines, and the schema (`--keep` keeps them). Measured: 27 steps in 2.5 minutes on PostgreSQL, against about 20 by hand.
 
 **Usual way, no prompt:** save the workspace session once, then each run starts Playwright's own browser with it (headless, 1600x900; `--headed` to watch). The Chrome DevTools MCP server can stay on.
 
@@ -86,6 +86,6 @@ Each run ends with `clear/` and `redacted/` PNGs, `clear.gif`, `redacted.gif`, a
 
 ## Rules
 
-- **Ask before creating anything** in a shared workspace: say the pipeline and schema name (see Names) and the tables first. Once the completed update's graph is captured, delete the schedule job, then the pipeline.
+- **Ask before creating anything** in a shared workspace: say the pipeline and schema name (see Names) and the tables first. Once the completed update's graph is captured, delete the schedule job, then the pipelines, then the schema.
 - **Share only the redacted copies** outside the team: the clear ones keep account and workspace identifiers.
 - The UI depends on the webapp version deployed to the workspace, not on DBR: `metrics.yaml` records the UI commit when the page exposes it.

@@ -405,7 +405,7 @@ def make_serverless(pipeline_id: str) -> str:
 
 
 def cleanup(name: str, pipeline_id: str, gateway_id: str | None = None) -> None:
-    """Delete the schedule job (first, or it runs the pipeline again), then the pipeline. The schema stays."""
+    """Delete the schedule job (first, or it runs the pipeline again), the pipelines, then the run's schema."""
     for job_name in (name, f"{name} job"):
         for j in json.loads(cli("jobs", "list", "--name", job_name) or "[]"):
             cli("jobs", "delete", str(j["job_id"]))
@@ -413,6 +413,8 @@ def cleanup(name: str, pipeline_id: str, gateway_id: str | None = None) -> None:
     for pid in filter(None, (pipeline_id, gateway_id)):  # deleting the gateway also stops it
         cli("pipelines", "delete", pid)
         print(f"  deleted pipeline {pid}")
+    cli("schemas", "delete", f"{CATALOG}.{name}", "--force")  # with its tables, event log, and staging volume
+    print(f"  dropped schema {CATALOG}.{name}")
 
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -424,7 +426,7 @@ def main() -> int:
     ap.add_argument("--mode", choices=["qbc", "cdc", "gateway"], default="qbc", help="query-based, integrated CDC, or standard CDC (gateway)")
     ap.add_argument("--max-wait", type=float, default=10, help="minutes to wait once the update is Running (default 10); then capture it running, stop it, and go on")
     ap.add_argument("--owner", default=re.sub(r"[^a-z0-9]", "", getpass.getuser().lower()))
-    ap.add_argument("--keep", action="store_true", help="keep the pipeline and job")
+    ap.add_argument("--keep", action="store_true", help="keep the job, pipelines, and schema")
     ap.add_argument("--launch", action="store_true", help="start Playwright's own browser with auth.json (lfc_ui.auth save) instead of attaching to Chrome: no Allow prompt, and the Chrome DevTools MCP server can stay on")
     ap.add_argument("--headed", action="store_true", help="with --launch: show the browser window")
     ap.add_argument("--width", type=int, default=1600, help="with --launch: page width in pixels (PNG size at 1x)")

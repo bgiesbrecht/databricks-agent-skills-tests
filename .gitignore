@@ -3,3 +3,7 @@
 conn.json
 __pycache__/
 .venv/
+
+# a live browser session (lfc_ui.auth save): never commit
+ui-demos/auth.json
+ui-demos/auth-check.png
