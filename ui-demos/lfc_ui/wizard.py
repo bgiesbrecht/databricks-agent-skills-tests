@@ -104,7 +104,8 @@ def pick(r: Run, combo: Locator, text: str, step: str, done: Locator | None = No
     r.page.keyboard.press("Escape")
 
 
-def wizard(r: Run, src: dict, name: str) -> dict:
+def wizard(r: Run, src: dict, name: str, mode: str = "qbc") -> dict:
+    """mode: qbc (query-based), cdc (integrated CDC, one pipeline), gateway (standard CDC: gateway + pipeline)."""
     p = r.page
     p.goto(f"{HOST}/ingestion/add?o={WORKSPACE_ID}")
     tile = p.locator(f'a[href*="sourceType={src["type"]}"]').first
@@ -121,20 +122,20 @@ def wizard(r: Run, src: dict, name: str) -> dict:
     r.shot("connection_next", row(conn), nxt)
     nxt.click()
 
-    qbc = p.get_by_role("radio", name=re.compile("^Query based capture.*Runs a managed query"))
-    r.shot("ingestion_setup", qbc)
-    qbc.click()
+    kind = p.get_by_role("radio", name=re.compile("^Query based capture.*Runs a managed query" if mode == "qbc" else "^Change data capture.*Captures"))
+    r.shot("ingestion_setup", kind)
+    kind.click()
     pname = p.get_by_role("textbox", name="Pipeline name", exact=True)
-    r.shot("query_based_capture", qbc, pname)
+    r.shot("query_based_capture" if mode == "qbc" else "change_data_capture", kind, pname)
     pname.fill(name)
-    cat = p.get_by_role("textbox", name="Select catalog", exact=True)
+    cat = p.get_by_role("textbox", name="Select catalog", exact=True).first  # CDC has a second pair for staging
     r.shot("pipeline_name", pname, cat)
     cat.click()
     cat.press_sequentially(CATALOG)
     opt = option(p, CATALOG)
     r.shot("event_log_catalog", cat, opt)
     opt.click()
-    sch = p.get_by_role("textbox", name="Select schema", exact=True)
+    sch = p.get_by_role("textbox", name="Select schema", exact=True).first
     sch.click()
     sch.press_sequentially(name)
     create = p.get_by_role("button", name="Create schema", exact=True)
@@ -148,10 +149,22 @@ def wizard(r: Run, src: dict, name: str) -> dict:
     r.shot("new_schema_name", dname, dcreate)
     dcreate.click()
     p.get_by_text("Schema created").first.wait_for()
-    sch = p.get_by_role("textbox", name="Select schema", exact=True)
-    go = p.get_by_role("button", name="Create pipeline and continue", exact=True)
+    sch = p.get_by_role("textbox", name="Select schema", exact=True).first
+    go = p.get_by_role("button", name=re.compile("^Create pipelines? and continue$"))
     r.shot("schema_selected", sch, go)
-    r.shot("compute_serverless", p.get_by_role("radio", name=re.compile("^Serverless.*Uses serverless")), go)
+    serverless = p.get_by_role("radio", name=re.compile("^Serverless.*Uses serverless"))
+    if mode != "qbc" and serverless.count():  # CDC defaults to Classic
+        r.shot("compute_classic_default", serverless)
+        serverless.click()
+    r.shot("compute_serverless", serverless if serverless.count() else None, go)
+    if mode != "qbc":
+        adv = p.get_by_role("button", name="Advanced settings", exact=True)
+        if adv.get_attribute("aria-expanded") != "true":
+            adv.click()
+        pm = p.get_by_role("radio", name=re.compile("^Integrated CDC connector" if mode == "cdc" else "^Gateway \\+ ingestion pipeline"))
+        if pm.count():  # PostgreSQL has no choice: gateway only
+            pm.click()
+            r.shot("pipeline_mode_" + mode, pm, go)
     go.click()
 
     p.wait_for_url(re.compile("pipelineId="), timeout=LONG)
@@ -159,7 +172,7 @@ def wizard(r: Run, src: dict, name: str) -> dict:
     print(f"  pipeline {pipeline_id}", flush=True)
     p.wait_for_function("() => !/Waiting for compute|Loading source table skeleton|Validating pipeline/.test(document.querySelector('main')?.innerText || '')", timeout=LONG)
 
-    if src["database"]:
+    if mode == "qbc" and src["database"]:  # CDC lists the connection's database directly
         db = p.get_by_role("textbox", name="Add a Database name", exact=True)
         db.fill(src["database"])
         add = p.get_by_role("button", name="Add Database name", exact=True)
@@ -181,18 +194,27 @@ def wizard(r: Run, src: dict, name: str) -> dict:
     intpk = p.get_by_role("checkbox", name="Select intpk", exact=True)
     r.shot("source_tables", row(intpk))
     intpk.click()
-    cursor = p.get_by_role("combobox", name=re.compile("^Cursor column"))
-    r.shot("intpk_settings", row(p.get_by_role("checkbox", name="Unselect intpk", exact=True)), cursor)
-    pick(r, cursor, "dt", "intpk_cursor_dt")
-    keys = p.get_by_role("combobox", name=re.compile("^Primary keys"))
-    pick(r, keys, "pk", "intpk_primary_key_pk", cursor)
+    if mode == "qbc":
+        cursor = p.get_by_role("combobox", name=re.compile("^Cursor column"))
+        r.shot("intpk_settings", row(p.get_by_role("checkbox", name="Unselect intpk", exact=True)), cursor)
+        pick(r, cursor, "dt", "intpk_cursor_dt")
+        keys = p.get_by_role("combobox", name=re.compile("^Primary keys"))
+        pick(r, keys, "pk", "intpk_primary_key_pk", cursor)
+    else:  # CDC takes keys and order from the source: nothing to pick
+        keys = p.get_by_text(f"{SCHEMA}.intpk").first
+        keys.wait_for()
+        r.shot("intpk_settings", row(p.get_by_role("checkbox", name="Unselect intpk", exact=True)), keys)
     dtix = p.get_by_role("checkbox", name="Select dtix", exact=True)
     r.shot("intpk_done", keys, row(dtix))
     dtix.click()
     p.get_by_text(f"{SCHEMA}.dtix").first.wait_for()
-    cursor = p.get_by_role("combobox", name=re.compile("^Cursor column"))
-    r.shot("dtix_settings", row(p.get_by_role("checkbox", name="Unselect dtix", exact=True)), cursor)
-    pick(r, cursor, "dt", "dtix_cursor_dt")
+    if mode == "qbc":
+        cursor = p.get_by_role("combobox", name=re.compile("^Cursor column"))
+        r.shot("dtix_settings", row(p.get_by_role("checkbox", name="Unselect dtix", exact=True)), cursor)
+        pick(r, cursor, "dt", "dtix_cursor_dt")
+    else:
+        cursor = p.get_by_text(f"{SCHEMA}.dtix").first
+        r.shot("dtix_settings", row(p.get_by_role("checkbox", name="Unselect dtix", exact=True)), cursor)
     nxt = p.get_by_role("button", name="Next", exact=True)
     r.shot("source_next", cursor, nxt)
     nxt.click()
@@ -205,7 +227,17 @@ def wizard(r: Run, src: dict, name: str) -> dict:
     label = btn.inner_text().strip()
     r.shot("destination_schema", row(dest), btn)
     btn.click()
-    if label == "Save and continue":
+    if mode != "qbc":
+        # CDC: the pipeline saves, then Database setup checks the source's settings and permissions
+        p.get_by_role("heading", name="Database setup", exact=True, level=3).wait_for(timeout=LONG)
+        validate = p.get_by_role("button", name="Validate", exact=True)
+        r.shot("database_setup", validate)
+        validate.click()
+        p.wait_for_function("() => !/Pending validation|Validating/.test(document.querySelector('main')?.innerText || '')", timeout=LONG)
+        nxt = p.locator("button:not([data-component-id*=pagination])", has_text=re.compile("^Next$"))
+        r.shot("database_validated", p.locator("main table").last, nxt)
+        nxt.click()
+    if mode == "qbc" and label == "Save and continue":
         # it validates, which fails on dtix (no key, still SCD type 1), but it saves the tables
         p.get_by_text(re.compile("doesn't have a primary key|Configure pipeline schedules")).first.wait_for(timeout=LONG)
         r.shot("validation_dtix_no_key")
@@ -221,25 +253,30 @@ def wizard(r: Run, src: dict, name: str) -> dict:
         r.shot("job_name", job, save)
         save.click()
         p.get_by_role("dialog").wait_for(state="hidden")
-        # Next didn't save the tables; Save and close does (switching to YAML before a save drops them)
-        close = p.get_by_role("button", name="Save and close", exact=True)
-        r.shot("save_and_close", close)
-        r.clear()
-        close.click()
-        p.wait_for_url(re.compile(f"/pipelines/{pipeline_id}"), timeout=LONG)
+        if mode == "qbc":
+            # Next didn't save the tables; Save and close does (switching to YAML before a save drops them)
+            close = p.get_by_role("button", name="Save and close", exact=True)
+            r.shot("save_and_close", close)
+            r.clear()
+            close.click()
+            p.wait_for_url(re.compile(f"/pipelines/{pipeline_id}"), timeout=LONG)
 
-    # no append-only choice in the wizard: set it in the saved pipeline's YAML
-    p.goto(f"{HOST}/ingestion/pipelines/setup?sourceType={src['type']}&o={WORKSPACE_ID}&pipelineId={pipeline_id}&setupFormat=yaml")
-    append_only(r)
     run = p.get_by_role("button", name="Save and run pipeline", exact=True)
-    r.shot("yaml_dtix_append_only", p.locator(".monaco-editor .view-line", has_text="scd_type: APPEND_ONLY").last, run)
+    if mode == "qbc":
+        # no append-only choice in the wizard: set it in the saved pipeline's YAML. CDC refuses APPEND_ONLY
+        # ("can only be used for incremental ingestion of query based connector"): keyless dtix stays SCD type 1
+        p.goto(f"{HOST}/ingestion/pipelines/setup?sourceType={src['type']}&o={WORKSPACE_ID}&pipelineId={pipeline_id}&setupFormat=yaml")
+        append_only(r)
+        r.shot("yaml_dtix_append_only", p.locator(".monaco-editor .view-line", has_text="scd_type: APPEND_ONLY").last, run)
+    else:
+        r.shot("save_and_run", run)
     r.clear()
     run.click()
     p.wait_for_url(re.compile("/updates/"), timeout=LONG)
     update_id = re.search(r"/updates/([0-9a-f-]+)", p.url).group(1)
     print(f"  update {update_id}", flush=True)
     state = p.locator("main").get_by_text(re.compile(r"^(Completed|Failed|Canceled)$")).first
-    state.wait_for(timeout=600_000)
+    state.wait_for(timeout=600_000 if mode == "qbc" else 14_400_000)  # integrated CDC: until the lag converges or the cap
     time.sleep(3)
     rows = [t for t in p.locator("main [role=row], main tr").all_inner_texts() if re.match(r"^(dtix|intpk)\b", t.strip())]
     r.shot("pipeline_graph_completed")
@@ -264,7 +301,7 @@ def to_line_from_end(p: Page, up: int) -> None:
 
 
 def append_only(r: Run) -> None:
-    """Add `scd_type: APPEND_ONLY` under dtix's table_configuration (dtix is the last table in the YAML)."""
+    """Add `scd_type: APPEND_ONLY` to dtix (keyless: SCD type 1 would merge duplicate rows) in the YAML editor."""
     p = r.page
     p.locator(".monaco-editor").last.wait_for()
     p.locator(".monaco-editor").last.locator("textarea").focus()
@@ -272,14 +309,21 @@ def append_only(r: Run) -> None:
     lines = editor_lines(p)
     if not any(l.strip() == "source_table: dtix" for l in lines):
         raise RuntimeError("YAML has no dtix table: the wizard's choices weren't saved before switching")
-    i = max(k for k, l in enumerate(lines) if l.strip() == "table_configuration:")
-    up = len(lines) - 1 - i
+    i = max(k for k, l in enumerate(lines) if l.strip() == "source_table: dtix")
+    tc = next((k for k in range(i + 1, len(lines)) if lines[k].strip() == "table_configuration:"
+               and len(lines[k]) - len(lines[k].lstrip()) == len(lines[i]) - len(lines[i].lstrip())), None)
+    anchor = tc if tc is not None else i  # QBC has table_configuration (the cursor); CDC may not
+    up = len(lines) - 1 - anchor
+    first, rest = ("s", ["cd_type: APPEND_ONLY"]) if tc is not None else ("t", ["able_configuration:", "scd_type: APPEND_ONLY"])
     to_line_from_end(p, up)
     p.keyboard.press("Enter")
-    p.keyboard.type("s")  # the first keystroke turns the view into a diff editor; type the rest in its right side
+    p.keyboard.type(first)  # the first keystroke turns the view into a diff editor; type the rest in its right side
     time.sleep(1.5)
     to_line_from_end(p, up)
-    p.keyboard.type("cd_type: APPEND_ONLY")
+    for k, text in enumerate(rest):
+        if k:
+            p.keyboard.press("Enter")
+        p.keyboard.type(text)
     if not any(l.strip() == "scd_type: APPEND_ONLY" for l in editor_lines(p)):
         raise RuntimeError("scd_type line didn't land")
 
@@ -316,6 +360,7 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("source", choices=sorted(SOURCES))
+    ap.add_argument("--mode", choices=["qbc", "cdc", "gateway"], default="qbc", help="query-based, integrated CDC, or standard CDC (gateway)")
     ap.add_argument("--owner", default=re.sub(r"[^a-z0-9]", "", getpass.getuser().lower()))
     ap.add_argument("--keep", action="store_true", help="keep the pipeline and job")
     ap.add_argument("--launch", action="store_true", help="start Playwright's own browser with auth.json (lfc_ui.auth save) instead of attaching to Chrome: no Allow prompt, and the Chrome DevTools MCP server can stay on")
@@ -325,7 +370,7 @@ def main() -> int:
     a = ap.parse_args()
     src = SOURCES[a.source]
     name = re.sub(r"[^a-z0-9]", "_", f"{a.owner}_{src['connection']}_{int(time.time())}".lower())
-    folder = REPO / "ui-demos/db" / a.source / "qbc/runs" / name
+    folder = REPO / "ui-demos/db" / a.source / a.mode / "runs" / name
     print(name, flush=True)
     port, path = ("", "") if a.launch else (pathlib.Path.home() / "Library/Application Support/Google/Chrome/DevToolsActivePort").read_text().split()[:2]
     with sync_playwright() as pw:
@@ -343,7 +388,7 @@ def main() -> int:
         r = Run(page, folder)
         result: dict = {}
         try:
-            result = wizard(r, src, name)
+            result = wizard(r, src, name, a.mode)
         except Exception as e:  # leave everything needed to take over by hand
             page.screenshot(path=str(folder / "fail.png"))
             (folder / "fail.aria.txt").write_text(page.locator("body").aria_snapshot())

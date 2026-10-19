@@ -22,6 +22,7 @@ from PIL import Image
 
 _MIN_FRAME_DURATION_MS = 400
 _LAST_FRAME_DURATION_MS = 1_000
+_MAX_FRAME_DURATION_MS = 5_000
 
 
 def png_slug(label: str) -> str:
@@ -42,8 +43,8 @@ def write_gif(
         with Image.open(png) as image:
             frames.append(image.convert("RGB"))
     durations = [
-        (durations_by_name or {}).get(png.name, _LAST_FRAME_DURATION_MS) for png in pngs
-    ]
+        min((durations_by_name or {}).get(png.name, _LAST_FRAME_DURATION_MS), _MAX_FRAME_DURATION_MS) for png in pngs
+    ]  # a long wait (a CDC update) would overflow the GIF's 16-bit frame time; metrics.yaml keeps the real one
     destination.parent.mkdir(parents=True, exist_ok=True)
     frames[0].save(
         destination,
