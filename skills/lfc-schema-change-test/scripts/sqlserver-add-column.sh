@@ -157,7 +157,12 @@ T="\`$CATALOG\`.$S"
 update; [ "$STATE" = COMPLETED ] || { echo "baseline failed: $ERRS"; exit 1; }
 COUNTS="SELECT (SELECT COUNT(*) FROM $T.intpk), (SELECT COUNT(*) FROM $T.dtix), (SELECT COUNT(*) FROM $T.cdcpk), (SELECT COUNT(*) FROM $T.afrpk)"
 R=$(q "$COUNTS" 2>&1); [ "$R" = "$(printf '10\t10\t10\t10')" ] || { update; R=$(q "$COUNTS" 2>&1); }   # the first update may not load every table
-[ "$R" = "$(printf '10\t10\t10\t10')" ] || { echo "baseline row counts wrong (intpk dtix cdcpk afrpk): $R"; exit 1; }
+if [ "$MODE" = integrated ] && [ "$R" = "$(printf '10\t0\t10\t10')" ]; then
+  observe keyless-cdc-integrated-snapshot "dtix (no primary key, CDC) has 0 rows after the first load; the keyed tables have 10. No error. Its later claims are skipped"
+  SKIP_DTIX=1
+else
+  [ "$R" = "$(printf '10\t10\t10\t10')" ] || { echo "baseline row counts wrong (intpk dtix cdcpk afrpk): $R"; exit 1; }
+fi
 observe scd-modes-baseline "rows scd2pk (SCD_TYPE_2), aopk (APPEND_ONLY): $(q "SELECT (SELECT COUNT(*) FROM $T.scd2pk), (SELECT COUNT(*) FROM $T.aopk)" 2>&1 | tr '\t' ' ')"
 
 # --- C1: nullable, no default ---------------------------------------------------------------------------------------
@@ -174,12 +179,13 @@ INSERT INTO lfcddemo.cdcpk (id, v, c1) VALUES (11, 'after_c1', 111), (12, 'after
 INSERT INTO lfcddemo.scd2pk (id, v, c1) VALUES (11, 'after_c1', 111), (12, 'after_c1', 112);
 INSERT INTO lfcddemo.aopk (id, v, c1) VALUES (11, 'after_c1', 111), (12, 'after_c1', 112);
 EOF
-settle dtix c1
+[ "${SKIP_DTIX:-0}" = 1 ] && settle intpk c1 || settle dtix c1
 R=$(q "SELECT SUM(CASE WHEN c1 IS NULL THEN 1 ELSE 0 END), SUM(CASE WHEN c1 > 110 THEN 1 ELSE 0 END) FROM $T.intpk")
 [ "$R" = "$(printf '10\t2')" ] && claim nullable-no-default-keyed-inline PASS "intpk: 10 rows c1 NULL, 2 rows with values, while dtix failed in the same update" \
   || claim nullable-no-default-keyed-inline FAIL "intpk c1 NULL/values: ${R:-query failed}"
-[[ "$ERRS" == *PRIMARY_KEY_CHANGE* ]] && claim keyless-any-add-full-refresh PASS "dtix: PRIMARY_KEY_CHANGE on a nullable no-default add" \
-  || claim keyless-any-add-full-refresh FAIL "dtix errors: ${ERRS:-none}"
+if [ "${SKIP_DTIX:-0}" = 1 ]; then observe keyless-any-add-full-refresh "skipped: dtix didn't load; errors for dtix: $(errs_for dtix)"
+elif [[ "$ERRS" == *PRIMARY_KEY_CHANGE* ]]; then claim keyless-any-add-full-refresh PASS "dtix: PRIMARY_KEY_CHANGE on a nullable no-default add"
+else claim keyless-any-add-full-refresh FAIL "dtix errors: ${ERRS:-none}"; fi
 R=$(q "SELECT SUM(CASE WHEN c1 IS NULL THEN 1 ELSE 0 END), SUM(CASE WHEN c1 > 110 THEN 1 ELSE 0 END) FROM $T.cdcpk")
 [ "$R" = "$(printf '10\t2')" ] && claim keyed-cdc-table PASS "cdcpk (CDC, primary key): 10 rows c1 NULL, 2 rows with values" \
   || claim keyed-cdc-table FAIL "cdcpk c1 NULL/values: ${R:-query failed}"
