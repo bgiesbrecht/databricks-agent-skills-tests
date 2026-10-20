@@ -73,6 +73,8 @@ bin/check_links.py     # every relative link in every skill
 pr-notes/              # PR descriptions with the test matrix, one per skills-repo branch
 prompts/
   lakeflow-connect.txt # routing / guidance prompts (no resources created)
+  podman-desktop-remove.txt # laptop disk: Podman Desktop and its VM (report only, nothing removed)
+  lfc-ui-capture.txt   # UI captures: is the Chrome tool attached to your Chrome (nothing created)
   lfc-matrix/          # Lakeflow Connect deploy tests: 5 sources x 4 modes, plus DML (MATRIX.md)
 results/               # runs/<run>.jsonl records and <date>-<topic>.md write-ups
 skills/                # test-only skills: source setup, data generation, firewall, results
@@ -92,6 +94,8 @@ cp env.example.sh env.local.sh    # fill in profiles, catalog, connections (neve
 source env.sh
 ```
 
+When the workspace profile's OAuth login has expired, `run.sh` mints a token from your account login for the same account and keeps going ([account-token-fallback](skills/account-token-fallback/SKILL.md)); log in to the account once with `databricks auth login --host <accounts-url> --account-id <id> --profile <name>`.
+
 `run.sh` copies the skills repo's `skills/` into the Claude plugin cache before each run, so
 sessions test your local edits. Sessions run in a scratch `WORK_DIR` under `/tmp`, outside both
 repos, so skills load from the plugin cache and generated bundles stay out of git.
@@ -107,6 +111,10 @@ bin/check_links.py                     # every relative link in every skill
 ```
 
 With databases, it fills TPC-C and the TPC-H spec schema on each engine (schemas named `test_*`) and checks every table's target, the spec's rules, and the audit. Run it after changing a skill's scripts.
+
+## Schema-change tests
+
+Each script answers one schema-evolution question by running it on a fresh source database, prints one PASS or FAIL row per claim, and deletes everything it created. First: does `ADD COLUMN` on SQL Server need a full refresh (about 25 minutes). See [lfc-schema-change-test](skills/lfc-schema-change-test/SKILL.md) for what it needs and the command; it also has a prompt to hand the rerun to a coding agent.
 
 ## Guidance tests
 

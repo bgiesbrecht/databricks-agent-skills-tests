@@ -34,6 +34,8 @@ podman system connection add lfc-test-podman "unix://$HOME/.lima/lfc-test-podman
 
 Size it for what runs at once: SQL Server and Oracle take 4 GB each (`--memory 10` holds both plus a small engine; the default is 4 GiB). `--tty=false` skips the interactive confirmation, for scripts and agents. Tested (macOS 26, Apple Silicon, Lima 2.1): the VM starts in 44 s, rootful Podman on Fedora 44 with kernel 6.19 and Rosetta registered (`/proc/sys/fs/binfmt_misc/rosetta`). Container ports bound in the VM (`-p 30003:1433`) are forwarded to the Mac's `127.0.0.1` with nothing more to set up.
 
+You don't need Podman Desktop for any of this. If it's installed, remove it first: it starts its own `podman machine` VM next to Lima, whose disk keeps growing (**podman-desktop-remove**).
+
 Without `template:podman-rootful` the VM has no Podman and no socket. An existing VM created this way under another name (for example `forgedb-lima-rosetta2-podman`) works the same: use its name.
 
 Verify:
@@ -236,6 +238,26 @@ podman volume rm {volume-name}
 
 All data is lost. To keep the database but remove the container, omit the volume remove step and re-use the volume later.
 
+### Remove the VM, and get the laptop's disk back
+
+The VM's disk is one file on the laptop: `podman machine` keeps it under `~/.local/share/containers/podman/machine/<provider>/` (for example `podman-machine-default-arm64.raw`), Lima under `~/.lima/<name>/`. It's sparse, so it grows as the databases inside it write, and it **doesn't shrink** when you drop tables or containers in the VM. Check how much it really takes with `du -h <image>`, not `ls -l`. To give the space back, remove the whole VM, in this order:
+
+```bash
+podman machine stop && podman machine rm          # or: limactl stop lfc-test-podman && limactl delete lfc-test-podman
+df -h /                                            # the space is back once the VM process has exited
+```
+
+**Never delete those folders while the VM runs.** A running VM keeps its disk file open: deleting it doesn't free the space, the VM goes on writing to it, and no folder shows it any more, so the disk fills while `du` finds nothing big. Seen in practice: `rm -rf ~/.local/share/containers` with the machine running left a 50 GB image held open by Apple's virtualization service; the laptop ran out of space repeatedly over a day, and stopping the VM gave back about 55 GB. With the files gone, `podman machine stop` can't reach the VM (`failed to read identity ... machine: no such file or directory`), so find it and stop its processes:
+
+```bash
+lsof +L1 -nP 2>/dev/null | grep -iE '\.raw|\.img|podman|lima'                 # deleted files still open, with the pid
+for p in $(pgrep -f 'Virtualization.VirtualMachine'); do lsof -nP -p $p | grep -E '\.raw|\.img'; done
+pgrep -fl 'vfkit|krunkit|gvproxy|qemu|limactl'                                  # the VM's own processes
+kill <vfkit-or-krunkit-pid> <gvproxy-pid>                                       # Lima: limactl stop --force <name>
+```
+
+Watch the result with `df -k /` a minute apart: the space comes back as the virtualization service exits, sometimes in two steps.
+
 ### Delete UC connection
 
 ```bash
@@ -250,19 +272,21 @@ databricks connections delete --name owner-engine-podman --profile DEFAULT
 
 3. **The VM's disk fills up**: every row loaded is also written to the engine's change log (MySQL binary logs, Postgres WAL), which CDC needs and so is kept: 25 GB of binary logs filled a 50 GB `podman machine` in testing, and Podman itself then fails (`no space left`). Check with `podman machine ssh df -h /`. Without a CDC reader on the container, purge them (`PURGE BINARY LOGS BEFORE NOW()`, or `SET PERSIST binlog_expire_logs_seconds = 86400`); with one, give the VM more disk (`podman machine init --disk-size`) instead.
 
-3. **Port already in use:** If port `30001` is already bound, pick a free port ≥30000. Check with `podman port {container-name}` or `ss -tlnp | grep 30001`.
+4. **Port already in use:** If port `30001` is already bound, pick a free port ≥30000. Check with `podman port {container-name}` or `ss -tlnp | grep 30001`.
 
-4. **Lima VM frozen or unresponsive (macOS):**
+5. **Lima VM frozen or unresponsive (macOS):**
 
    ```bash
    limactl stop lfc-test-podman
    limactl start lfc-test-podman
    ```
 
-5. **SQL Server or Oracle taking > 10 min to start:** Normal for first run. Monitor with `podman logs {container-name}`.
+6. **SQL Server or Oracle taking > 10 min to start:** Normal for first run. Monitor with `podman logs {container-name}`.
 
-6. **UC connection fails ("Authentication failed"):** Verify the password is correct by connecting directly with SQL client. If direct connection works but UC fails, check that the password in the connection file is exactly the same and has no trailing whitespace.
+7. **UC connection fails ("Authentication failed"):** Verify the password is correct by connecting directly with SQL client. If direct connection works but UC fails, check that the password in the connection file is exactly the same and has no trailing whitespace.
 
 ---
 
 **Ready for Lakeflow Connect?** Once the UC connection is registered, use the **databricks-lakeflow-connect** skill to configure the pipeline, apply pre-flight checks, and start ingestion.
+
+8. **The laptop's disk keeps filling, and nothing big shows up:** a VM whose disk file was deleted while it ran is still writing to it. See [Remove the VM, and get the laptop's disk back](#remove-the-vm-and-get-the-laptops-disk-back). If Podman Desktop is installed, it may have started a VM you didn't: **podman-desktop-remove** reports every machine and its disk use.

@@ -1,0 +1,2 @@
+p1|My Mac's disk keeps filling up since I installed Podman Desktop next to the Lima VM I use for test databases. Find out what's taking the space and what would be removed to get rid of Podman Desktop, but don't remove or stop anything yet.
+p2|Remove Podman Desktop from this laptop but keep the podman CLI and my Lima VMs. Show me the report first and stop there; don't pass --yes.

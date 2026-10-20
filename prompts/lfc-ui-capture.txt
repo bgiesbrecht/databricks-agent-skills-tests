@@ -1,0 +1,2 @@
+p1|Before a Lakeflow Connect UI capture, check that the Chrome DevTools tools are attached to my own Chrome and that I'm signed in to the workspace for Databricks CLI profile ${PIPELINE_WS}. Tell me exactly what to do if they aren't. Don't create anything.
+p2|The Chrome tools only show about:blank, though my Chrome is open and signed in. What's wrong and how do I fix it?
