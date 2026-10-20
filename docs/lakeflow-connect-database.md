@@ -53,20 +53,22 @@ flowchart LR
   conn["5. UC connection<br/>checked with remote_query"]
   fc["6. Foreign catalog"]
   qbc["7a. Query-based<br/>pipeline"]
-  icdc["7b. Integrated CDC<br/>pipeline"]
+  icdc["7b. Integrated CDC pipeline<br/>with its own staging volume"]
   gw["7c. Gateway"]
   vol[("8. Staging volume")]
   ap["7d. Ingestion<br/>pipeline"]
   tbl["9. Streaming tables<br/>rows checked<br/>against the source"]
+  clean["10. Clean up<br/>bundle destroy, stop gateway,<br/>drop slots and publications"]
   db --> cap --> fw --> conn
   prep --> conn
-  conn --> qbc --> tbl
+  conn --> qbc
   conn --> fc --> qbc
-  conn --> icdc --> vol
-  conn --> gw --> vol --> ap --> tbl
-  vol --> icdc
+  conn --> icdc
+  conn --> gw --> vol --> ap
+  qbc --> tbl
   icdc --> tbl
-  tbl -. "10. Clean up" .-> db
+  ap --> tbl
+  tbl --> clean
 ```
 
 Steps 1–3 happen once per source, step 4 once per workspace, and step 5 once per source and workspace. Steps 6–10 happen for each mode: query-based (7a, through a foreign catalog with 6), integrated CDC (7b, which extracts to its own staging volume and applies from it), or standard CDC (a gateway, 7c, writes the staging volume and an ingestion pipeline, 7d, applies it). Each mode also makes its destination schema, and CDC a staging schema. Clean up (10) runs `databricks bundle destroy`, stops a gateway and drops Postgres slots and publications. Each mode's prompt makes its own pipeline, schema and bundle, so the modes can run one after another on the same connection.

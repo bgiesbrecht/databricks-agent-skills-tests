@@ -33,30 +33,6 @@ Open Claude Code (or another coding agent) in this repo, with a Databricks CLI l
 
 The skills ask before creating anything, and clean up after themselves. To run the tests as scripts instead, see [docs/running-tests.md](docs/running-tests.md).
 
-## A skill for each step of the test and validation journey
-
-| Step | What you get |
-|---|---|
-| **Is my source supported?** | Sources on AWS RDS and Aurora, Azure SQL and Flexible Server, GCP Cloud SQL, a cloud VM, or Podman on a laptop ([lfc-source-setup](skills/lfc-source-setup/SKILL.md)). MySQL, PostgreSQL, SQL Server and Oracle, plus Db2, Informix, CockroachDB and YugabyteDB for data generation. Each source comes with its user, grants and change capture (binlog, publication and slot, change tracking or CDC, LogMiner). |
-| **Can my workspace reach it?** | [lfc-source-firewall](skills/lfc-source-firewall/SKILL.md) opens the source to the workspace's serverless egress IPs and your IP, on Azure, AWS and GCP. Tested on public IPs and across clouds (an AWS workspace reading an Azure VM). |
-| **Which ingestion mode?** | All four: query-based, query-based through a foreign catalog, integrated CDC and standard CDC, on serverless or classic. [lfc-workspace-setup](skills/lfc-workspace-setup/SKILL.md) turns on the connector previews and picks a catalog CDC accepts. |
-| **How does the first load behave at size?** | Data that never crosses the network: generated inside the database ([lfc-source-datagen](skills/lfc-source-datagen/SKILL.md)), shaped like a customer's database from its schema and statistics, or like TPC-B, -C, -H, -DS, -E or -DI ([lfc-source-statschema](skills/lfc-source-statschema/SKILL.md)). [lfc-source-sizing](skills/lfc-source-sizing/SKILL.md) tells you how much Lakeflow Connect will move. |
-| **Fresh copy of a big database, in seconds** | **Podman with JuiceFS** keeps a master database in object storage. The VM holds only a cache and the blocks a test changes, and a new copy-on-write branch takes 0.05–0.3 s. XFS reflink clones of a master are the option for write-heavy tests ([juicefs-branches.md](skills/lfc-source-cloud-vm/references/juicefs-branches.md)). |
-| **Do changes arrive?** | Insert, update and delete round trips, with rows per table per run checked against the source ([MATRIX.md](MATRIX.md)). |
-| **What happens when the source schema changes?** | [lfc-schema-change-test](skills/lfc-schema-change-test/SKILL.md) answers it by running it. Each ADD COLUMN case (with and without a key, change tracking or CDC, with and without defaults, identity, computed) comes out as a PASS or FAIL: applied in place, or needs a full refresh. It also checks the recovery and `auto_full_refresh_policy`, on standard and integrated CDC. |
-| **SCD type 1, SCD type 2, keyless, append-only** | Test tables for each, and what each target table holds after changes. |
-| **Database changes through Zerobus** | [zerobus-debezium-test](skills/zerobus-debezium-test/SKILL.md): Debezium Server's Zerobus sink into one `VARIANT` change-log table, with the snapshot kept out of it, ready for a silver AUTO CDC flow. |
-| **Which runtime did it run on?** | `bin/lfc-runtime.sh` records each update's runtime (DBR, release, CPU architecture) and settings, and what changed since the last run. Behavior can change between releases, and even between updates. |
-
-## Numbers from the tests
-
-- **A database branch in a fraction of a second.** `juicefs clone` branched a master in 0.05–0.3 s.
-  - **Reads:** a full read of a 30M-row Postgres table (3.8 GB) took 17–20 s from object storage. Local XFS took 38–46 s, on a 32 GB Premium SSD (P4) running on burst I/O, not a provisioned-performance disk.
-  - **Writes:** JuiceFS writes were 2–4 times slower, so XFS reflink clones are the choice for high change rates ([benchmark](skills/lfc-source-cloud-vm/references/juicefs-branches.md)).
-- **110 million rows without moving a byte over the network.** All six TPC workloads at scale factor 1 (B, C, H, DS, E, DI) were generated inside SQL Server 2022 with `INSERT … SELECT` in 19 minutes (1,125 s), every table at its target size ([2026-10-17-tpc-sf1-masters](results/2026-10-17-tpc-sf1-masters.md)).
-- **Change events half the size.** Debezium events into Zerobus went from 700 to 336 bytes per insert, 52% smaller, with nothing silver needs lost ([what each setting saved](skills/zerobus-debezium-test/SKILL.md#event-size-what-each-setting-saved)).
-- **Schema-change claims in under an hour.** The full SQL Server ADD COLUMN test takes about 40 minutes on standard CDC, and 1–2 hours on integrated CDC. Integrated updates are stopped as soon as nothing is left to apply, instead of waiting the 20 minutes or more each would otherwise run.
-
 ## How to use this repo
 
 The test space is large: where the source runs, the database and version, the ingestion mode, the cloud and kind of workspace, compute, network path, storage and data size. Nobody can run every combination, so the repo works like a shared notebook:
@@ -68,6 +44,8 @@ The test space is large: where the source runs, the database and version, the in
 
 ## More
 
+- [A skill for each step of the test and validation journey](docs/test-and-validation-journey.md): sources on every cloud or a laptop, the firewall, the four ingestion modes, data at size, database copies in seconds, changes, schema changes, Zerobus, and the runtime each test ran on.
+- [Numbers from the tests](docs/numbers-from-the-tests.md): branch and read/write times, 110M rows generated inside the database, change events half the size, how long the schema-change tests take.
 - [docs/lakeflow-connect-database.md](docs/lakeflow-connect-database.md): the prompts that reproduce each cell of the table, and what they create, in order.
 - [docs/coverage.md](docs/coverage.md): every axis tested, what the product refuses by design, and what's not tested yet.
 - [docs/running-tests.md](docs/running-tests.md): setup, the deploy matrix, schema-change and script tests, recording results.
