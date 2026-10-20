@@ -24,7 +24,7 @@ Open Claude Code (or another coding agent) in this repo, with a Databricks CLI l
 
 The skills ask before creating anything, and clean up after themselves. To run the tests as scripts instead, see [docs/running-tests.md](docs/running-tests.md).
 
-## What you can test, step by step
+## A skill for each step of the test and validation journey
 
 | Step | What you get |
 |---|---|
