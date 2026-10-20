@@ -12,6 +12,36 @@ Every ✅ below ran end to end in a real workspace: source database, UC connecti
 
 The UC connection column has no prompt of its own: the connection comes from step 5 below, and every mode's prompt starts from it. Lakebase runs from one bare "demo" prompt that creates its own project, connection and pipeline ([qbc-lakebase.txt](../prompts/lfc-matrix/qbc-lakebase.txt)). What each cell must show to pass is in [MATRIX.md](../MATRIX.md#pass-criteria-every-cell).
 
+## How Lakeflow Connect moves the data
+
+```mermaid
+flowchart LR
+  src[("1. Source database<br/>change capture on")]
+  fw["2. Firewall<br/>allows the compute's<br/>egress IPs"]
+  conn["3. UC connection<br/>host, port, credential"]
+  gw["4. Gateway<br/>snapshot first, then<br/>reads the change log"]
+  stg[("5. Staging volume<br/>snapshot and<br/>change files")]
+  app["6. Applier<br/>ingestion pipeline"]
+  cdc["7. AUTO CDC<br/>applies inserts, updates,<br/>deletes by key, in order"]
+  st[("8. Target streaming tables<br/>SCD type 1 or 2")]
+  src --> fw --> conn --> gw --> stg --> app --> cdc --> st
+```
+
+1. **Source database.** Change capture is on: SQL Server change tracking or CDC, the MySQL binlog, a Postgres publication and replication slot, or Oracle LogMiner. The source has a user with read access and the grants the connector needs.
+2. **Firewall.** The source accepts connections from the compute that reads it. On serverless, that's the workspace's serverless egress IP ranges; on classic, the classic compute's egress IP.
+3. **UC connection.** A Unity Catalog connection holds the host, port and credential. Every pipeline reads the source through it, and `remote_query` checks it before anything else is built.
+4. **Gateway.** It takes the snapshot of each table, then keeps reading the source's change log from the position it recorded before the snapshot.
+5. **Staging volume.** A Unity Catalog volume between the two halves: the snapshot as Parquet files, and the changes as files the applier reads.
+6. **Applier.** The ingestion pipeline reads the staging volume, one flow per table.
+7. **AUTO CDC.** It applies the snapshot, then every insert, update and delete by the table's key, in source order, so late or repeated changes don't corrupt the table.
+8. **Target streaming tables.** One per source table: the current rows (SCD type 1) or every version of each row (SCD type 2).
+
+How the modes differ:
+
+- **Standard CDC:** the gateway (4) is its own pipeline and runs continuously. The applier (6) is a second pipeline that runs on a schedule.
+- **Integrated CDC:** one pipeline does 4 to 7 in each update. It extracts to its own staging volume, then applies from it, so there's no separate gateway to run.
+- **Query-based:** no gateway and no change log (no 4 or 5). Each run queries the source through the connection for rows past a cursor column, such as an update timestamp, and applies them (7). Through a foreign catalog, it reads the same way, with the foreign catalog's tables as the source.
+
 ## What gets created, in order
 
 ```mermaid
