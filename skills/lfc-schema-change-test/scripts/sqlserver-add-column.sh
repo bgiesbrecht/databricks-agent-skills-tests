@@ -61,6 +61,17 @@ update() {
   echo "update ${1:+(full refresh $1) }$STATE ${ERRS}"
 }
 
+# settle <table> <column>: after a source change, run updates until one reports an error, or <column> shows up in the
+# destination <table> (applied inline). The gateway can take longer than one fixed wait to pick up a change, and an
+# update that ran before it did proves nothing.
+settle() {
+  for _ in 1 2 3 4; do
+    sleep "$WAIT"; update
+    [ -n "${ERRS// /}" ] && return
+    q "SELECT $2 FROM $T.$1 LIMIT 0" >/dev/null 2>&1 && return
+  done
+}
+
 cleanup() {
   [ "${KEEP:-0}" = 1 ] && { echo "KEEP=1: left $DB, $GWN, $APN, $CATALOG.$S"; return; }
   [ -n "${AP:-}" ] && dbx pipelines delete "$AP"; [ -n "${GW:-}" ] && dbx pipelines delete "$GW"; sleep 15
@@ -140,7 +151,7 @@ INSERT INTO lfcddemo.intpk (id, v, c1) VALUES (11, 'after_c1', 111), (12, 'after
 INSERT INTO lfcddemo.dtix (id, v, c1) VALUES (11, 'after_c1', 111), (12, 'after_c1', 112);
 INSERT INTO lfcddemo.cdcpk (id, v, c1) VALUES (11, 'after_c1', 111), (12, 'after_c1', 112);
 EOF
-sleep "$WAIT"; update
+settle dtix c1
 R=$(q "SELECT SUM(CASE WHEN c1 IS NULL THEN 1 ELSE 0 END), SUM(CASE WHEN c1 > 110 THEN 1 ELSE 0 END) FROM $T.intpk")
 [ "$R" = "$(printf '10\t2')" ] && claim nullable-no-default-keyed-inline PASS "intpk: 10 rows c1 NULL, 2 rows with values, while dtix failed in the same update" \
   || claim nullable-no-default-keyed-inline FAIL "intpk c1 NULL/values: ${R:-query failed}"
@@ -163,7 +174,7 @@ INSERT INTO lfcddemo.dtix (id, v, c1, c2) VALUES (13, 'after_c2', 113, 'y');
 INSERT INTO lfcddemo.cdcpk (id, v, c1, c2) VALUES (13, 'after_c2', 113, 'y');
 INSERT INTO lfcddemo.afrpk (id, v, c2) VALUES (11, 'after_c2', 'y');
 EOF
-sleep "$WAIT"; update
+settle intpk c2
 [[ "$ERRS" == *ADD_COLUMN_WITH_BACKFILL* ]] && claim not-null-default-full-refresh PASS "intpk: ADD_COLUMN_WITH_BACKFILL" \
   || claim not-null-default-full-refresh FAIL "errors: ${ERRS:-none}"
 update intpk,dtix,cdcpk   # afrpk is never selected: its policy has to refresh it
@@ -183,7 +194,7 @@ ALTER TABLE lfcddemo.intpk ADD c3 INT NULL DEFAULT 5;
 GO
 INSERT INTO lfcddemo.intpk (id, v, c1) VALUES (14, 'after_c3', 114);
 EOF
-sleep "$WAIT"; update
+settle intpk c3
 [[ "$ERRS" == *ADD_COLUMN_WITH_BACKFILL* ]] && claim nullable-default-full-refresh PASS "intpk: ADD_COLUMN_WITH_BACKFILL although old source rows stay NULL" \
   || claim nullable-default-full-refresh FAIL "errors: ${ERRS:-none}"
 update intpk
@@ -195,7 +206,7 @@ id=15
 for c in "c4 INT IDENTITY(1,1)" "c5 AS (id * 2)"; do
   printf "ALTER TABLE lfcddemo.intpk ADD %s;\nGO\nINSERT INTO lfcddemo.intpk (id, v, c1) VALUES (%s, 'after_%s', 1%s);\n" "$c" "$id" "${c%% *}" "$id" \
     | $SRC_SQL "$DB" >/dev/null; id=$((id + 1))
-  sleep "$WAIT"; update
+  settle intpk "${c%% *}"
   [[ "$ERRS" == *ADD_COLUMN_WITH_BACKFILL* ]] && claim identity-computed-full-refresh PASS "intpk: ADD ${c}: ADD_COLUMN_WITH_BACKFILL" \
     || claim identity-computed-full-refresh FAIL "ADD ${c}: errors ${ERRS:-none}"
   update intpk
@@ -208,7 +219,7 @@ done
   echo "- Date (UTC): $(date -u +%F)"
   [ "$MODE" = standard ] && echo "- Mode: standard CDC, serverless gateway and ingestion pipeline" || echo "- Mode: integrated CDC, one serverless pipeline"
   [ -n "${SRC_ENV:-}" ] && $SRC_ENV | sed 's/^/- /'
-  echo "- Source: $(printf 'SET NOCOUNT ON; SELECT LEFT(@@VERSION, CHARINDEX(' - ', @@VERSION) - 1);\n' | $SRC_SQL master | head -1); utility objects $UTIL"
+  echo "- Source: $(printf "SET NOCOUNT ON; SELECT CONCAT('SQL Server ', CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(64)), ' ', CAST(SERVERPROPERTY('ProductUpdateLevel') AS nvarchar(64)), ' ', CAST(SERVERPROPERTY('ProductUpdateReference') AS nvarchar(64)), ', ', CAST(SERVERPROPERTY('Edition') AS nvarchar(128)));\n" | $SRC_SQL master | head -1); utility objects $UTIL"
   echo
   echo "| Claim | Result | Observation |"
   echo "|---|---|---|"
