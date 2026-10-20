@@ -5,7 +5,7 @@
 ## What's unique
 
 - **A fresh copy of any database, in a fraction of a second.** One approach for every engine, with the master in your own bucket and only a cache on the VM, built from open-source parts (Podman, JuiceFS).
-- **Data generated inside the database, from its own schema.** Valid parent/child keys, as SQL that runs inside the database, on six engines (Postgres, MySQL, SQL Server, Oracle, Db2, Informix): no rows cross the network.
+- **Data generated inside the database, from any schema, with zero bytes of data over the network.** The schema and its statistics go into one canonical format, so a MySQL schema can be built and filled on Oracle (or any of six engines), with valid parent/child keys. Only the SQL travels; every row is made inside the database.
 - **A copy shaped like the customer's database, without their data.** A DBA won't hand over real data without an NDA. Built from the catalog's statistics only, the copy behaves like their database without a single real row leaving their site.
 - **Answers tested as claims, on the runtime they ran on.** Each answer is a rerunnable PASS or FAIL on a fresh source, tied to the exact runtime and settings of every update. It catches behavior that differs from the docs, and when a release changes it.
 

@@ -23,9 +23,9 @@ How this was checked (2026-10): the closest tools' own pages for Database Lab En
 - **Writes:** 2–4 times slower than local XFS, so XFS reflink clones of a master are the choice for high change rates.
 - **One VM at a time:** only one VM mounts a volume (the metadata isn't shared). To give another VM a copy, copy the master out and use rclone.
 
-## Data generated inside the database, from its own schema
+## Data generated inside the database, from any schema, with zero bytes of data over the network
 
-**What it does.** Reads the target schema (tables, keys, foreign keys, types), then plans each table's fill as engine-specific `INSERT … SELECT` over `generate_series`, a numbers table or a seed table. That SQL runs inside the database, so no rows cross the network.
+**What it does.** Takes the schema (tables, keys, foreign keys, types) in a canonical format, `schema.yaml` and `stats.yaml` from [statschema](https://github.com/rsleedbx/statschema). The format is collected from one engine (MySQL or Postgres today) and written as another's DDL (Postgres, MySQL, SQL Server, Oracle, Db2, Informix or Databricks), so a MySQL schema and its statistics can be built on Oracle. It then plans each table's fill as engine-specific `INSERT … SELECT` over `generate_series`, a numbers table or a seed table. That SQL runs inside the database: only the SQL crosses the network, never the rows.
 - **Foreign keys stay valid.** Tables fill by level: parents (dimensions) before children (facts), and each child key lands in its parent's key range.
 - **Deletes keep them valid.** Before a delete trims a parent, the children that point at the trimmed keys are re-pointed.
 - **Fills resume.** Each round re-plans from what's there, and a rerun adds only what's missing until every table reaches its target.
@@ -38,9 +38,9 @@ SQL planners for Postgres, MySQL, SQL Server and Oracle, and a Python planner (t
 | `generate_series` scripts | written by hand per table | by hand | inside the database | one at a time |
 | Benchmark kits (HammerDB, BenchBase, TPC dbgen / dsdgen) | no: the benchmark's own schema | yes, for that schema | inside, or files loaded in | several |
 | Schema-driven generators (Tonic, Synth, Mockaroo, Faker-based tools) | yes | yes | outside: rows are sent over the network | many |
-| **This repo** | **yes, read from the database** | **yes, parents first, kept valid through deletes** | **inside the database** | **six: Postgres, MySQL, SQL Server, Oracle, Db2, Informix** |
+| **This repo** | **yes, any schema, in a canonical format: collected on one engine, built on another** | **yes, parents first, kept valid through deletes** | **inside the database** | **six: Postgres, MySQL, SQL Server, Oracle, Db2, Informix** |
 
-**What's different here:** generation from your own schema with valid parent/child keys, as SQL that runs inside the database, on six engines.
+**What's different here:** any schema, collected on one engine and built on another, generated inside the database with valid parent/child keys and zero bytes of data over the network.
 
 ## A copy shaped like the customer's database, from statistics only
 
