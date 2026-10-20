@@ -14,7 +14,7 @@
 # (KEEP=1 keeps it). Nothing secret is printed: the OAuth secret lives only in 0600 files (a temp dir here, a temp dir
 # on the VM), both deleted at the end.
 #
-#   PHASE=1 stops after bronze. DROP_FIELDS (default before,transaction,ts_ms,ts_us,source) drops top-level event fields
+#   PHASE=1 stops after bronze, PHASE=2 after silver; PHASE=3 (the default) adds gold, a materialized view. DROP_FIELDS (default before,transaction,ts_ms,ts_us,source) drops top-level event fields
 #   with Kafka's ReplaceField transform; keep ts_ns, which silver sequences by. ENRICHED_PROPERTIES=source asks
 #   CockroachDB for its source block (the 3.7.0.Final connector drops its commit time anyway).
 # Needs: PROFILE (Databricks CLI profile), CATALOG (with its own storage), VM_IP; optional VM_USER (azureuser),
@@ -26,7 +26,7 @@ export PATH=/opt/homebrew/bin:$PATH
 : "${PROFILE:?}" "${CATALOG:?}" "${VM_IP:?}"
 CRDB_IMAGE=${CRDB_IMAGE:-docker.io/cockroachdb/cockroach:v25.4.13}
 DBZ_IMAGE=${DBZ_IMAGE:-quay.io/debezium/server:3.7.0.Final}
-WAIT=${WAIT:-180}; PHASE=${PHASE:-2}; CRDB_PORT=${CRDB_PORT:-30026}
+WAIT=${WAIT:-180}; PHASE=${PHASE:-3}; CRDB_PORT=${CRDB_PORT:-30026}
 DROP_FIELDS=${DROP_FIELDS-before,transaction,ts_ms,ts_us,source}   # DROP_FIELDS= (empty) keeps the whole event
 dbx() { databricks "$@" --profile "$PROFILE"; }
 SSH=(ssh -i "${SSH_KEY:-$HOME/.ssh/lfc_test_rsa}" -o BatchMode=yes "${VM_USER:-azureuser}@$VM_IP")
@@ -223,7 +223,7 @@ if [ "$PHASE" -ge 2 ]; then
     .options = {"host": strenv(VM_IP), "port": strenv(CRDB_PORT), "user": "root", "password": "unused-insecure-node"}' > "$W/conn.json"
   dbx connections create --json @"$W/conn.json" >/dev/null || { echo "connection create failed"; exit 2; }
   # table, ordinal, column, Databricks type, 1 when in the primary key
-  q "SELECT table_name, ordinal_position, column_name,
+  fetch_schema() { q "SELECT table_name, ordinal_position, column_name,
        CASE data_type WHEN 'bigint' THEN 'BIGINT' WHEN 'integer' THEN 'INT' WHEN 'smallint' THEN 'SMALLINT'
          WHEN 'numeric' THEN CONCAT('DECIMAL(', numeric_precision, ',', numeric_scale, ')') WHEN 'boolean' THEN 'BOOLEAN'
          WHEN 'double precision' THEN 'DOUBLE' WHEN 'real' THEN 'FLOAT' WHEN 'date' THEN 'DATE'
@@ -238,15 +238,18 @@ if [ "$PHASE" -ge 2 ]; then
        LEFT JOIN information_schema.key_column_usage k
          ON k.constraint_schema = tc.constraint_schema AND k.constraint_name = tc.constraint_name AND k.column_name = c.column_name
        WHERE c.table_schema = 'public' AND c.is_hidden = 'NO'\")
-     ORDER BY 1, 2" > "$W/schema.tsv" 2>"$W/schema.err"
+     ORDER BY 1, 2" > "$W/schema.tsv" 2>"$W/schema.err"; }
+  fetch_schema; cp "$W/schema.tsv" "$W/schema0.tsv"   # schema0: the columns the snapshot has
   if [ -s "$W/schema.tsv" ]; then
     claim schema-from-connection PASS "remote_query on a POSTGRESQL connection: $(awk -F'\t' '{c[$1]=c[$1] (c[$1]?", ":"") $3 " " $4 ($5==1?" key":"")} END {for (t in c) printf "%s (%s); ", t, c[t]}' "$W/schema.tsv")"
   else claim schema-from-connection FAIL "$(cut -c1-300 "$W/schema.err")"; exit 1; fi
 
-  # silver: per table, the snapshot rows sequenced by T and the change-log rows sequenced by ts_ns, into one AUTO CDC table
-  awk -F'\t' -v vol="$VOL" -v lg="$LOG" -v tns="$T_NS" '
+  # silver: per table, the snapshot rows sequenced by T and the change-log rows sequenced by ts_ns, into one AUTO CDC table.
+  # A column added after T isn't in the snapshot, so its snapshot rows get NULL there.
+  gen_silver() { awk -F'\t' -v vol="$VOL" -v lg="$LOG" -v tns="$T_NS" '
+    FNR==NR { insnap[$1 "." $3]=1; next }
     { t=$1; col=$3; ty=$4; cols[t]=cols[t] (cols[t]?", ":"") col; if ($5==1) keys[t]=keys[t] (keys[t]?", ":"") col
-      snap[t]=snap[t] (snap[t]?", ":"") "CAST(" col " AS " ty ") AS " col
+      snap[t]=snap[t] (snap[t]?", ":"") "CAST(" ((t "." col) in insnap ? col : "NULL") " AS " ty ") AS " col
       chg[t]=chg[t] (chg[t]?", ":"") ($5==1 ? "key:" : "value:after:") col "::" ty " AS " col }
     END { for (t in cols) {
       printf "CREATE TEMPORARY VIEW %s_snapshot AS SELECT %s, CAST(%s AS BIGINT) AS _seq, \047read\047 AS _op\n  FROM STREAM read_files(\047%s/%s\047, format => \047parquet\047);\n\n", t, snap[t], tns, vol, t
@@ -254,17 +257,24 @@ if [ "$PHASE" -ge 2 ]; then
       printf "CREATE OR REFRESH STREAMING TABLE %s CLUSTER BY (%s)\n  COMMENT \047Current rows of the source table: the snapshot as of T, then the change log\047;\n\n", t, keys[t]
       printf "CREATE FLOW %s_from_snapshot AS AUTO CDC INTO %s FROM STREAM(%s_snapshot)\n  KEYS (%s) SEQUENCE BY _seq COLUMNS * EXCEPT (_seq, _op) STORED AS SCD TYPE 1;\n\n", t, t, t, keys[t]
       printf "CREATE FLOW %s_from_changes AS AUTO CDC INTO %s FROM STREAM(%s_changes)\n  KEYS (%s) APPLY AS DELETE WHEN _op = \047delete\047 SEQUENCE BY _seq COLUMNS * EXCEPT (_seq, _op) STORED AS SCD TYPE 1;\n\n", t, t, t, keys[t] } }
-  ' "$W/schema.tsv" > "$W/silver.sql"
-  WSDIR=/Users/$ME/crdb_dbz_$E
-  dbx workspace mkdirs "$WSDIR" && dbx workspace import "$WSDIR/silver.sql" --file "$W/silver.sql" --format RAW >/dev/null \
-    || { echo "silver.sql upload failed"; exit 2; }
-  export WSDIR CATALOG S PIPE_NAME=$PREFIX-crdb-dbz-silver-$E
+  ' "$W/schema0.tsv" "$W/schema.tsv" > "$W/silver.sql"; }
+  gen_silver
+  # gold: one materialized view for a reader that wants each customer's orders by tier; GOLD_Q is also run on the source
+  GOLD_Q="SELECT c.id AS customer_id, c.name, c.tier, COUNT(o.id) AS orders, CAST(COALESCE(SUM(o.amount), 0) AS DECIMAL(12,2)) AS amount
+    FROM customers c LEFT JOIN orders o ON o.customer_id = c.id GROUP BY c.id, c.name, c.tier"
+  printf 'CREATE OR REFRESH MATERIALIZED VIEW customer_orders CLUSTER BY (tier)\n  COMMENT %s\nAS %s;\n' \
+    "'Each customer with the count and total of their orders, for readers that filter by tier'" "$GOLD_Q" > "$W/gold.sql"
+  WSDIR=/Users/$ME/crdb_dbz_$E; LIBS=silver.sql; [ "$PHASE" -ge 3 ] && LIBS="silver.sql gold.sql"
+  dbx workspace mkdirs "$WSDIR" || exit 2
+  for f in $LIBS; do dbx workspace import "$WSDIR/$f" --file "$W/$f" --format RAW >/dev/null || { echo "$f upload failed"; exit 2; }; done
+  export WSDIR CATALOG S PIPE_NAME=$PREFIX-crdb-dbz-silver-$E LIBS
   yq -n -o json '.name = strenv(PIPE_NAME) | .catalog = strenv(CATALOG) | .schema = strenv(S) | .serverless = true |
-    .continuous = false | .development = true | .channel = "CURRENT" | .libraries = [{"file": {"path": strenv(WSDIR) + "/silver.sql"}}]' > "$W/pipe.json"
+    .continuous = false | .development = true | .channel = "CURRENT" |
+    .libraries = [strenv(LIBS) | split(" ") | .[] | {"file": {"path": strenv(WSDIR) + "/" + .}}]' > "$W/pipe.json"
   PIPELINE_ID=$(dbx pipelines create --json @"$W/pipe.json" -o json | yq '.pipeline_id') || { echo "pipeline create failed"; exit 2; }
 
-  run_silver() { # one pipeline update; prints its final state
-    local u st; u=$(dbx pipelines start-update "$PIPELINE_ID" -o json | yq '.update_id')
+  run_silver() { # one pipeline update (extra args go to start-update); prints its final state
+    local u st; u=$(dbx pipelines start-update "$PIPELINE_ID" "$@" -o json | yq '.update_id'); echo "$u" > "$W/update_id"
     for _ in $(seq 1 120); do
       st=$(dbx pipelines get-update "$PIPELINE_ID" "$u" -o json | yq '.update.state')
       case $st in COMPLETED|FAILED|CANCELED) break;; esac; sleep 10; done
@@ -277,12 +287,29 @@ if [ "$PHASE" -ge 2 ]; then
     keys=$(awk -F'\t' -v t="$1" '$1==t && $5==1 {printf "%s%s", (n++?", ":""), $3}' "$W/schema.tsv")
     a=$(echo "SELECT $cols FROM shop.$1 ORDER BY $keys;" | crdb | tail -n +2)
     b=$(q "SELECT $cols FROM $T.$1 ORDER BY $keys")
-    if [ "$a" = "$b" ]; then claim "silver-$1-$2" PASS "silver $1 equals the source: $(echo "$a" | grep -c .) rows"
+    if [ "${3:-}" = observe ]; then observe "silver-$1-$2" "source vs silver: $( [ "$a" = "$b" ] && echo equal || diff <(echo "$a") <(echo "$b") | grep '^[<>]' | tr '\t\n' ', ' | cut -c1-300)"
+    elif [ "$a" = "$b" ]; then claim "silver-$1-$2" PASS "silver $1 equals the source: $(echo "$a" | grep -c .) rows"
     else claim "silver-$1-$2" FAIL "source vs silver: $(diff <(echo "$a") <(echo "$b") | grep '^[<>]' | tr '\t\n' ', ' | cut -c1-300)"; fi
+  }
+
+  gold() { # gold <round>: the materialized view equals the same query on the source
+    [ "$PHASE" -ge 3 ] || return 0
+    local a b; a=$(echo "${GOLD_Q//customers/shop.customers} ORDER BY customer_id;" | sed 's/JOIN orders/JOIN shop.orders/' | crdb | tail -n +2)
+    b=$(q "SELECT * FROM $T.customer_orders ORDER BY customer_id")
+    if [ "$a" = "$b" ]; then claim "gold-$1" PASS "customer_orders equals the query on the source: $(echo "$a" | grep -c .) rows"
+    else claim "gold-$1" FAIL "source vs gold: $(diff <(echo "$a") <(echo "$b") | grep '^[<>]' | tr '\t\n' ', ' | cut -c1-300)"; fi
+  }
+  refresh() { # how the last update refreshed the view: the chosen technique, from the pipeline's event log
+    q "SELECT CONCAT(details:planning_information:incrementalization_status::STRING, ' ', CONCAT_WS(',', TRANSFORM(FILTER(
+        FROM_JSON(details:planning_information:technique_information::STRING, 'ARRAY<STRUCT<maintenance_type STRING, is_chosen BOOLEAN>>'),
+        x -> x.is_chosen), x -> x.maintenance_type)))
+      FROM event_log('$PIPELINE_ID') WHERE event_type = 'planning_information' AND origin.update_id = '$(cat "$W/update_id")'" 2>&1 | tr '\n' ' '
   }
 
   st=$(run_silver); [ "$st" = COMPLETED ] || claim silver-update-1 FAIL "pipeline update: $st"
   for t in $TABLES; do same "$t" 1; done
+  gold 1
+  [ "$PHASE" -ge 3 ] && observe gold-refresh-1 "update 1: $(refresh)"
 
   # round 2: two updates of one key, a delete and reinsert of one key, a reinsert of a key deleted in round 1
   N0=$(q "SELECT COUNT(*) FROM $LOG")
@@ -297,6 +324,53 @@ SQL
   t0=$SECONDS; until [ "$(q "SELECT COUNT(*) FROM $LOG" 2>/dev/null)" -ge $((N0 + 6)) ] 2>/dev/null || [ $((SECONDS - t0)) -ge "$WAIT" ]; do sleep 5; done
   st=$(run_silver); [ "$st" = COMPLETED ] || claim silver-update-2 FAIL "pipeline update: $st"
   for t in $TABLES; do same "$t" 2; done
+  gold 2
+  [ "$PHASE" -ge 3 ] && observe gold-refresh-2 "update 2, after round 2: $(refresh)"
+  [ "$PHASE" -ge 3 ] && observe clustering "clustering columns: $(for t in $TABLES customer_orders; do printf '%s %s; ' "$t" "$(q "DESCRIBE TABLE EXTENDED $T.$t" 2>/dev/null | grep -o -E 'clusteringColumns=\[\[[^]]*\]\]' | head -1)"; done)"
+  if [ "$PHASE" -ge 3 ]; then
+    # round 3, retries: changes, then Debezium killed (SIGKILL, no offset flush) and started again, then one more change
+    N0=$(q "SELECT COUNT(*) FROM $LOG")
+    crdb >/dev/null <<'SQL'
+INSERT INTO shop.customers VALUES (8, 'customer_8', 'gold');
+UPDATE shop.customers SET tier = 'silver' WHERE id = 4;
+UPDATE shop.customers SET tier = 'gold' WHERE id = 4;
+INSERT INTO shop.orders VALUES (7, 8, 12.34, 'placed');
+SQL
+    t0=$SECONDS; until [ "$(q "SELECT COUNT(*) FROM $LOG" 2>/dev/null)" -ge $((N0 + 4)) ] 2>/dev/null || [ $((SECONDS - t0)) -ge "$WAIT" ]; do sleep 2; done
+    vm "sudo podman kill $DBZ >/dev/null && sudo podman start $DBZ >/dev/null" || claim retry-restart FAIL "Debezium restart failed"
+    sleep 40
+    echo "UPDATE shop.orders SET status = 'shipped' WHERE id = 7;" | crdb >/dev/null
+    t0=$SECONDS; until [ "$(q "SELECT COUNT(*) FROM $LOG WHERE operation = 'update' AND destination LIKE '%.orders' AND key:id::INT = 7" 2>/dev/null)" -ge 1 ] 2>/dev/null || [ $((SECONDS - t0)) -ge "$WAIT" ]; do sleep 5; done
+    sleep 10
+    R=$(q "SELECT COUNT(*) - $N0, COUNT(*) - COUNT(DISTINCT idempotency_key), (SELECT COUNT(*) FROM (SELECT 1 FROM $LOG GROUP BY destination, TO_JSON(key), TO_JSON(value:after), operation HAVING COUNT(*) > 1)) FROM $LOG" 2>&1 | tr '\t' ' ')
+    observe retry-bronze "after the kill and restart, rows added since round 3 began (5 changes), rows sharing an idempotency key, change contents seen more than once: $R"
+    [ "$(q "SELECT COUNT(*) FROM $LOG WHERE operation = 'update' AND destination LIKE '%.orders' AND key:id::INT = 7")" -ge 1 ] \
+      && claim retry-stream-resumes PASS "a change after the restart reached bronze" || claim retry-stream-resumes FAIL "no event for the change after the restart"
+    st=$(run_silver); [ "$st" = COMPLETED ] || claim silver-update-3 FAIL "pipeline update: $st"
+    for t in $TABLES; do same "$t" 3; done
+    gold 3
+
+    # round 4, schema change: a column added on the source, with a default, then a change that sets it
+    echo "ALTER TABLE shop.customers ADD COLUMN email STRING NOT NULL DEFAULT 'none';" | crdb >/dev/null
+    sleep 15
+    echo "UPDATE shop.customers SET email = 'c6@example.com' WHERE id = 6;" | crdb >/dev/null
+    t0=$SECONDS; until [ "$(q "SELECT COUNT(*) FROM $LOG WHERE value:after:email::STRING = 'c6@example.com'" 2>/dev/null)" -ge 1 ] 2>/dev/null || [ $((SECONDS - t0)) -ge "$WAIT" ]; do sleep 5; done
+    R=$(q "SELECT COUNT(*), COUNT_IF(value:after:email::STRING = 'none') FROM $LOG WHERE destination LIKE '%.customers' AND value:after:email IS NOT NULL" 2>&1 | tr '\t' ' ')
+    [ "$(q "SELECT COUNT(*) FROM $LOG WHERE value:after:email::STRING = 'c6@example.com'")" -ge 1 ] \
+      && claim schema-new-column-bronze PASS "the added column reaches bronze with no Databricks DDL (customers events with email, with email = none from the backfill): $R" \
+      || claim schema-new-column-bronze FAIL "no event with the new column: $R"
+    observe schema-backfill-events "customers events by operation since the ALTER: $(q "SELECT operation, COUNT(*) FROM $LOG WHERE destination LIKE '%.customers' AND value:after:email IS NOT NULL GROUP BY 1" 2>&1 | tr '\t\n' '= ')"
+    # silver as it is, without the column: the old columns still match
+    st=$(run_silver); observe schema-silver-before-regenerate "update with the old flow: $st; silver customers columns: $(q "SELECT CONCAT_WS(',', COLLECT_LIST(column_name)) FROM \`$CATALOG\`.information_schema.columns WHERE table_schema = '$S' AND table_name = 'customers'" 2>&1)"
+    # regenerate: the schema again through the connection, the flow from it, then a refresh of that table and a plain update
+    fetch_schema; gen_silver
+    dbx workspace import "$WSDIR/silver.sql" --file "$W/silver.sql" --format RAW --overwrite >/dev/null
+    st=$(run_silver); observe schema-update-after-regenerate "plain update with the regenerated flow: $st"
+    [ "$st" = COMPLETED ] && same customers 4a observe
+    st=$(run_silver --json '{"full_refresh_selection": ["customers"]}'); [ "$st" = COMPLETED ] || claim silver-full-refresh-4 FAIL "full refresh of customers: $st"
+    for t in $TABLES; do same "$t" 4; done
+    gold 4
+  fi
   observe silver-sql "the generated pipeline source, first table: $(head -c 700 "$W/silver.sql" | tr '\n' ' ')"
 fi
 
