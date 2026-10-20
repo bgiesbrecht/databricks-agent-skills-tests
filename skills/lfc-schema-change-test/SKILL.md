@@ -33,6 +33,27 @@ MODE=integrated OUT=/tmp/addcol-result-integrated.md scripts/sqlserver-add-colum
 
 It exits 0 when every claim passed, 1 when one failed, 2 when a prerequisite is missing (nothing is left behind in either case).
 
+## Tables, and the path each covers
+
+| Table | Shape | Storage | Covers |
+|---|---|---|---|
+| `intpk` | primary key, change tracking | SCD type 1 | the keyed change-tracking path |
+| `cdcpk` | primary key, CDC | SCD type 1 | the keyed CDC path |
+| `dtix` | no key, CDC, non-unique index on a column whose values repeat | SCD type 1 | the keyless path (keyed on every column) |
+| `afrpk` | primary key, change tracking, `auto_full_refresh_policy` on | SCD type 1 | automatic full refresh |
+| `scd2pk` | primary key, change tracking | SCD type 2 | the SCD type 2 path |
+
+`APPEND_ONLY` isn't a CDC path: pipeline create refuses it ("APPEND_ONLY can only be used for incremental ingestion of query based connector"). It's covered by the query-based tests.
+
+## What the runs taught
+
+- **On integrated CDC, `dtix` loads 0 rows, with no error,** and a full refresh of it fails the whole update (`INGESTION_GATEWAY_INTERNAL_ERROR`), which stops every later claim. It loads on standard CDC. Narrowed down: a keyless table with no index, or with a unique index, or with a non-unique index whose values are all distinct, loads; one whose non-unique index column has repeated values doesn't. `EXCLUDE_DTIX=1` leaves it out so the other tables' claims run; test it in its own pipeline.
+- **Wait for the change, don't sleep.** A fixed wait let updates run before the gateway had the DDL, and two cases looked inline. `settle` runs updates until one errors or the new column shows.
+- **Errors are read per table** (`errs_for`): one update can carry several tables' errors.
+- **Integrated CDC updates run at least 20 minutes** (smart closure), so the integrated run takes hours; standard CDC takes about 40 minutes.
+- **Each result records the runtime** each pipeline ran on (`LFC_RUNTIME`, `bin/lfc-runtime.sh`): the version, the channel and even the CPU architecture can change between updates.
+- **Run a uniquely named copy:** bash reads a script as it runs, and overwriting the copy a run is using breaks that run.
+
 ## With an agent
 
 Give Isaac (or another coding agent with this repository and a Databricks CLI login) this prompt:
