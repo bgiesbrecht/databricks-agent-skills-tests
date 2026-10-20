@@ -26,7 +26,7 @@ export PATH=/opt/homebrew/bin:$PATH
 : "${PROFILE:?}" "${CATALOG:?}" "${VM_IP:?}"
 CRDB_IMAGE=${CRDB_IMAGE:-docker.io/cockroachdb/cockroach:v25.4.13}
 DBZ_IMAGE=${DBZ_IMAGE:-quay.io/debezium/server:3.7.0.Final}
-WAIT=${WAIT:-180}; PHASE=${PHASE:-3}; CRDB_PORT=${CRDB_PORT:-30026}
+WAIT=${WAIT:-180}; PHASE=${PHASE:-3}; CHECK=${CHECK:-$PWD/scripts/scd2-history-check.py} CRDB_PORT=${CRDB_PORT:-30026}
 DROP_FIELDS=${DROP_FIELDS-before,transaction,ts_ms,ts_us,source}   # DROP_FIELDS= (empty) keeps the whole event
 dbx() { databricks "$@" --profile "$PROFILE"; }
 SSH=(ssh -i "${SSH_KEY:-$HOME/.ssh/lfc_test_rsa}" -o BatchMode=yes "${VM_USER:-azureuser}@$VM_IP")
@@ -256,7 +256,15 @@ if [ "$PHASE" -ge 2 ]; then
       printf "CREATE TEMPORARY VIEW %s_changes AS SELECT %s, value:ts_ns::BIGINT AS _seq, operation AS _op\n  FROM STREAM(%s) WHERE destination = \047crdb.public.%s\047;\n\n", t, chg[t], lg, t
       printf "CREATE OR REFRESH STREAMING TABLE %s CLUSTER BY (%s)\n  COMMENT \047Current rows of the source table: the snapshot as of T, then the change log\047;\n\n", t, keys[t]
       printf "CREATE FLOW %s_from_snapshot AS AUTO CDC INTO %s FROM STREAM(%s_snapshot)\n  KEYS (%s) SEQUENCE BY _seq COLUMNS * EXCEPT (_seq, _op) STORED AS SCD TYPE 1;\n\n", t, t, t, keys[t]
-      printf "CREATE FLOW %s_from_changes AS AUTO CDC INTO %s FROM STREAM(%s_changes)\n  KEYS (%s) APPLY AS DELETE WHEN _op = \047delete\047 SEQUENCE BY _seq COLUMNS * EXCEPT (_seq, _op) STORED AS SCD TYPE 1;\n\n", t, t, t, keys[t] } }
+      printf "CREATE FLOW %s_from_changes AS AUTO CDC INTO %s FROM STREAM(%s_changes)\n  KEYS (%s) APPLY AS DELETE WHEN _op = \047delete\047 SEQUENCE BY _seq COLUMNS * EXCEPT (_seq, _op) STORED AS SCD TYPE 1;\n\n", t, t, t, keys[t]
+      # SCD type 2 from the same snapshot, and from the change log without replays (cdc_log_dedup, in dedupe.py)
+      printf "CREATE TEMPORARY VIEW %s_changes_dedup AS SELECT %s, value:ts_ns::BIGINT AS _seq, operation AS _op\n  FROM STREAM(cdc_log_dedup) WHERE destination = \047crdb.public.%s\047;\n\n", t, chg[t], t
+      hist(t "_history", t "_changes_dedup", "Every version of each source row (SCD type 2), replays removed")
+      if (t == "customers") hist(t "_history_nodedup", t "_changes", "Every version (SCD type 2) from the change log as it is, replays included: shows what a restart does") } }
+    function hist(h, src, comment) {
+      printf "CREATE OR REFRESH STREAMING TABLE %s CLUSTER BY (%s)\n  COMMENT \047%s\047;\n\n", h, keys[t], comment
+      printf "CREATE FLOW %s_from_snapshot AS AUTO CDC INTO %s FROM STREAM(%s_snapshot)\n  KEYS (%s) SEQUENCE BY _seq COLUMNS * EXCEPT (_seq, _op) STORED AS SCD TYPE 2;\n\n", h, h, t, keys[t]
+      printf "CREATE FLOW %s_from_changes AS AUTO CDC INTO %s FROM STREAM(%s)\n  KEYS (%s) APPLY AS DELETE WHEN _op = \047delete\047 SEQUENCE BY _seq COLUMNS * EXCEPT (_seq, _op) STORED AS SCD TYPE 2;\n\n", h, h, src, keys[t] }
   ' "$W/schema0.tsv" "$W/schema.tsv" > "$W/silver.sql"; }
   gen_silver
   # gold: one materialized view for a reader that wants each customer's orders by tier; GOLD_Q is also run on the source
@@ -264,7 +272,23 @@ if [ "$PHASE" -ge 2 ]; then
     FROM customers c LEFT JOIN orders o ON o.customer_id = c.id GROUP BY c.id, c.name, c.tier"
   printf 'CREATE OR REFRESH MATERIALIZED VIEW customer_orders CLUSTER BY (tier)\n  COMMENT %s\nAS %s;\n' \
     "'Each customer with the count and total of their orders, for readers that filter by tier'" "$GOLD_Q" > "$W/gold.sql"
-  WSDIR=/Users/$ME/crdb_dbz_$E; LIBS=silver.sql; [ "$PHASE" -ge 3 ] && LIBS="silver.sql gold.sql"
+  # the change log without replays: a restart re-sends changes with a new ts_ns but the same idempotency_key and row
+  # image. The key alone isn't unique (two quick updates of a row share it), so the row image is part of the match.
+  cat > "$W/dedupe.py" <<'PY'
+from pyspark import pipelines as dp
+from pyspark.sql import functions as F
+
+
+@dp.temporary_view(name="cdc_log_dedup")
+def cdc_log_dedup():
+    return (spark.readStream.table("cdc_log")
+            .withColumn("_event_time", F.timestamp_micros(F.expr("value:ts_ns::BIGINT DIV 1000")))
+            .withColumn("_after", F.expr("TO_JSON(value:after)"))
+            .withWatermark("_event_time", "10 minutes")
+            .dropDuplicatesWithinWatermark(["destination", "idempotency_key", "operation", "_after"])
+            .drop("_event_time", "_after"))
+PY
+  WSDIR=/Users/$ME/crdb_dbz_$E; LIBS="silver.sql dedupe.py"; [ "$PHASE" -ge 3 ] && LIBS="silver.sql dedupe.py gold.sql"
   dbx workspace mkdirs "$WSDIR" || exit 2
   for f in $LIBS; do dbx workspace import "$WSDIR/$f" --file "$W/$f" --format RAW >/dev/null || { echo "$f upload failed"; exit 2; }; done
   export WSDIR CATALOG S PIPE_NAME=$PREFIX-crdb-dbz-silver-$E LIBS
@@ -282,6 +306,26 @@ if [ "$PHASE" -ge 2 ]; then
       | yq -r '.[] | select(.level == "ERROR") | .message' | head -3 | cut -c1-300 >&2
     echo "$st"
   }
+  same_hist() { # same_hist <table> <round>: the history table's current versions equal the source
+    local cols keys a b; cols=$(awk -F'\t' -v t="$1" '$1==t {printf "%s%s", (n++?", ":""), $3}' "$W/schema.tsv")
+    keys=$(awk -F'\t' -v t="$1" '$1==t && $5==1 {printf "%s%s", (n++?", ":""), $3}' "$W/schema.tsv")
+    a=$(echo "SELECT $cols FROM shop.$1 ORDER BY $keys;" | crdb | tail -n +2)
+    b=$(q "SELECT $cols FROM $T.$1_history WHERE __END_AT IS NULL ORDER BY $keys")
+    [ "$a" = "$b" ] && claim "history-current-$1-$2" PASS "the current versions in $1_history equal the source: $(echo "$a" | grep -c .) rows" \
+      || claim "history-current-$1-$2" FAIL "source vs current history: $(diff <(echo "$a") <(echo "$b") | grep '^[<>]' | tr '\t\n' ', ' | cut -c1-300)"
+  }
+  history() { # history <table> <history table> <claim|observe>: every version, against CockroachDB's own changefeed from T
+    local cols keys r
+    cols=$(awk -F'\t' -v t="$1" '$1==t {printf "%s%s", (n++?", ":""), $3}' "$W/schema.tsv")
+    keys=$(awk -F'\t' -v t="$1" '$1==t && $5==1 {printf "%s%s", (n++?", ":""), $3}' "$W/schema.tsv")
+    echo "SELECT $cols FROM shop.$1 AS OF SYSTEM TIME '$T_HLC';" | crdb > "$W/snap-$1.tsv"
+    q "SELECT $cols FROM $T.$2 ORDER BY $keys, __START_AT" > "$W/hist-$2.tsv"
+    r=$(python3 -I "$CHECK" "$W/schema.tsv" "$1" "$W/snap-$1.tsv" "$W/feed.tsv" "$W/hist-$2.tsv" 2>&1); local rc=$?
+    if [ "$3" = observe ]; then observe "history-$2" "versions expected, in silver, keys that differ: $r"
+    elif [ $rc -eq 0 ]; then claim "history-$2" PASS "every version equals the source's changefeed (expected, in silver, keys that differ): $r"
+    else claim "history-$2" FAIL "versions expected, in silver, keys that differ: $r"; fi
+  }
+
   same() { # same <table> <round>: silver equals the source, row by row, ordered by the key
     local cols keys a b; cols=$(awk -F'\t' -v t="$1" '$1==t {printf "%s%s", (n++?", ":""), $3}' "$W/schema.tsv")
     keys=$(awk -F'\t' -v t="$1" '$1==t && $5==1 {printf "%s%s", (n++?", ":""), $3}' "$W/schema.tsv")
@@ -349,6 +393,10 @@ SQL
     st=$(run_silver); [ "$st" = COMPLETED ] || claim silver-update-3 FAIL "pipeline update: $st"
     for t in $TABLES; do same "$t" 3; done
     gold 3
+    # the source's own history: its changefeed from T, with each row's commit time (`updated`)
+    vm "timeout 20 sudo podman exec $CRDB cockroach sql --insecure --format=tsv -e \"EXPERIMENTAL CHANGEFEED FOR shop.customers, shop.orders WITH updated, cursor = '$T_HLC'\"" > "$W/feed.tsv" 2>/dev/null
+    for t in $TABLES; do history "$t" "${t}_history" claim; same_hist "$t" 3; done
+    history customers customers_history_nodedup observe
 
     # round 4, schema change: a column added on the source, with a default, then a change that sets it
     echo "ALTER TABLE shop.customers ADD COLUMN email STRING NOT NULL DEFAULT 'none';" | crdb >/dev/null
@@ -367,9 +415,31 @@ SQL
     dbx workspace import "$WSDIR/silver.sql" --file "$W/silver.sql" --format RAW --overwrite >/dev/null
     st=$(run_silver); observe schema-update-after-regenerate "plain update with the regenerated flow: $st"
     [ "$st" = COMPLETED ] && same customers 4a observe
-    st=$(run_silver --json '{"full_refresh_selection": ["customers"]}'); [ "$st" = COMPLETED ] || claim silver-full-refresh-4 FAIL "full refresh of customers: $st"
-    for t in $TABLES; do same "$t" 4; done
+    st=$(run_silver --json '{"full_refresh_selection": ["customers", "customers_history", "customers_history_nodedup"]}'); [ "$st" = COMPLETED ] || claim silver-full-refresh-4 FAIL "full refresh of customers: $st"
+    # an update with full_refresh_selection runs only the selected tables: a plain update brings gold along
+    st=$(run_silver); [ "$st" = COMPLETED ] || claim silver-update-4 FAIL "plain update after the full refresh: $st"
+    for t in $TABLES; do same "$t" 4; same_hist "$t" 4; done
     gold 4
+
+    # round 5: a dropped column and a retyped one (DECIMAL(10,2) -> DECIMAL(12,2)), then a value only the new type holds
+    crdb >/dev/null <<'SQL'
+SET sql_safe_updates = false;
+SET enable_experimental_alter_column_type_general = true;
+ALTER TABLE shop.orders DROP COLUMN status;
+ALTER TABLE shop.orders ALTER COLUMN amount TYPE DECIMAL(12,2);
+SQL
+    sleep 15
+    echo "UPDATE shop.orders SET amount = 1234567890.12 WHERE id = 1;" | crdb >/dev/null
+    t0=$SECONDS; until [ "$(q "SELECT COUNT(*) FROM $LOG WHERE value:after:amount::STRING = '1234567890.12'" 2>/dev/null)" -ge 1 ] 2>/dev/null || [ $((SECONDS - t0)) -ge "$WAIT" ]; do sleep 5; done
+    observe schema-change-bronze "all orders events, by operation and whether they have status (a backfill would add updates without it): $(q "SELECT CONCAT(operation, ' status=', value:after:status IS NOT NULL), COUNT(*) FROM $LOG WHERE destination LIKE '%.orders' GROUP BY 1" 2>&1 | tr '\t\n' '= '); the new value: $(q "SELECT COUNT(*) FROM $LOG WHERE value:after:amount::STRING = '1234567890.12'" 2>&1)"
+    st=$(run_silver 2>/dev/null); observe schema-change-old-flow "update with the old flow (status still selected, amount still DECIMAL(10,2)): $st; $(q "SELECT REGEXP_EXTRACT(error.exceptions[0].message, '\\[(INVALID_[A-Z_]+|[A-Z_]+CAST[A-Z_]*)\\][^\\n]*', 0) FROM event_log('$PIPELINE_ID') WHERE event_type = 'flow_progress' AND origin.flow_name LIKE '%.orders_from_changes' AND error IS NOT NULL ORDER BY timestamp DESC LIMIT 1" 2>&1 | cut -c1-300)"
+    fetch_schema; gen_silver
+    dbx workspace import "$WSDIR/silver.sql" --file "$W/silver.sql" --format RAW --overwrite >/dev/null
+    st=$(run_silver --json '{"full_refresh_selection": ["orders", "orders_history"]}' 2>"$W/err5b")
+    [ "$st" = COMPLETED ] || claim silver-full-refresh-5 FAIL "regenerated flow, full refresh of orders: $st $(cut -c1-300 "$W/err5b" | tr '\n' ' ')"
+    st=$(run_silver); [ "$st" = COMPLETED ] || claim silver-update-5 FAIL "plain update after the full refresh: $st"
+    for t in $TABLES; do same "$t" 5; same_hist "$t" 5; done
+    gold 5
   fi
   observe silver-sql "the generated pipeline source, first table: $(head -c 700 "$W/silver.sql" | tr '\n' ' ')"
 fi
