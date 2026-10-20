@@ -1,0 +1,16 @@
+# A skill for each step of the test and validation journey
+
+Each step of testing and validating Lakeflow Connect has a skill here that sets it up or tests it. Back to the [README](../README.md).
+
+| Step | What you get |
+|---|---|
+| **Is my source supported?** | Sources on AWS RDS and Aurora, Azure SQL and Flexible Server, GCP Cloud SQL, a cloud VM, or Podman on a laptop ([lfc-source-setup](../skills/lfc-source-setup/SKILL.md)). MySQL, PostgreSQL, SQL Server and Oracle, plus Db2, Informix, CockroachDB and YugabyteDB for data generation. Each source comes with its user, grants and change capture (binlog, publication and slot, change tracking or CDC, LogMiner). |
+| **Can my workspace reach it?** | [lfc-source-firewall](../skills/lfc-source-firewall/SKILL.md) opens the source to the workspace's serverless egress IPs and your IP, on Azure, AWS and GCP. Tested on public IPs and across clouds (an AWS workspace reading an Azure VM). |
+| **Which ingestion mode?** | All four: query-based, query-based through a foreign catalog, integrated CDC and standard CDC, on serverless or classic. [lfc-workspace-setup](../skills/lfc-workspace-setup/SKILL.md) turns on the connector previews and picks a catalog CDC accepts. |
+| **How does the first load behave at size?** | Data that never crosses the network: generated inside the database ([lfc-source-datagen](../skills/lfc-source-datagen/SKILL.md)), shaped like a customer's database from its schema and statistics, or like TPC-B, -C, -H, -DS, -E or -DI ([lfc-source-statschema](../skills/lfc-source-statschema/SKILL.md)). [lfc-source-sizing](../skills/lfc-source-sizing/SKILL.md) tells you how much Lakeflow Connect will move. |
+| **Fresh copy of a big database, in seconds** | **Podman with JuiceFS** keeps a master database in object storage. The VM holds only a cache and the blocks a test changes, and a new copy-on-write branch takes 0.05–0.3 s. XFS reflink clones of a master are the option for write-heavy tests ([juicefs-branches.md](../skills/lfc-source-cloud-vm/references/juicefs-branches.md)). |
+| **Do changes arrive?** | Insert, update and delete round trips, with rows per table per run checked against the source ([MATRIX.md](../MATRIX.md)). |
+| **What happens when the source schema changes?** | [lfc-schema-change-test](../skills/lfc-schema-change-test/SKILL.md) answers it by running it. Each ADD COLUMN case (with and without a key, change tracking or CDC, with and without defaults, identity, computed) comes out as a PASS or FAIL: applied in place, or needs a full refresh. It also checks the recovery and `auto_full_refresh_policy`, on standard and integrated CDC. |
+| **SCD type 1, SCD type 2, keyless, append-only** | Test tables for each, and what each target table holds after changes. |
+| **Database changes through Zerobus** | [zerobus-debezium-test](../skills/zerobus-debezium-test/SKILL.md): Debezium Server's Zerobus sink into one `VARIANT` change-log table, with the snapshot kept out of it, ready for a silver AUTO CDC flow. |
+| **Which runtime did it run on?** | `bin/lfc-runtime.sh` records each update's runtime (DBR, release, CPU architecture) and settings, and what changed since the last run. Behavior can change between releases, and even between updates. |

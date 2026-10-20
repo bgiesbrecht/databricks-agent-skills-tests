@@ -116,7 +116,7 @@ juicefs load redis://127.0.0.1:6379/1 /var/tmp/meta.json.gz              # an em
 # then mount as above, and branch: juicefs clone -p /mnt/jfs/masters/<name> /mnt/jfs/branches/<test>
 ```
 
-On the blank disk, a Postgres branch of a 30M-row master was ready in 1 s and returned every row (the first full count took 14 s, all from Blob). A SQL Server branch returned its 5M rows. Use one VM at a time on a volume (there's no shared metadata). To give another VM a copy instead, `cp -a` the master out of the mount and use rclone.
+On the blank disk, a Postgres branch of a 30M-row master was ready in 1 s and returned every row (the first full count took 14 s, all from Blob). A SQL Server branch returned its 5M rows. In this setup, use one VM at a time on a volume: Redis, the metadata engine, runs on the VM and listens only on 127.0.0.1. That's a choice here, not a JuiceFS limit. With a metadata engine every VM can reach (a shared Redis, or a SQL database), several VMs can mount the volume; that isn't tested here. One VM can run many branches of one master at once, each in its own container. To give another VM a copy today, `cp -a` the master out of the mount and use rclone.
 
 ## Read performance (snapshot tests)
 
