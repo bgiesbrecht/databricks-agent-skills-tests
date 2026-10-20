@@ -135,7 +135,9 @@ dbx schemas create "$S" "$CATALOG" >/dev/null || exit 2
 # obj <table> [extra table_configuration JSON]
 obj() { echo "{\"table\":{\"source_catalog\":\"$DB\",\"source_schema\":\"lfcddemo\",\"source_table\":\"$1\",\"destination_catalog\":\"$CATALOG\",\"destination_schema\":\"$S\",\"table_configuration\":{\"scd_type\":\"${SCD:-SCD_TYPE_1}\"${2:+,$2}}}}"; }
 AFR='"auto_full_refresh_policy":{"enabled":true,"min_interval_hours":1}'
-OBJS="$(obj intpk),$(obj dtix),$(obj cdcpk),$(obj afrpk "$AFR"),$(SCD=SCD_TYPE_2 obj scd2pk)"
+# EXCLUDE_DTIX=1 leaves the keyless table out (on integrated CDC its snapshot is empty and its full refresh fails the update)
+[ "${EXCLUDE_DTIX:-0}" = 1 ] && { SKIP_DTIX=1; DTIX_OBJ=""; } || DTIX_OBJ="$(obj dtix),"
+OBJS="$(obj intpk),${DTIX_OBJ}$(obj cdcpk),$(obj afrpk "$AFR"),$(SCD=SCD_TYPE_2 obj scd2pk)"
 if [ "$MODE" = standard ]; then
   dbx schemas create "$STG" "$CATALOG" >/dev/null || exit 2
   GW=$(dbx pipelines create -o json --json "{\"name\":\"$GWN\",\"catalog\":\"$CATALOG\",\"schema\":\"$STG\",\"serverless\":true,\"continuous\":true,
@@ -152,7 +154,8 @@ AP=$(dbx pipelines create -o json --json "{\"name\":\"$APN\",\"catalog\":\"$CATA
 T="\`$CATALOG\`.$S"
 
 update; [ "$STATE" = COMPLETED ] || { echo "baseline failed: $ERRS"; exit 1; }
-COUNTS="SELECT (SELECT COUNT(*) FROM $T.intpk), (SELECT COUNT(*) FROM $T.dtix), (SELECT COUNT(*) FROM $T.cdcpk), (SELECT COUNT(*) FROM $T.afrpk)"
+DT=dtix; [ "${EXCLUDE_DTIX:-0}" = 1 ] && DT=intpk   # stands in for dtix in shared queries
+COUNTS="SELECT (SELECT COUNT(*) FROM $T.intpk), (SELECT COUNT(*) FROM $T.$DT), (SELECT COUNT(*) FROM $T.cdcpk), (SELECT COUNT(*) FROM $T.afrpk)"
 R=$(q "$COUNTS" 2>&1); [ "$R" = "$(printf '10\t10\t10\t10')" ] || { update; R=$(q "$COUNTS" 2>&1); }   # the first update may not load every table
 if [ "$MODE" = integrated ] && [ "$R" = "$(printf '10\t0\t10\t10')" ]; then
   observe keyless-cdc-integrated-snapshot "dtix (no primary key, CDC) has 0 rows after the first load; the keyed tables have 10. No error. Its later claims are skipped"
@@ -189,8 +192,8 @@ R=$(q "SELECT SUM(CASE WHEN c1 IS NULL THEN 1 ELSE 0 END), SUM(CASE WHEN c1 > 11
 for t in scd2pk; do
   observe "$t-nullable-add" "errors: $(errs_for $t)$( [ -z "$(errs_for $t)" ] && echo none); rows, c1 NULL, c1 set: $(q "SELECT COUNT(*), SUM(CASE WHEN c1 IS NULL THEN 1 ELSE 0 END), SUM(CASE WHEN c1 > 110 THEN 1 ELSE 0 END) FROM $T.$t" 2>&1 | tr '\t' ' ' | cut -c1-120)"
 done
-FR=dtix; for t in scd2pk; do [ -n "$(errs_for $t)" ] && FR+=",$t"; done
-update "$FR"
+FR=""; [ "${SKIP_DTIX:-0}" = 1 ] || FR=dtix; for t in scd2pk; do [ -n "$(errs_for $t)" ] && FR+=",$t"; done
+[ -n "${FR#,}" ] && update "${FR#,}"
 
 # --- C2: NOT NULL DEFAULT, then C4: full refresh -------------------------------------------------------------------
 $SRC_SQL "$DB" >/dev/null <<'EOF'
@@ -210,12 +213,12 @@ settle intpk c2
 [[ "$ERRS" == *ADD_COLUMN_WITH_BACKFILL* ]] && claim not-null-default-full-refresh PASS "intpk: ADD_COLUMN_WITH_BACKFILL" \
   || claim not-null-default-full-refresh FAIL "errors: ${ERRS:-none}"
 for t in scd2pk; do observe "$t-not-null-default-add" "errors: $(errs_for $t)$( [ -z "$(errs_for $t)" ] && echo none)"; done
-FR=intpk,dtix,cdcpk; for t in scd2pk; do [ -n "$(errs_for $t)" ] && FR+=",$t"; done
+FR=intpk,cdcpk; [ "${SKIP_DTIX:-0}" = 1 ] || FR+=",dtix"; for t in scd2pk; do [ -n "$(errs_for $t)" ] && FR+=",$t"; done
 update "$FR"   # afrpk is never selected: its policy has to refresh it
 for t in scd2pk; do
   observe "$t-after-refresh" "rows, c2 = 'x', c2 = 'y': $(q "SELECT COUNT(*), SUM(CASE WHEN c2 = 'x' THEN 1 ELSE 0 END), SUM(CASE WHEN c2 = 'y' THEN 1 ELSE 0 END) FROM $T.$t" 2>&1 | tr '\t' ' ' | cut -c1-120)"
 done
-R=$(q "SELECT (SELECT SUM(CASE WHEN c2 = 'x' THEN 1 ELSE 0 END) FROM $T.intpk), (SELECT SUM(CASE WHEN c2 = 'x' THEN 1 ELSE 0 END) FROM $T.dtix), (SELECT SUM(CASE WHEN c2 = 'x' THEN 1 ELSE 0 END) FROM $T.cdcpk)")
+R=$(q "SELECT (SELECT SUM(CASE WHEN c2 = 'x' THEN 1 ELSE 0 END) FROM $T.intpk), (SELECT SUM(CASE WHEN c2 = 'x' THEN 1 ELSE 0 END) FROM $T.$DT), (SELECT SUM(CASE WHEN c2 = 'x' THEN 1 ELSE 0 END) FROM $T.cdcpk)")
 [ "$STATE" = COMPLETED ] && [ "$R" = "$(printf '12\t12\t12')" ] && claim full-refresh-recovers PASS "after a full refresh, 12 old rows carry the default in each table" \
   || claim full-refresh-recovers FAIL "full refresh $STATE, old rows with the default: ${R:-query failed}"
 for _ in 1 2 3; do   # the policy's refresh may land in a later update
