@@ -1,22 +1,23 @@
 ---
 name: zerobus-debezium-test
-description: "Test database change data capture through Debezium Server's Zerobus sink into append-only bronze tables: CockroachDB in Podman on a cloud VM, Debezium Server 3.7 with the CockroachDB connector, Zerobus into Unity Catalog. Checks that the initial snapshot and inserts, updates and deletes land, records the versions, and cleans up. Phase 1 of the Debezium -> Zerobus -> bronze -> silver -> gold test."
+description: "Test database change data capture through Debezium Server's Zerobus sink: CockroachDB in Podman on a cloud VM, a snapshot as of T into a Volume, Debezium Server 3.7 streaming the changes from T through Zerobus into one append-only bronze change log, and silver AUTO CDC tables built from the source schema read through a UC connection. Checks that silver equals the source after inserts, updates and deletes, records the versions, and cleans up. Phases 1 and 2 of the Debezium -> Zerobus -> bronze -> silver -> gold test."
 parent: lfc-source-cloud-vm
 ---
 
-# Debezium -> Zerobus -> bronze
+# Debezium -> Zerobus -> bronze -> silver
 
-[scripts/crdb-debezium-zerobus.sh](scripts/crdb-debezium-zerobus.sh) runs the whole test from your laptop. It drives a cloud VM over SSH, and the VM runs the source database and Debezium Server in Podman. Debezium pushes each change to Zerobus, which appends it to one change-log Delta table for all source tables. Nothing listens for inbound connections: the VM only needs outbound 443 to the Zerobus endpoint.
+[scripts/crdb-debezium-zerobus.sh](scripts/crdb-debezium-zerobus.sh) runs the whole test from your laptop. It drives a cloud VM over SSH, and the VM runs the source database and Debezium Server in Podman. Debezium pushes each change to Zerobus, which appends it to one change-log Delta table for all source tables. Debezium needs only outbound 443 to the Zerobus endpoint. Phase 2 adds a snapshot as of T, taken with `EXPORT INTO PARQUET` and copied into a Volume, and a silver pipeline. The pipeline is generated from the source's schema, read through a UC connection, so serverless reaches CockroachDB on `CRDB_PORT`. `PHASE=1` stops after bronze.
 
-This isn't Lakeflow Connect. It's for sources Lakeflow Connect doesn't cover, or for teams that want the change log itself as an append-only bronze table. Silver (AUTO CDC over the snapshot and the change log) and gold are the next phases.
+This isn't Lakeflow Connect. It's for sources Lakeflow Connect doesn't cover, or for teams that want the change log itself as an append-only bronze table. Gold is the next phase.
 
 ## What it creates, and removes at the end
 
 | Where | What |
 |---|---|
-| Workspace | Schema `<prefix>_crdb_dbz_<epoch>` in `CATALOG`, with one table, `cdc_log`: `target_table`, `operation` (`read` for the snapshot, `create`, `update`, `delete`), `idempotency_key`, and `key`, `value` (the Debezium event: `before`, `after`, `op`, `source`), `source_position` and `headers` as `VARIANT`. `CLUSTER BY (destination)`, the source table's topic (`target_table` is always the log itself) |
+| Workspace | Schema `<prefix>_crdb_dbz_<epoch>` in `CATALOG`, with the bronze table `cdc_log`: `target_table`, `operation` (`create`, `update`, `delete`), `idempotency_key`, and `key`, `value` (the Debezium event: `after`, `op`, `ts_ns` with the default `DROP_FIELDS`), `source_position` and `headers` as `VARIANT`. `CLUSTER BY (destination)`, the source table's topic (`target_table` is always the log itself) |
+| Workspace (phase 2) | In the same schema: Volume `snapshot`, one folder of Parquet per source table; silver streaming tables `customers` and `orders`, made by the serverless pipeline `<prefix>-crdb-dbz-silver-<epoch>` from `/Users/<you>/crdb_dbz_<epoch>/silver.sql`; UC connection `<prefix>-crdb-dbz-<epoch>` (POSTGRESQL, to the VM's `CRDB_PORT`) |
 | Workspace | Service principal `<prefix>-zerobus-dbz-<epoch>` with an OAuth secret, granted `USE CATALOG`, `USE SCHEMA`, `SELECT` and `MODIFY` on `cdc_log`. Zerobus writes as it |
-| VM | Podman network `crdb-dbz-<epoch>`, containers `<prefix>-crdb-<epoch>` (CockroachDB, single node, insecure) and `<prefix>-debezium-<epoch>` |
+| VM | Podman network `crdb-dbz-<epoch>`, containers `<prefix>-crdb-<epoch>` (CockroachDB, single node, insecure, published on `CRDB_PORT`, default 30026) and `<prefix>-debezium-<epoch>` |
 
 The OAuth secret is never printed. It goes from the CLI's response into Debezium's `application.properties` in 0600 temp files, on the laptop and on the VM, which are deleted when the run ends. `KEEP=1` keeps everything for a look afterwards.
 
@@ -25,6 +26,7 @@ The OAuth secret is never printed. It goes from the CLI's response into Debezium
 1. **A VM with Podman** from **lfc-source-cloud-vm**, reachable over SSH, with outbound 443.
 2. **A Databricks CLI profile** for a workspace in a Zerobus region (see the **databricks-zerobus-ingest** skill), where you can create service principals.
 3. **A catalog with its own storage**, which you can create schemas in.
+4. **Phase 2:** `CRDB_PORT` (default 30026) free on the VM and open to the workspace's serverless egress. The shared NSG from **lfc-source-cloud-vm** opens 30000-30063. Only one run at a time can publish the port, so a `KEEP=1` run holds it until you remove its containers. You also need permission to create connections and pipelines.
 
 ## Run
 
@@ -35,6 +37,21 @@ C=/tmp/crdb-dbz-$(date +%s).sh; cp scripts/crdb-debezium-zerobus.sh $C && OUT=/t
 ```
 
 Run a copy with its own name, as above, so that editing the script, or starting another run, can't change a run in progress (bash reads a script as it runs). It exits 0 when every claim passed, 1 when one failed and 2 when a prerequisite is missing. The images are pinned by default: `CRDB_IMAGE` (CockroachDB v25.4.13) and `DBZ_IMAGE` (Debezium Server 3.7.0.Final).
+
+## Silver (phase 2)
+
+For each source table, the generated `silver.sql` has two temporary views and two AUTO CDC flows into one streaming table, SCD type 1, `CLUSTER BY` the key:
+
+| Flow | Reads | Columns | Sequence |
+|---|---|---|---|
+| `<table>_from_snapshot` | `STREAM read_files('<volume>/<table>', format => 'parquet')` | `CAST(<column> AS <type>)` | T, the snapshot time, in nanoseconds |
+| `<table>_from_changes` | `STREAM(cdc_log) WHERE destination = 'crdb.public.<table>'` | keys from `key:<column>`, the rest from `value:after:<column>`, with the type; `APPLY AS DELETE WHEN operation = 'delete'` | `value:ts_ns` |
+
+The types and the key come from CockroachDB's `information_schema` through `remote_query` on a POSTGRESQL UC connection: `bigint`, `numeric(p,s)`, `text` map to `BIGINT`, `DECIMAL(p,s)`, `STRING`. An insecure node takes any password. The keys come from `key`, not `after`, because a delete's `after` is null.
+
+The check compares every row of every table, source and silver, ordered by the key. It runs after the phase 1 changes, then again after a second round with two updates of one key, a delete and reinsert of one key, a reinsert of a key deleted in round 1, and a decimal update. Passed on 2026-10-20 (run 1792530422): `customers` 6 then 7 rows, `orders` 5 then 5, all equal.
+
+**CockroachDB `EXPORT INTO PARQUET` corrupts DECIMAL (v25.4.13).** It writes a DECIMAL column as `BYTE_ARRAY` annotated `DECIMAL(10,2)`, but fills it with the number's text. Readers decode the text as the unscaled integer: `21.00` (`0x32312E3030`) reads as `2155734753.76`, in Databricks and in DuckDB alike. Silver was wrong only for the snapshot rows; the change log's decimals were right. The script exports DECIMAL columns as `STRING` (`<column>::STRING`, from `information_schema`), and silver casts them back.
 
 ## The Debezium settings that matter
 
