@@ -11,6 +11,7 @@
 # 0600 files (a temp dir here, a temp dir on the VM), both deleted at the end.
 #
 #   DROP_FIELDS=before,transaction,ts_ms,ts_us drops top-level event fields with Kafka's ReplaceField transform.
+#   ENRICHED_PROPERTIES=source asks CockroachDB for its source block, which carries each row's commit time (ts_hlc).
 # Needs: PROFILE (Databricks CLI profile), CATALOG (with its own storage), VM_IP; optional VM_USER (azureuser),
 #   SSH_KEY (~/.ssh/lfc_test_rsa), CRDB_IMAGE, DBZ_IMAGE, WAIT (seconds to wait for rows, default 180), OUT=<file.md>.
 # Exit 0 when every claim passed, 1 when one failed, 2 when a prerequisite is missing.
@@ -118,6 +119,7 @@ debezium.source.cockroachdb.changefeed.sink.type=sinkless
 debezium.source.cockroachdb.changefeed.resolved.interval=5s
 debezium.source.cockroachdb.changefeed.include.diff=false
 debezium.source.cockroachdb.changefeed.include.updated=true
+$( [ -n "${ENRICHED_PROPERTIES:-}" ] && echo "debezium.source.cockroachdb.changefeed.enriched.properties=$ENRICHED_PROPERTIES" )
 debezium.source.offset.storage=org.apache.kafka.connect.storage.FileOffsetBackingStore
 debezium.source.offset.storage.file.filename=/debezium/data/offsets.dat
 debezium.source.offset.flush.interval.ms=1000
@@ -174,6 +176,7 @@ R=$(q "SELECT key:id::INT, value:after IS NULL OR value:after::STRING = 'null', 
 observe delete-event "customers delete (key.id, after is null, source.ts_ns): $R"
 R=$(q "SELECT value:after:tier::STRING, value:before IS NULL FROM $LOG WHERE destination LIKE '%.customers' AND operation = 'update'" 2>&1 | tr '\t\n' ' ')
 observe update-event "customers update (after.tier, before is null with include.diff=false): $R"
+observe commit-time "events, distinct source.ts_hlc, distinct source.ts_ns, distinct ts_ns: $(q "SELECT COUNT(*), COUNT(DISTINCT value:source:ts_hlc::STRING), COUNT(DISTINCT value:source:ts_ns::STRING), COUNT(DISTINCT value:ts_ns::STRING) FROM $LOG" 2>&1 | tr '\t' ' ')"
 observe variant-paths "value top-level keys: $(q "SELECT CONCAT_WS(',', SORT_ARRAY(MAP_KEYS(FROM_JSON(TO_JSON(value), 'MAP<STRING,STRING>')))) FROM $LOG LIMIT 1" 2>&1 | cut -c1-200)"
 observe event-bytes "per event, average bytes (op: total value after source key position headers): $(q "SELECT operation, ROUND(AVG(LENGTH(TO_JSON(value)) + LENGTH(TO_JSON(key)) + LENGTH(COALESCE(TO_JSON(source_position),'')) + LENGTH(COALESCE(TO_JSON(headers),'')) + LENGTH(idempotency_key))), ROUND(AVG(LENGTH(TO_JSON(value)))), ROUND(AVG(LENGTH(TO_JSON(value:after)))), ROUND(AVG(LENGTH(TO_JSON(value:source)))), ROUND(AVG(LENGTH(TO_JSON(key)))), ROUND(AVG(LENGTH(COALESCE(TO_JSON(source_position),'')))), ROUND(AVG(LENGTH(COALESCE(TO_JSON(headers),'')))) FROM $LOG GROUP BY operation ORDER BY 1" 2>&1 | tr '\t\n' ' ;')"
 observe event-sample "one update event value: $(q "SELECT TO_JSON(value) FROM $LOG WHERE operation = 'update' LIMIT 1" 2>&1 | cut -c1-400)"
