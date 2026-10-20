@@ -255,7 +255,7 @@ for c in "c4 INT IDENTITY(1,1)" "c5 AS (id * 2)"; do
 done
 
 # --- the runtime each pipeline ran on; settings that changed since the last run on this workspace go to the log -------
-RT="$HERE/../../../bin/lfc-runtime.sh"
+RT=${LFC_RUNTIME:-$HERE/../../../bin/lfc-runtime.sh}   # set LFC_RUNTIME when running a copy of this script
 "$RT" "$PROFILE" "$AP" >&2 || true
 RUNTIME="- Ingestion pipeline: $("$RT" --summary "$PROFILE" "$AP" 2>/dev/null | sed 's/^Lakeflow runtime: //')"
 [ -n "${GW:-}" ] && RUNTIME+=$'\n'"- Gateway: $("$RT" --summary "$PROFILE" "$GW" 2>/dev/null | sed 's/^Lakeflow runtime: //')"
