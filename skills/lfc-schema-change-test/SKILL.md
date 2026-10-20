@@ -12,7 +12,7 @@ Never point these at a shared source: the DDL forces a full refresh on everyone'
 
 | Script | Question | Time |
 |---|---|---|
-| [scripts/sqlserver-add-column.sh](scripts/sqlserver-add-column.sh) | When does adding a column to a SQL Server table need a full refresh? | About 25 minutes |
+| [scripts/sqlserver-add-column.sh](scripts/sqlserver-add-column.sh) | When does adding a column to a SQL Server table need a full refresh? Covers tables with and without a primary key, change tracking and CDC, columns with and without defaults, identity and computed columns, and `auto_full_refresh_policy`. `MODE=integrated` runs it on integrated CDC (one pipeline) instead of standard CDC | About 40 minutes per mode |
 
 ## Before running
 
@@ -28,6 +28,7 @@ cd skills/lfc-schema-change-test
 export PROFILE=<cli-profile> CONNECTION=<uc-connection> CATALOG=<catalog> CONN_USER=<connection-login>
 export SRC_SQL="$PWD/scripts/vm-mssql.sh" SRC_ENV="$PWD/scripts/vm-mssql.sh --env" VM_IP=<vm-ip> MSSQL_CONTAINER=<container-name>
 OUT=/tmp/addcol-result.md scripts/sqlserver-add-column.sh
+MODE=integrated OUT=/tmp/addcol-result-integrated.md scripts/sqlserver-add-column.sh   # the same on integrated CDC
 ```
 
 It exits 0 when every claim passed, 1 when one failed, 2 when a prerequisite is missing (nothing is left behind in either case).
