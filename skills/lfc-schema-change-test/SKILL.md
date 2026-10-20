@@ -12,7 +12,9 @@ Never point these at a shared source: the DDL forces a full refresh on everyone'
 
 | Script | Question | Time |
 |---|---|---|
-| [scripts/sqlserver-add-column.sh](scripts/sqlserver-add-column.sh) | When does adding a column to a SQL Server table need a full refresh? Covers tables with and without a primary key, change tracking and CDC, columns with and without defaults, identity and computed columns, and `auto_full_refresh_policy`. `MODE=integrated` runs it on integrated CDC (one pipeline) instead of standard CDC | About 40 minutes per mode |
+| [scripts/sqlserver-add-column.sh](scripts/sqlserver-add-column.sh) | When does adding a column to a SQL Server table need a full refresh? Covers tables with and without a primary key, change tracking and CDC, columns with and without defaults, identity and computed columns, and `auto_full_refresh_policy`. `MODE=integrated` runs it on integrated CDC (one pipeline) instead of standard CDC | About 40 minutes standard, 1–2 hours integrated |
+| [scripts/integrated-split-boundary.sh](scripts/integrated-split-boundary.sh) | Does integrated CDC load every row when the snapshot splits on a `DATETIME2(7)` column? Prints rows loaded, the extractor's split plan and the rows in its snapshot file | About 10 minutes |
+| [scripts/integrated-scd2-ct.sh](scripts/integrated-scd2-ct.sh) | What does integrated CDC do with `SCD_TYPE_2` on a change-tracking table? Plain inserts, more inserts, then an added column, against SCD type 1 and CDC controls | About 30 minutes |
 
 ## Before running
 
@@ -41,18 +43,29 @@ It exits 0 when every claim passed, 1 when one failed, 2 when a prerequisite is 
 | `cdcpk` | primary key, CDC | SCD type 1 | the keyed CDC path |
 | `dtix` | no key, CDC, non-unique index on a column whose values repeat | SCD type 1 | the keyless path (keyed on every column) |
 | `afrpk` | primary key, change tracking, `auto_full_refresh_policy` on | SCD type 1 | automatic full refresh |
-| `scd2pk` | primary key, change tracking | SCD type 2 | the SCD type 2 path |
+| `scd2pk` | primary key, CDC | SCD type 2 | the SCD type 2 path (`SCD_TYPE_2` needs CDC on SQL Server; see below) |
 
 `APPEND_ONLY` isn't a CDC path: pipeline create refuses it ("APPEND_ONLY can only be used for incremental ingestion of query based connector"). It's covered by the query-based tests.
 
 ## What the runs taught
 
-- **On integrated CDC, `dtix` loads 0 rows, with no error,** and a full refresh of it fails the whole update (`INGESTION_GATEWAY_INTERNAL_ERROR`), which stops every later claim. It loads on standard CDC. Narrowed down: a keyless table with no index, or with a unique index, or with a non-unique index whose values are all distinct, loads; one whose non-unique index column has repeated values doesn't. `EXCLUDE_DTIX=1` leaves it out so the other tables' claims run; test it in its own pipeline.
+- **On integrated CDC, a snapshot that splits on a `DATETIME2(7)` column with a nonzero 7th digit loses rows, with no error.** The split's upper bound is the largest value cut to 6 digits, so rows above it are never read: with all values equal, 0 of 10; with distinct values, the last row is missing (9 of 10), with or without a primary key on the column. The snapshot file in the staging volume already has the short count, so it's the read, not the apply. 6-digit or zero 7th digits load. A full refresh of such a table fails the whole update (`INGESTION_GATEWAY_INTERNAL_ERROR`). That's why `dtix` (its `dt` defaults to `SYSUTCDATETIME()`) loads 0 rows on integrated CDC and fine on standard CDC. `EXCLUDE_DTIX=1` leaves it out; `integrated-split-boundary.sh` tests the case on its own.
+- **`SCD_TYPE_2` on a change-tracking table is accepted, and integrated CDC holds that table's changes until the next schema change on it,** with no error; standard CDC applied them as SCD type 1. The docs say SCD type 2 needs CDC, so `scd2pk` uses CDC. `integrated-scd2-ct.sh` shows the case.
+- **The pipeline starts updates itself.** After a schema change it starts one (cause `SCHEMA_CHANGE`); after a failure, often one more (`RETRY_ON_FAILURE`). While it runs, `start-update` is refused. `update()` joins it and waits until the pipeline is idle. `ERRS` covers every update in that chain, `CHAIN` lists each one's cause and state, and the run log has each error's message, so a failure can be read after cleanup.
+- **An empty "Extractor error:" right after a start or a schema change** (`INGESTION_GATEWAY_INTERNAL_ERROR`) usually recovers on the pipeline's own retry. With `PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR`, no retry follows. Both were seen with two or more change-tracking tables; the run carries on with its next update.
+- **Don't wait for smart closure.** An integrated update runs 20 minutes or more even with nothing to do. In `MODE=integrated` an update is stopped once it has run 3 minutes and the destination row counts, the CDC staging table's row count and the column count haven't changed for 3 polls (`EARLY_STOP=0` turns this off). For a full refresh it also waits until the extractor has read each refreshed table. A check that still fails after an early stop runs one more update (`expect`): a full refresh's new column sometimes appears only then.
+- **Full-refresh only what asks for it:** a table is refreshed only for `CDC_INCOMPATIBLE_SCHEMA_CHANGES.*` or `PRIMARY_KEY_CHANGE`. The hand-off errors of a schema change (`CDC_APPLIER_SCHEMA_CHANGED_DURING_STREAMING`, `FLOW_SCHEMA_CHANGED`) don't need one, and a needless refresh resets an SCD type 2 table's history.
+- **Read the staging volume to tell a read loss from an apply loss.** Integrated CDC writes to `__databricks_ingestion_gateway_staging_data-<pipeline-id>` in the destination schema (or in the `data_staging_options` schema):
+  - `metadata/general_table_schemas/all_tables.json` maps table names to ids;
+  - `snapshot/<id>/<ts>/*.parquet` holds the rows read (columns have encoded names, so count with `read_files`);
+  - `snapshot/<id>/qbc_checkpoint/<ts>/offsets/0` holds the split plan.
+
+  It goes when the pipeline is deleted, so read it first. yq on a `.json` file prints quoted strings: use `-r`.
 - **Wait for the change, don't sleep.** A fixed wait let updates run before the gateway had the DDL, and two cases looked inline. `settle` runs updates until one errors or the new column shows.
 - **Errors are read per table** (`errs_for`): one update can carry several tables' errors.
-- **Integrated CDC updates run at least 20 minutes** (smart closure), so the integrated run takes hours; standard CDC takes about 40 minutes.
-- **Each result records the runtime** each pipeline ran on (`LFC_RUNTIME`, `bin/lfc-runtime.sh`): the version, the channel and even the CPU architecture can change between updates.
+- **Each result records the runtime** each pipeline ran on (`LFC_RUNTIME`, `bin/lfc-runtime.sh`): the version, the channel and even the CPU architecture (x86 or aarch64) can change between updates. Settings snapshots are kept per pipeline kind, so a run is compared only with the same kind.
 - **Run a uniquely named copy:** bash reads a script as it runs, and overwriting the copy a run is using breaks that run.
+- **Print what a claim rests on.** A row count suggested which rows arrived, but only printing the ids showed it. Print the ids (or the staging counts) whenever a count alone could be read two ways.
 
 ## With an agent
 
