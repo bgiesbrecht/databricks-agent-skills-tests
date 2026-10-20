@@ -41,6 +41,8 @@ Give Isaac (or another coding agent with this repository and a Databricks CLI lo
 
 ## After running
 
+Each result also records the Lakeflow runtime every pipeline ran on (DBR version, channel and the image build, from the update's `runtime_details` event). Workspaces on different releases can behave differently, and settings appear, disappear and change between releases. [bin/lfc-runtime.sh](../../bin/lfc-runtime.sh) saves the full list of settings each update ran with on this machine and prints what changed since the last run on that workspace; the run log shows it. Run it yourself on any pipeline: `bin/lfc-runtime.sh <profile> <pipeline-id> [update-id]`.
+
 `SRC_ENV` adds the host OS, the Podman version and the container image with its digest to the result, so a reader can run the same image. Copy them into the run file and the FAQ entry's test section.
 
 Add the claim table as a new run file next to the FAQ entry's `validation.yaml`, update the entry's `## Validation` line and its `last_validated`, and say what changed since the last run.

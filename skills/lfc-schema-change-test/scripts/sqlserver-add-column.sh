@@ -76,9 +76,14 @@ cleanup() {
   [ "${KEEP:-0}" = 1 ] && { echo "KEEP=1: left $DB, $GWN, $APN, $CATALOG.$S"; return; }
   [ -n "${AP:-}" ] && dbx pipelines delete "$AP"; [ -n "${GW:-}" ] && dbx pipelines delete "$GW"; sleep 15
   dbx schemas delete "$CATALOG.$S" --force 2>/dev/null; dbx schemas delete "$CATALOG.$STG" --force 2>/dev/null
-  printf 'USE %s;\nEXEC sys.sp_cdc_disable_db;\nGO\nUSE master;\nALTER DATABASE %s SET SINGLE_USER WITH ROLLBACK IMMEDIATE;\nDROP DATABASE %s;\n' \
-    "$DB" "$DB" "$DB" | $SRC_SQL master >/dev/null 2>&1
-  local left; left=$(printf "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.databases WHERE name = '%s';\n" "$DB" | $SRC_SQL master)
+  local left
+  for _ in 1 2 3; do   # a pipeline that was just deleted can still hold a session for a while
+    printf 'USE %s;\nEXEC sys.sp_cdc_disable_db;\nGO\nUSE master;\nALTER DATABASE %s SET SINGLE_USER WITH ROLLBACK IMMEDIATE;\nDROP DATABASE %s;\n' \
+      "$DB" "$DB" "$DB" | $SRC_SQL master > "$W/drop.out" 2>&1
+    left=$(printf "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.databases WHERE name = '%s';\n" "$DB" | $SRC_SQL master)
+    [ "${left//[[:space:]]/}" = 0 ] && break; sleep 30
+  done
+  [ "${left//[[:space:]]/}" = 0 ] || { echo "source database $DB not dropped:"; tail -3 "$W/drop.out"; }
   echo "cleanup: pipelines and schemas deleted; source database left: ${left//[[:space:]]/}"
   rm -rf "$W"
 }
@@ -139,7 +144,9 @@ AP=$(dbx pipelines create -o json --json "{\"name\":\"$APN\",\"catalog\":\"$CATA
 T="\`$CATALOG\`.$S"
 
 update; [ "$STATE" = COMPLETED ] || { echo "baseline failed: $ERRS"; exit 1; }
-[ "$(q "SELECT (SELECT COUNT(*) FROM $T.intpk), (SELECT COUNT(*) FROM $T.dtix), (SELECT COUNT(*) FROM $T.cdcpk), (SELECT COUNT(*) FROM $T.afrpk)")" = "$(printf '10\t10\t10\t10')" ] || { echo "baseline row counts wrong"; exit 1; }
+COUNTS="SELECT (SELECT COUNT(*) FROM $T.intpk), (SELECT COUNT(*) FROM $T.dtix), (SELECT COUNT(*) FROM $T.cdcpk), (SELECT COUNT(*) FROM $T.afrpk)"
+R=$(q "$COUNTS" 2>&1); [ "$R" = "$(printf '10\t10\t10\t10')" ] || { update; R=$(q "$COUNTS" 2>&1); }   # the first update may not load every table
+[ "$R" = "$(printf '10\t10\t10\t10')" ] || { echo "baseline row counts wrong (intpk dtix cdcpk afrpk): $R"; exit 1; }
 
 # --- C1: nullable, no default ---------------------------------------------------------------------------------------
 $SRC_SQL "$DB" >/dev/null <<'EOF'
@@ -212,12 +219,19 @@ for c in "c4 INT IDENTITY(1,1)" "c5 AS (id * 2)"; do
   update intpk
 done
 
+# --- the runtime each pipeline ran on; settings that changed since the last run on this workspace go to the log -------
+RT="$HERE/../../../bin/lfc-runtime.sh"
+"$RT" "$PROFILE" "$AP" >&2 || true
+RUNTIME="- Ingestion pipeline: $("$RT" --summary "$PROFILE" "$AP" 2>/dev/null | sed 's/^Lakeflow runtime: //')"
+[ -n "${GW:-}" ] && RUNTIME+=$'\n'"- Gateway: $("$RT" --summary "$PROFILE" "$GW" 2>/dev/null | sed 's/^Lakeflow runtime: //')"
+
 # --- result ---------------------------------------------------------------------------------------------------------
 {
   echo "# sqlserver-add-column run $E"
   echo
   echo "- Date (UTC): $(date -u +%F)"
   [ "$MODE" = standard ] && echo "- Mode: standard CDC, serverless gateway and ingestion pipeline" || echo "- Mode: integrated CDC, one serverless pipeline"
+  echo "$RUNTIME"
   [ -n "${SRC_ENV:-}" ] && $SRC_ENV | sed 's/^/- /'
   echo "- Source: $(printf "SET NOCOUNT ON; SELECT CONCAT('SQL Server ', CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(64)), ' ', CAST(SERVERPROPERTY('ProductUpdateLevel') AS nvarchar(64)), ' ', CAST(SERVERPROPERTY('ProductUpdateReference') AS nvarchar(64)), ', ', CAST(SERVERPROPERTY('Edition') AS nvarchar(128)));\n" | $SRC_SQL master | head -1); utility objects $UTIL"
   echo
