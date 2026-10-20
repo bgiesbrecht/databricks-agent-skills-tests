@@ -108,13 +108,11 @@ CREATE INDEX dtix_dt ON lfcddemo.dtix(dt);
 CREATE TABLE lfcddemo.cdcpk (id INT NOT NULL PRIMARY KEY, v VARCHAR(20), dt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME());
 CREATE TABLE lfcddemo.afrpk (id INT NOT NULL PRIMARY KEY, v VARCHAR(20), dt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME());
 CREATE TABLE lfcddemo.scd2pk (id INT NOT NULL PRIMARY KEY, v VARCHAR(20), dt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME());
-CREATE TABLE lfcddemo.aopk (id INT NOT NULL PRIMARY KEY, v VARCHAR(20), dt DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME());
 INSERT INTO lfcddemo.intpk (id, v) SELECT TOP 10 ROW_NUMBER() OVER (ORDER BY (SELECT 1)), 'before' FROM sys.objects;
 INSERT INTO lfcddemo.dtix (id, v) SELECT TOP 10 ROW_NUMBER() OVER (ORDER BY (SELECT 1)), 'before' FROM sys.objects;
 INSERT INTO lfcddemo.cdcpk (id, v) SELECT TOP 10 ROW_NUMBER() OVER (ORDER BY (SELECT 1)), 'before' FROM sys.objects;
 INSERT INTO lfcddemo.afrpk (id, v) SELECT TOP 10 ROW_NUMBER() OVER (ORDER BY (SELECT 1)), 'before' FROM sys.objects;
 INSERT INTO lfcddemo.scd2pk (id, v) SELECT TOP 10 ROW_NUMBER() OVER (ORDER BY (SELECT 1)), 'before' FROM sys.objects;
-INSERT INTO lfcddemo.aopk (id, v) SELECT TOP 10 ROW_NUMBER() OVER (ORDER BY (SELECT 1)), 'before' FROM sys.objects;
 CREATE USER $CONN_USER FOR LOGIN $CONN_USER;
 EOF
 curl -fsSL -o "$W/utility_script.sql" https://learn.microsoft.com/en-us/azure/databricks/_extras/documents/utility_script.sql
@@ -123,7 +121,6 @@ $SRC_SQL "$DB" >/dev/null <<EOF
 EXEC dbo.lakeflowSetupChangeTracking @Tables = 'lfcddemo.intpk', @User = '$CONN_USER';
 EXEC dbo.lakeflowSetupChangeTracking @Tables = 'lfcddemo.afrpk', @User = '$CONN_USER';
 EXEC dbo.lakeflowSetupChangeTracking @Tables = 'lfcddemo.scd2pk', @User = '$CONN_USER';
-EXEC dbo.lakeflowSetupChangeTracking @Tables = 'lfcddemo.aopk', @User = '$CONN_USER';
 EXEC dbo.lakeflowSetupChangeDataCapture @Tables = 'lfcddemo.dtix', @User = '$CONN_USER';
 EXEC dbo.lakeflowSetupChangeDataCapture @Tables = 'lfcddemo.cdcpk', @User = '$CONN_USER';
 EXEC dbo.lakeflowFixPermissions @User = '$CONN_USER', @Tables = 'SCHEMAS:lfcddemo';
@@ -138,7 +135,7 @@ dbx schemas create "$S" "$CATALOG" >/dev/null || exit 2
 # obj <table> [extra table_configuration JSON]
 obj() { echo "{\"table\":{\"source_catalog\":\"$DB\",\"source_schema\":\"lfcddemo\",\"source_table\":\"$1\",\"destination_catalog\":\"$CATALOG\",\"destination_schema\":\"$S\",\"table_configuration\":{\"scd_type\":\"${SCD:-SCD_TYPE_1}\"${2:+,$2}}}}"; }
 AFR='"auto_full_refresh_policy":{"enabled":true,"min_interval_hours":1}'
-OBJS="$(obj intpk),$(obj dtix),$(obj cdcpk),$(obj afrpk "$AFR"),$(SCD=SCD_TYPE_2 obj scd2pk),$(SCD=APPEND_ONLY obj aopk)"
+OBJS="$(obj intpk),$(obj dtix),$(obj cdcpk),$(obj afrpk "$AFR"),$(SCD=SCD_TYPE_2 obj scd2pk)"
 if [ "$MODE" = standard ]; then
   dbx schemas create "$STG" "$CATALOG" >/dev/null || exit 2
   GW=$(dbx pipelines create -o json --json "{\"name\":\"$GWN\",\"catalog\":\"$CATALOG\",\"schema\":\"$STG\",\"serverless\":true,\"continuous\":true,
@@ -163,7 +160,9 @@ if [ "$MODE" = integrated ] && [ "$R" = "$(printf '10\t0\t10\t10')" ]; then
 else
   [ "$R" = "$(printf '10\t10\t10\t10')" ] || { echo "baseline row counts wrong (intpk dtix cdcpk afrpk): $R"; exit 1; }
 fi
-observe scd-modes-baseline "rows scd2pk (SCD_TYPE_2), aopk (APPEND_ONLY): $(q "SELECT (SELECT COUNT(*) FROM $T.scd2pk), (SELECT COUNT(*) FROM $T.aopk)" 2>&1 | tr '\t' ' ')"
+observe scd2-baseline "rows scd2pk (SCD_TYPE_2): $(q "SELECT COUNT(*) FROM $T.scd2pk" 2>&1)"
+# APPEND_ONLY isn't a CDC mode: pipeline create refuses it with "APPEND_ONLY can only be used for incremental ingestion of
+# query based connector. The cursor_columns must be set in such cases." (2026-10-20). It's tested with query-based.
 
 # --- C1: nullable, no default ---------------------------------------------------------------------------------------
 $SRC_SQL "$DB" >/dev/null <<'EOF'
@@ -171,13 +170,11 @@ ALTER TABLE lfcddemo.intpk ADD c1 INT NULL;
 ALTER TABLE lfcddemo.dtix ADD c1 INT NULL;
 ALTER TABLE lfcddemo.cdcpk ADD c1 INT NULL;
 ALTER TABLE lfcddemo.scd2pk ADD c1 INT NULL;
-ALTER TABLE lfcddemo.aopk ADD c1 INT NULL;
 GO
 INSERT INTO lfcddemo.intpk (id, v, c1) VALUES (11, 'after_c1', 111), (12, 'after_c1', 112);
 INSERT INTO lfcddemo.dtix (id, v, c1) VALUES (11, 'after_c1', 111), (12, 'after_c1', 112);
 INSERT INTO lfcddemo.cdcpk (id, v, c1) VALUES (11, 'after_c1', 111), (12, 'after_c1', 112);
 INSERT INTO lfcddemo.scd2pk (id, v, c1) VALUES (11, 'after_c1', 111), (12, 'after_c1', 112);
-INSERT INTO lfcddemo.aopk (id, v, c1) VALUES (11, 'after_c1', 111), (12, 'after_c1', 112);
 EOF
 [ "${SKIP_DTIX:-0}" = 1 ] && settle intpk c1 || settle dtix c1
 R=$(q "SELECT SUM(CASE WHEN c1 IS NULL THEN 1 ELSE 0 END), SUM(CASE WHEN c1 > 110 THEN 1 ELSE 0 END) FROM $T.intpk")
@@ -189,10 +186,10 @@ else claim keyless-any-add-full-refresh FAIL "dtix errors: ${ERRS:-none}"; fi
 R=$(q "SELECT SUM(CASE WHEN c1 IS NULL THEN 1 ELSE 0 END), SUM(CASE WHEN c1 > 110 THEN 1 ELSE 0 END) FROM $T.cdcpk")
 [ "$R" = "$(printf '10\t2')" ] && claim keyed-cdc-table PASS "cdcpk (CDC, primary key): 10 rows c1 NULL, 2 rows with values" \
   || claim keyed-cdc-table FAIL "cdcpk c1 NULL/values: ${R:-query failed}"
-for t in scd2pk aopk; do
+for t in scd2pk; do
   observe "$t-nullable-add" "errors: $(errs_for $t)$( [ -z "$(errs_for $t)" ] && echo none); rows, c1 NULL, c1 set: $(q "SELECT COUNT(*), SUM(CASE WHEN c1 IS NULL THEN 1 ELSE 0 END), SUM(CASE WHEN c1 > 110 THEN 1 ELSE 0 END) FROM $T.$t" 2>&1 | tr '\t' ' ' | cut -c1-120)"
 done
-FR=dtix; for t in scd2pk aopk; do [ -n "$(errs_for $t)" ] && FR+=",$t"; done
+FR=dtix; for t in scd2pk; do [ -n "$(errs_for $t)" ] && FR+=",$t"; done
 update "$FR"
 
 # --- C2: NOT NULL DEFAULT, then C4: full refresh -------------------------------------------------------------------
@@ -202,22 +199,20 @@ ALTER TABLE lfcddemo.dtix ADD c2 VARCHAR(10) NOT NULL DEFAULT 'x';
 ALTER TABLE lfcddemo.cdcpk ADD c2 VARCHAR(10) NOT NULL DEFAULT 'x';
 ALTER TABLE lfcddemo.afrpk ADD c2 VARCHAR(10) NOT NULL DEFAULT 'x';
 ALTER TABLE lfcddemo.scd2pk ADD c2 VARCHAR(10) NOT NULL DEFAULT 'x';
-ALTER TABLE lfcddemo.aopk ADD c2 VARCHAR(10) NOT NULL DEFAULT 'x';
 GO
 INSERT INTO lfcddemo.intpk (id, v, c1, c2) VALUES (13, 'after_c2', 113, 'y');
 INSERT INTO lfcddemo.dtix (id, v, c1, c2) VALUES (13, 'after_c2', 113, 'y');
 INSERT INTO lfcddemo.cdcpk (id, v, c1, c2) VALUES (13, 'after_c2', 113, 'y');
 INSERT INTO lfcddemo.afrpk (id, v, c2) VALUES (11, 'after_c2', 'y');
 INSERT INTO lfcddemo.scd2pk (id, v, c1, c2) VALUES (13, 'after_c2', 113, 'y');
-INSERT INTO lfcddemo.aopk (id, v, c1, c2) VALUES (13, 'after_c2', 113, 'y');
 EOF
 settle intpk c2
 [[ "$ERRS" == *ADD_COLUMN_WITH_BACKFILL* ]] && claim not-null-default-full-refresh PASS "intpk: ADD_COLUMN_WITH_BACKFILL" \
   || claim not-null-default-full-refresh FAIL "errors: ${ERRS:-none}"
-for t in scd2pk aopk; do observe "$t-not-null-default-add" "errors: $(errs_for $t)$( [ -z "$(errs_for $t)" ] && echo none)"; done
-FR=intpk,dtix,cdcpk; for t in scd2pk aopk; do [ -n "$(errs_for $t)" ] && FR+=",$t"; done
+for t in scd2pk; do observe "$t-not-null-default-add" "errors: $(errs_for $t)$( [ -z "$(errs_for $t)" ] && echo none)"; done
+FR=intpk,dtix,cdcpk; for t in scd2pk; do [ -n "$(errs_for $t)" ] && FR+=",$t"; done
 update "$FR"   # afrpk is never selected: its policy has to refresh it
-for t in scd2pk aopk; do
+for t in scd2pk; do
   observe "$t-after-refresh" "rows, c2 = 'x', c2 = 'y': $(q "SELECT COUNT(*), SUM(CASE WHEN c2 = 'x' THEN 1 ELSE 0 END), SUM(CASE WHEN c2 = 'y' THEN 1 ELSE 0 END) FROM $T.$t" 2>&1 | tr '\t' ' ' | cut -c1-120)"
 done
 R=$(q "SELECT (SELECT SUM(CASE WHEN c2 = 'x' THEN 1 ELSE 0 END) FROM $T.intpk), (SELECT SUM(CASE WHEN c2 = 'x' THEN 1 ELSE 0 END) FROM $T.dtix), (SELECT SUM(CASE WHEN c2 = 'x' THEN 1 ELSE 0 END) FROM $T.cdcpk)")
