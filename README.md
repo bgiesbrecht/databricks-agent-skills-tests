@@ -2,6 +2,15 @@
 
 **End-to-end testing of Databricks Lakeflow Connect, made easy.** Stand up a real source database with change capture on, reachable from your workspace, in minutes. Fill it with data shaped like a customer's, run every ingestion mode against it, check what landed, and record the result, so the next person knows what's been tested and what still needs testing.
 
+## What's unique
+
+- **A fresh copy of any database, in a fraction of a second.** One approach for every engine, with the master in your own bucket and only a cache on the VM, built from open-source parts (Podman, JuiceFS).
+- **Data generated inside the database, from its own schema.** Valid parent/child keys, as SQL that runs inside the database, on six engines (Postgres, MySQL, SQL Server, Oracle, Db2, Informix): no rows cross the network.
+- **A copy shaped like the customer's database, without their data.** A DBA won't hand over real data without an NDA. Built from the catalog's statistics only, the copy behaves like their database without a single real row leaving their site.
+- **Answers tested as claims, on the runtime they ran on.** Each answer is a rerunnable PASS or FAIL on a fresh source, tied to the exact runtime and settings of every update. It catches behavior that differs from the docs, and when a release changes it.
+
+How these compare with other tools, and their limits: [docs/what-is-unique.md](docs/what-is-unique.md).
+
 ## Tested end to end: Lakeflow Connect modes, by database
 
 Every ✅ ran end to end in a real workspace: source database, UC connection, pipeline, and the rows checked against the source. Tested on AWS and Azure, on serverless-only workspaces and on workspaces with classic compute.
