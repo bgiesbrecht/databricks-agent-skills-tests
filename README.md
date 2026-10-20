@@ -13,7 +13,7 @@ How these compare with other tools, and their limits: [docs/what-is-unique.md](d
 
 ## Tested end to end: Lakeflow Connect modes, by database
 
-Every ✅ ran end to end in a real workspace: source database, UC connection, pipeline, and the rows checked against the source. Tested on AWS and Azure, on serverless-only workspaces and on workspaces with classic compute.
+Every ✅ ran end to end in a real workspace: source database, UC connection, pipeline, and the rows checked against the source. Tested on AWS and Azure, on serverless-only workspaces and on workspaces with classic compute. To run any cell again, with the prompts and a diagram of everything it creates: [docs/lakeflow-connect-database.md](docs/lakeflow-connect-database.md).
 
 | Database | UC connection, queried with [`remote_query`](https://docs.databricks.com/aws/en/query-federation/remote-queries) | Query-based | Query-based via foreign catalog | Integrated CDC | Standard CDC (gateway) |
 |---|---|---|---|---|---|
@@ -68,6 +68,7 @@ The test space is large: where the source runs, the database and version, the in
 
 ## More
 
+- [docs/lakeflow-connect-database.md](docs/lakeflow-connect-database.md): the prompts that reproduce each cell of the table, and what they create, in order.
 - [docs/coverage.md](docs/coverage.md): every axis tested, what the product refuses by design, and what's not tested yet.
 - [docs/running-tests.md](docs/running-tests.md): setup, the deploy matrix, schema-change and script tests, recording results.
 - [MATRIX.md](MATRIX.md): every deploy-test cell and its pass criteria.
