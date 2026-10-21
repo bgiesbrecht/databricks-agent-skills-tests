@@ -1,5 +1,6 @@
 # silver-from-schema.py: a Lakeflow Spark Declarative Pipelines source file that builds silver from the canonical
-# schema (statschema's schema.yaml, from the lfc-source-statschema skill) in a Unity Catalog Volume.
+# schema (statschema's schema.yaml, from the lfc-source-statschema skill) in a Unity Catalog Volume. The one generator
+# for every source and every model: nothing in it names a table, a column or a type.
 #
 # For every table in <volume>/_schema/schema.yaml it defines, when the pipeline starts:
 #   <table>_snapshot        the snapshot as of T, from <volume>/<table>/ (Parquet or CSV), sequenced by T
@@ -73,10 +74,23 @@ def cdc_log_dedup():
 def define(table, cols):
     keys = [c["name"] for c in cols if c.get("primary_key")]
     in_snap = {c["name"] for c in AT_T.get(table, [])}
-    snap_cols = [F.expr(f"CAST({c['name'] if c['name'] in in_snap else 'NULL'} AS {spark_type(c)})").alias(c["name"])
+    # A column added after T is in neither the snapshot nor the changes made before it was added. A PostgreSQL-protocol
+    # source doesn't resend old rows when a column is added, so they hold the column's default (a SQL literal in
+    # schema.yaml): use it where the field is missing (SQL NULL from the path), not where it's a JSON null.
+    def dflt(c):
+        return c.get("default") or "NULL"
+
+    def change(c):
+        n, ty = c["name"], spark_type(c)
+        if n in keys:
+            return f"key:{n}::{ty}"
+        if c.get("default"):
+            return (f"CASE WHEN value:after IS NOT NULL AND NOT is_variant_null(value:after) AND value:after:{n} IS NULL "
+                    f"THEN CAST({c['default']} AS {ty}) ELSE value:after:{n}::{ty} END")
+        return f"value:after:{n}::{ty}"
+    snap_cols = [F.expr(f"CAST({c['name'] if c['name'] in in_snap else dflt(c)} AS {spark_type(c)})").alias(c["name"])
                  for c in cols]
-    chg_cols = [F.expr(f"{'key' if c['name'] in keys else 'value:after'}:{c['name']}::{spark_type(c)}").alias(c["name"])
-                for c in cols]
+    chg_cols = [F.expr(change(c)).alias(c["name"]) for c in cols]
 
     @dp.temporary_view(name=f"{table}_snapshot")
     def snapshot():

@@ -120,7 +120,6 @@ if [ "$SCHEMA_VIA" = connection ]; then
 fi
 
 # --- source: a small schema ----------------------------------------------------------------------------------------
-TABLES="customers orders"
 SETUP_SQL="CREATE TABLE shop.customers (id INT PRIMARY KEY, name TEXT NOT NULL, tier TEXT NOT NULL);
 CREATE TABLE shop.orders (id INT PRIMARY KEY, customer_id INT NOT NULL, amount DECIMAL(10,2) NOT NULL, status TEXT NOT NULL);
 INSERT INTO shop.customers SELECT g, 'customer_' || g::TEXT, 'bronze' FROM generate_series(1, 5) g;
@@ -146,11 +145,13 @@ CREATE TABLE shop.audit (seq BIGSERIAL PRIMARY KEY, tbl TEXT NOT NULL, op TEXT N
 CREATE FUNCTION shop.audit_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
   INSERT INTO shop.audit (tbl, op, row_data) VALUES (TG_TABLE_NAME, TG_OP, CASE WHEN TG_OP = 'DELETE' THEN NULL ELSE to_jsonb(NEW) END);
   RETURN NULL; END $$;
-CREATE TRIGGER customers_audit AFTER INSERT OR UPDATE OR DELETE ON shop.customers FOR EACH ROW EXECUTE FUNCTION shop.audit_fn();
-CREATE TRIGGER orders_audit AFTER INSERT OR UPDATE OR DELETE ON shop.orders FOR EACH ROW EXECUTE FUNCTION shop.audit_fn();
-ALTER TABLE shop.customers REPLICA IDENTITY DEFAULT;
-ALTER TABLE shop.orders REPLICA IDENTITY DEFAULT;
-CREATE PUBLICATION dbz_pub FOR TABLE shop.customers, shop.orders;
+DO $$ DECLARE t text; BEGIN
+  FOR t IN SELECT table_name FROM information_schema.tables WHERE table_schema = 'shop' AND table_type = 'BASE TABLE' AND table_name <> 'audit' LOOP
+    EXECUTE format('CREATE TRIGGER %I AFTER INSERT OR UPDATE OR DELETE ON shop.%I FOR EACH ROW EXECUTE FUNCTION shop.audit_fn()', t || '_audit', t); END LOOP; END $$;
+DO $$ DECLARE t text; BEGIN
+  FOR t IN SELECT table_name FROM information_schema.tables WHERE table_schema = 'shop' AND table_type = 'BASE TABLE' AND table_name <> 'audit' LOOP
+    EXECUTE format('ALTER TABLE shop.%I REPLICA IDENTITY DEFAULT', t); END LOOP; END $$;
+CREATE PUBLICATION dbz_pub FOR TABLES IN SCHEMA shop;
 SELECT 1 FROM pg_create_logical_replication_slot('dbz_slot', 'pgoutput');
 SQL
   SRC_VERSION=$(echo 'SELECT version();' | src | tail -1 | cut -c1-80)
@@ -160,6 +161,12 @@ SQL
   T_US=$((T_HT >> 12)); T_NS=$((T_US * 1000)); T_HLC="slot dbz_slot, hybrid time $T_HT ($T_US us)"
   snap_select() { printf 'SET yb_read_time TO %s;\nSELECT %s FROM shop.%s;\nRESET yb_read_time;\n' "$T_US" "$2" "$1"; }
 fi
+# the tables: every base table in the source schema (but the audit table, the history check's truth), so nothing below
+# names one; the model's setup decides what they are
+TABLES=$(echo "SELECT table_name FROM information_schema.tables WHERE table_schema = '$SRC_SCHEMA' AND table_type = 'BASE TABLE' AND table_name <> 'audit' ORDER BY 1;" \
+  | src | tail -n +2 | tr '\n' ' ' | sed 's/ $//')
+[ -n "$TABLES" ] || { echo "no tables in $SRC_SCHEMA"; exit 2; }
+INCLUDE=$(for t in $TABLES; do printf '%s.%s,' "$SRC_SCHEMA" "$t"; done | sed 's/,$//')   # schema.table, for the connector
 if [ "$PHASE" -ge 2 ]; then
   # the snapshot: every table as of T, onto the laptop. CockroachDB: EXPORT INTO PARQUET; DECIMAL goes out as STRING
   # because v25.4.13 writes a DECIMAL column as BYTE_ARRAY annotated DECIMAL but filled with the number's text, so
@@ -254,7 +261,7 @@ debezium.source.database.password=
 debezium.source.database.dbname=shop
 debezium.source.database.sslmode=disable
 debezium.source.database.server.name=crdb
-debezium.source.table.include.list=public.customers,public.orders
+debezium.source.table.include.list=$INCLUDE
 debezium.source.cockroachdb.changefeed.cursor=$T_HLC
 debezium.source.cockroachdb.changefeed.sink.type=sinkless
 debezium.source.cockroachdb.changefeed.resolved.interval=5s
@@ -275,7 +282,7 @@ debezium.source.plugin.name=pgoutput
 debezium.source.slot.name=dbz_slot
 debezium.source.publication.name=dbz_pub
 debezium.source.publication.autocreate.mode=disabled
-debezium.source.table.include.list=shop.customers,shop.orders
+debezium.source.table.include.list=$INCLUDE
 debezium.source.decimal.handling.mode=string
 YB
 fi )
@@ -364,7 +371,7 @@ slot.name=dbz_slot
 publication.name=dbz_pub
 publication.autocreate.mode=disabled
 snapshot.mode=never
-table.include.list=shop.customers,shop.orders
+table.include.list=$INCLUDE
 decimal.handling.mode=string
 tombstones.on.delete=false
 transforms=hoist,dest,json,route
@@ -434,7 +441,6 @@ if [ "$PHASE" -ge 2 ]; then
   # the schema: statschema's schema.yaml in the Volume, as at T and as now; the pipeline reads both when it starts
   dbx fs mkdir "dbfs:$VOL/_schema" && dbx fs cp "$W/snap-schema-at-T.yaml" "dbfs:$VOL/_schema/schema-at-T.yaml" --overwrite >/dev/null \
     && dbx fs cp "$W/schema.yaml" "dbfs:$VOL/_schema/schema.yaml" --overwrite >/dev/null || { echo "schema upload failed"; exit 2; }
-  cp "$W/schema.tsv" "$W/schema0.tsv"
   claim schema-in-volume PASS "statschema schema.yaml (ddl-to-schema.py from the source's DDL) in $VOL/_schema: $(awk -F'\t' '{c[$1]=c[$1] (c[$1]?", ":"") $3 " " $4 ($5==1?" key":"")} END {for (t in c) printf "%s (%s); ", t, c[t]}' "$W/schema.tsv")"
   fetch_schema() { dump_schema && dbx fs cp "$W/schema.yaml" "dbfs:$VOL/_schema/schema.yaml" --overwrite >/dev/null; }
   gen_silver() { :; }   # the pipeline builds itself from schema.yaml
@@ -463,9 +469,9 @@ if [ "$PHASE" -ge 2 ]; then
          ON tc.table_schema = c.table_schema AND tc.table_name = c.table_name AND tc.constraint_type = 'PRIMARY KEY'
        LEFT JOIN information_schema.key_column_usage k
          ON k.constraint_schema = tc.constraint_schema AND k.constraint_name = tc.constraint_name AND k.column_name = c.column_name
-       WHERE c.table_schema = '$SRC_SCHEMA' AND c.table_name IN ('customers', 'orders')$([ "$SOURCE" = crdb ] && echo " AND c.is_hidden = 'NO'")\")
+       WHERE c.table_schema = '$SRC_SCHEMA' AND c.table_name IN ($(for t in $TABLES; do printf "'%s'," "$t"; done | sed 's/,$//'))$([ "$SOURCE" = crdb ] && echo " AND c.is_hidden = 'NO'")\")
      ORDER BY 1, 2" > "$W/schema.tsv" 2>"$W/schema.err"; }
-  fetch_schema; cp "$W/schema.tsv" "$W/schema0.tsv"   # schema0: the columns the snapshot has
+  fetch_schema
   if [ -s "$W/schema.tsv" ]; then
     claim schema-from-connection PASS "remote_query on a POSTGRESQL connection: $(awk -F'\t' '{c[$1]=c[$1] (c[$1]?", ":"") $3 " " $4 ($5==1?" key":"")} END {for (t in c) printf "%s (%s); ", t, c[t]}' "$W/schema.tsv")"
   else claim schema-from-connection FAIL "$(cut -c1-300 "$W/schema.err")"; exit 1; fi
@@ -473,56 +479,15 @@ if [ "$PHASE" -ge 2 ]; then
 
   # silver: per table, the snapshot rows sequenced by T and the change-log rows sequenced by ts_ns, into one AUTO CDC table.
   # A column added after T isn't in the snapshot, so its snapshot rows get NULL there.
-  SNAP_OPTS=$([ "$SNAP_FMT" = csv ] && echo "format => 'csv', header => true" || echo "format => 'parquet'")
-  [ "$SCHEMA_VIA" = volume ] || gen_silver() { awk -F'\t' -v vol="$VOL" -v lg="$LOG" -v tns="$SNAP_SEQ" -v dp="$DEST_PREFIX" -v so="$SNAP_OPTS" '
-    FNR==NR { insnap[$1 "." $3]=1; next }
-    { t=$1; col=$3; ty=$4; cols[t]=cols[t] (cols[t]?", ":"") col; if ($5==1) keys[t]=keys[t] (keys[t]?", ":"") col
-      # a column added after T is not in the snapshot, nor in changes made before it was added. A PostgreSQL-protocol
-      # source does not resend old rows when a column is added, so those rows hold the column default: use it when the
-      # field is missing (SQL NULL from the path), not when it is a JSON null
-      dflt=($6 != "" ? $6 : "NULL")
-      snap[t]=snap[t] (snap[t]?", ":"") "CAST(" ((t "." col) in insnap ? col : dflt) " AS " ty ") AS " col
-      chg[t]=chg[t] (chg[t]?", ":"") ($5==1 ? "key:" col "::" ty : ($6 != "" ? "CASE WHEN value:after IS NOT NULL AND NOT is_variant_null(value:after) AND value:after:" col " IS NULL THEN CAST(" $6 " AS " ty ") ELSE value:after:" col "::" ty " END" : "value:after:" col "::" ty)) " AS " col }
-    END { for (t in cols) {
-      printf "CREATE TEMPORARY VIEW %s_snapshot AS SELECT %s, CAST(%s AS BIGINT) AS _seq, \047read\047 AS _op\n  FROM STREAM read_files(\047%s/%s\047, %s);\n\n", t, snap[t], tns, vol, t, so
-      printf "CREATE TEMPORARY VIEW %s_changes AS SELECT %s, _seq, operation AS _op\n  FROM STREAM(cdc_log_norm) WHERE destination = \047" dp ".%s\047;\n\n", t, chg[t], t
-      printf "CREATE OR REFRESH STREAMING TABLE %s CLUSTER BY (%s)\n  COMMENT \047Current rows of the source table: the snapshot as of T, then the change log\047;\n\n", t, keys[t]
-      printf "CREATE FLOW %s_from_snapshot AS AUTO CDC INTO %s FROM STREAM(%s_snapshot)\n  KEYS (%s) SEQUENCE BY _seq COLUMNS * EXCEPT (_seq, _op) STORED AS SCD TYPE 1;\n\n", t, t, t, keys[t]
-      printf "CREATE FLOW %s_from_changes AS AUTO CDC INTO %s FROM STREAM(%s_changes)\n  KEYS (%s) APPLY AS DELETE WHEN _op = \047delete\047 SEQUENCE BY _seq COLUMNS * EXCEPT (_seq, _op) STORED AS SCD TYPE 1;\n\n", t, t, t, keys[t]
-      # SCD type 2 from the same snapshot, and from the change log without replays (cdc_log_dedup, in dedupe.py)
-      printf "CREATE TEMPORARY VIEW %s_changes_dedup AS SELECT %s, _seq, operation AS _op\n  FROM STREAM(cdc_log_dedup) WHERE destination = \047" dp ".%s\047;\n\n", t, chg[t], t
-      hist(t "_history", t "_changes_dedup", "Every version of each source row (SCD type 2), replays removed")
-      if (t == "customers") hist(t "_history_nodedup", t "_changes", "Every version (SCD type 2) from the change log as it is, replays included: shows what a restart does") } }
-    function hist(h, src, comment) {
-      printf "CREATE OR REFRESH STREAMING TABLE %s CLUSTER BY (%s)\n  COMMENT \047%s\047;\n\n", h, keys[t], comment
-      printf "CREATE FLOW %s_from_snapshot AS AUTO CDC INTO %s FROM STREAM(%s_snapshot)\n  KEYS (%s) SEQUENCE BY _seq COLUMNS * EXCEPT (_seq, _op) STORED AS SCD TYPE 2;\n\n", h, h, t, keys[t]
-      printf "CREATE FLOW %s_from_changes AS AUTO CDC INTO %s FROM STREAM(%s)\n  KEYS (%s) APPLY AS DELETE WHEN _op = \047delete\047 SEQUENCE BY _seq COLUMNS * EXCEPT (_seq, _op) STORED AS SCD TYPE 2;\n\n", h, h, src, keys[t] }
-  ' "$W/schema0.tsv" "$W/schema.tsv" > "$W/silver.body"
-    { printf 'CREATE TEMPORARY VIEW cdc_log_norm AS %s\n  FROM STREAM(cdc_log);\n\n' "$NORM"; cat "$W/silver.body"; } > "$W/silver.sql"; }
-  gen_silver
+  # silver: one generator for every source and model, silver-from-schema.py, which reads the canonical schema.yaml from
+  # the volume (_schema/, written by trace below) when the pipeline starts
+  gen_silver() { :; }
   # gold: one materialized view for a reader that wants each customer's orders by tier; GOLD_Q is also run on the source
   GOLD_Q="SELECT c.id AS customer_id, c.name, c.tier, COUNT(o.id) AS orders, CAST(COALESCE(SUM(o.amount), 0) AS DECIMAL(12,2)) AS amount
     FROM customers c LEFT JOIN orders o ON o.customer_id = c.id GROUP BY c.id, c.name, c.tier"
   printf 'CREATE OR REFRESH MATERIALIZED VIEW customer_orders CLUSTER BY (tier)\n  COMMENT %s\nAS %s;\n' \
     "'Each customer with the count and total of their orders, for readers that filter by tier'" "$GOLD_Q" > "$W/gold.sql"
-  # the change log without replays: a restart re-sends changes with a new ts_ns but the same idempotency_key and row
-  # image. The key alone isn't unique (two quick updates of a row share it), so the row image is part of the match.
-  cat > "$W/dedupe.py" <<'PY'
-from pyspark import pipelines as dp
-from pyspark.sql import functions as F
-
-
-@dp.temporary_view(name="cdc_log_dedup")
-def cdc_log_dedup():
-    return (spark.readStream.table("cdc_log_norm")
-            .withColumn("_event_time", F.timestamp_micros(F.expr("_event_ns DIV 1000")))
-            .withColumn("_after", F.expr("TO_JSON(value:after)"))
-            .withWatermark("_event_time", "10 minutes")
-            .dropDuplicatesWithinWatermark(["destination", "idempotency_key", "operation", "_after"])
-            .drop("_event_time", "_after"))
-PY
-  WSDIR=/Users/$ME/${SOURCE}_dbz_$E; LIBS="silver.sql dedupe.py"
-  [ "$SCHEMA_VIA" = volume ] && { LIBS=silver-from-schema.py; cp "$(dirname "$CHECK")/silver-from-schema.py" "$W/"; }
+  WSDIR=/Users/$ME/${SOURCE}_dbz_$E; LIBS=silver-from-schema.py; cp "$(dirname "$CHECK")/silver-from-schema.py" "$W/"
   [ "$PHASE" -ge 3 ] && LIBS="$LIBS gold.sql"
   dbx workspace mkdirs "$WSDIR" || exit 2
   link "pipeline source folder $WSDIR" "$HOST/#workspace$WSDIR"
@@ -678,7 +643,6 @@ SQL
     st=$(run_silver); observe schema-silver-before-regenerate "update with the old flow: $st; silver customers columns: $(q "SELECT CONCAT_WS(',', COLLECT_LIST(column_name)) FROM \`$CATALOG\`.information_schema.columns WHERE table_schema = '$S' AND table_name = 'customers'" 2>&1)"
     # regenerate: the schema again through the connection, the flow from it, then a refresh of that table and a plain update
     fetch_schema || claim schema-refetch FAIL "the schema didn't come through again: $(head -c 300 "$W/schema.err" 2>/dev/null)"; gen_silver
-    [ "$SCHEMA_VIA" = volume ] || dbx workspace import "$WSDIR/silver.sql" --file "$W/silver.sql" --format RAW --overwrite >/dev/null
     trace 2-round-4
     st=$(run_silver); observe schema-update-after-regenerate "plain update with the regenerated flow: $st"
     [ "$st" = COMPLETED ] && same customers 4a observe
@@ -700,7 +664,6 @@ SQL
     observe schema-change-bronze "all orders events, by operation and whether they have status (a backfill would add updates without it): $(q "SELECT CONCAT(operation, ' status=', value:after:status IS NOT NULL), COUNT(*) FROM $LOGQ WHERE destination LIKE '%.orders' GROUP BY 1" 2>&1 | tr '\t\n' '= '); the new value: $(q "SELECT COUNT(*) FROM $LOGQ WHERE value:after:amount::STRING = '1234567890.12'" 2>&1)"
     st=$(run_silver 2>/dev/null); observe schema-change-old-flow "update with the old flow (status still selected, amount still DECIMAL(10,2)): $st; $(q "SELECT REGEXP_EXTRACT(error.exceptions[0].message, '\\[(INVALID_[A-Z_]+|[A-Z_]+CAST[A-Z_]*)\\][^\\n]*', 0) FROM event_log('$PIPELINE_ID') WHERE event_type = 'flow_progress' AND origin.flow_name LIKE '%.orders_from_changes' AND error IS NOT NULL ORDER BY timestamp DESC LIMIT 1" 2>&1 | cut -c1-300)"
     fetch_schema || claim schema-refetch FAIL "the schema didn't come through again: $(head -c 300 "$W/schema.err" 2>/dev/null)"; gen_silver
-    [ "$SCHEMA_VIA" = volume ] || dbx workspace import "$WSDIR/silver.sql" --file "$W/silver.sql" --format RAW --overwrite >/dev/null
     trace 3-round-5
     st=$(run_silver --json '{"full_refresh_selection": ["orders", "orders_history"]}' 2>"$W/err5b")
     [ "$st" = COMPLETED ] || claim silver-full-refresh-5 FAIL "regenerated flow, full refresh of orders: $st $(cut -c1-300 "$W/err5b" | tr '\n' ' ')"
@@ -708,7 +671,6 @@ SQL
     for t in $TABLES; do same "$t" 5; same_hist "$t" 5; done
     gold 5
   fi
-  observe silver-sql "the generated pipeline source, first table: $(head -c 700 "$W/silver.sql" | tr '\n' ' ')"
 fi
 
 # --- result -----------------------------------------------------------------------------------------------------------
