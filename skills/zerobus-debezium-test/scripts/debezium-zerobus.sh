@@ -523,7 +523,7 @@ PY
     .configuration = {"cdc.volume": strenv(VOL), "cdc.t_ns": strenv(T_NS), "cdc.dest_prefix": strenv(DEST_PREFIX),
       "cdc.snapshot_format": strenv(SNAP_FMT), "cdc.nodedup_table": "customers", "cdc.bronze": strenv(SINK)}' > "$W/pipe.json"
   PIPELINE_ID=$(dbx pipelines create --json @"$W/pipe.json" -o json | yq '.pipeline_id') || { echo "pipeline create failed"; exit 2; }
-  link "pipeline $PIPE_NAME (silver, gold)" "$HOST/pipelines/$PIPELINE_ID"
+  link "pipeline $PIPE_NAME (silver$([ "$PHASE" -ge 3 ] && echo ', gold'))" "$HOST/pipelines/$PIPELINE_ID"
   for t in $TABLES; do link "silver $t" "$HOST/explore/data/$CATALOG/$S/$t"; done
   [ "$PHASE" -ge 3 ] && link "gold customer_orders" "$HOST/explore/data/$CATALOG/$S/customer_orders"
 
