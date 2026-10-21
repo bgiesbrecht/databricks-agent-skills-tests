@@ -529,6 +529,8 @@ PY
       python3 -I "$(dirname "$CHECK")/schema-tsv-to-canonical.py" "$W/schema.tsv" "$SRC_NAME $SRC_VERSION, information_schema through the UC connection $CONN, step $step" > "$W/schema.yaml" || ok=no
     fi
     (cd "$STATSCHEMA/.." && uv run -q scripts/validate.py "$W/schema.yaml") > "$W/validate.out" 2>&1 || ok=no
+    # fs cp into a volume doesn't create missing parent folders
+    dbx fs mkdir "dbfs:$VOL/_schema/history" >/dev/null 2>&1; dbx fs mkdir "dbfs:$VOL/_pipeline/$step" >/dev/null 2>&1
     [ "$step" = 1-at-T ] && { dbx fs cp "$W/schema.yaml" "dbfs:$VOL/_schema/schema-at-T.yaml" --overwrite >/dev/null || ok=no; }
     dbx fs cp "$W/schema.yaml" "dbfs:$VOL/_schema/schema.yaml" --overwrite >/dev/null || ok=no
     dbx fs cp "$W/schema.yaml" "dbfs:$VOL/_schema/history/$step-schema.yaml" --overwrite >/dev/null || ok=no
