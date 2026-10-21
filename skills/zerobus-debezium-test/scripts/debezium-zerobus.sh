@@ -150,8 +150,10 @@ DO $$ DECLARE t text; BEGIN
     EXECUTE format('CREATE TRIGGER %I AFTER INSERT OR UPDATE OR DELETE ON shop.%I FOR EACH ROW EXECUTE FUNCTION shop.audit_fn()', t || '_audit', t); END LOOP; END $$;
 DO $$ DECLARE t text; BEGIN
   FOR t IN SELECT table_name FROM information_schema.tables WHERE table_schema = 'shop' AND table_type = 'BASE TABLE' AND table_name <> 'audit' LOOP
-    EXECUTE format('ALTER TABLE shop.%I REPLICA IDENTITY DEFAULT', t); END LOOP; END $$;
-CREATE PUBLICATION dbz_pub FOR TABLES IN SCHEMA shop;
+    EXECUTE format('ALTER TABLE shop.%I REPLICA IDENTITY DEFAULT', t); END LOOP;
+  -- YugabyteDB 2026.1 refuses CREATE PUBLICATION ... FOR TABLES IN SCHEMA ("not supported yet"): list the tables
+  EXECUTE (SELECT 'CREATE PUBLICATION dbz_pub FOR TABLE ' || string_agg(format('shop.%I', table_name), ', ')
+           FROM information_schema.tables WHERE table_schema = 'shop' AND table_type = 'BASE TABLE' AND table_name <> 'audit'); END $$;
 SELECT 1 FROM pg_create_logical_replication_slot('dbz_slot', 'pgoutput');
 SQL
   SRC_VERSION=$(echo 'SELECT version();' | src | tail -1 | cut -c1-80)
@@ -162,8 +164,9 @@ SQL
   snap_select() { printf 'SET yb_read_time TO %s;\nSELECT %s FROM shop.%s;\nRESET yb_read_time;\n' "$T_US" "$2" "$1"; }
 fi
 # the tables: every base table in the source schema (but the audit table, the history check's truth), so nothing below
-# names one; the model's setup decides what they are
-TABLES=$(echo "SELECT table_name FROM information_schema.tables WHERE table_schema = '$SRC_SCHEMA' AND table_type = 'BASE TABLE' AND table_name <> 'audit' ORDER BY 1;" \
+# names one; the model's setup decides what they are. CockroachDB's client connects to defaultdb, so it reads
+# shop.information_schema; YugabyteDB's connects to shop
+TABLES=$(echo "SELECT table_name FROM $([ "$SOURCE" = crdb ] && echo shop.)information_schema.tables WHERE table_schema = '$SRC_SCHEMA' AND table_type = 'BASE TABLE' AND table_name <> 'audit' ORDER BY 1;" \
   | src | tail -n +2 | tr '\n' ' ' | sed 's/ $//')
 [ -n "$TABLES" ] || { echo "no tables in $SRC_SCHEMA"; exit 2; }
 INCLUDE=$(for t in $TABLES; do printf '%s.%s,' "$SRC_SCHEMA" "$t"; done | sed 's/,$//')   # schema.table, for the connector
