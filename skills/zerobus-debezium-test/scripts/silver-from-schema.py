@@ -34,6 +34,9 @@
 #   cdc.bronze            the change log's shape: zerobus (Debezium Server's sink) or kafka (Kafka Connect, Kafka API)
 #   cdc.bronze_table      the change-log table each silver table reads: cdc_log (one log for every table, the default),
 #                         cdc_log_{table} (one per table) or cdc_log_s{shard} (cdc.bronze_shards logs, by table)
+#   cdc.bronze_table.<t>  one table's own bronze table, over cdc.bronze_table: a table moved out of the shared log
+#                         (fanout.py --tables <t>, or a producer routing it), while the others stay; changing it
+#                         takes a full refresh of that table, from a bronze table that holds its history from T
 #   cdc.bronze_shards     for {shard}: how many (fanout.py writes them with the same rule)
 #   cdc.shard             i/n: this pipeline builds only the tables with crc32(name) % n == i, so 10,000s of tables
 #                         spread over n pipelines (default: every table)
@@ -144,7 +147,7 @@ _views = set()
 
 
 def bronze_of(table):
-    return BRONZE_TABLE.format(table=table, shard=shard_of(table, BRONZE_SHARDS))
+    return spark.conf.get(f"cdc.bronze_table.{table}", BRONZE_TABLE).format(table=table, shard=shard_of(table, BRONZE_SHARDS))
 
 
 def norm_view(bronze):

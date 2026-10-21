@@ -616,7 +616,7 @@ if [ "$PHASE" -ge 2 ]; then
   fi
   WSDIR=/Users/$ME/${SOURCE}_dbz_$E; LIBS=silver-from-schema.py; cp "$HERE/silver-from-schema.py" "$HERE/fanout.py" "$W/"
   [ -n "$GOLD" ] && LIBS="$LIBS gold.sql"
-  FILES="$LIBS$([ "$BRONZE" = fanout ] && echo ' fanout.py')"
+  FILES="$LIBS fanout.py"   # fanout.py: for BRONZE=fanout, and for a table moved out of the shared log
   dbx workspace mkdirs "$WSDIR" || exit 2
   link "pipeline source folder $WSDIR" "$HOST/#workspace$WSDIR"
   for f in $FILES; do dbx workspace import "$WSDIR/$f" --file "$W/$f" --format RAW >/dev/null || { echo "$f upload failed"; exit 2; }; done
@@ -658,17 +658,18 @@ if [ "$PHASE" -ge 2 ]; then
   for t in $TABLES; do link "silver $t" "$HOST/explore/data/$CATALOG/$S/$t"; done
   [ -n "$GOLD" ] && link "gold $GOLD" "$HOST/explore/data/$CATALOG/$S/$GOLD"
   [ "$ON_DRIFT" = record ] && link "schema drift schema_drift" "$HOST/explore/data/$CATALOG/$S/schema_drift"
-  if [ "$BRONZE" = fanout ]; then
-    # fanout.py as a serverless job: one read of cdc_log, written per table (or shard); run before each silver update
-    export JOB_NAME=$PREFIX-$SOURCE-$MODEL-dbz-fanout-$E FPY=$WSDIR/fanout.py FSRC="$T.cdc_log" FTGT="$T.$BT" FCP=$VOL/_fanout
+  make_fanout() { # make_fanout <target> <checkpoint> [tables]: fanout.py as a serverless job (one read of cdc_log, written
+    # per table, per shard, or for the tables given only), run before each silver update; sets JOB_ID
+    export JOB_NAME=$PREFIX-$SOURCE-$MODEL-dbz-fanout-$E FPY=$WSDIR/fanout.py FSRC="$T.cdc_log" FTGT=$1 FCP=$2 FTB=${3:-}
     yq -n -o json '.name = strenv(JOB_NAME) | .environments = [{"environment_key": "default", "spec": {"client": "2"}}] |
       .tasks = [{"task_key": "fanout", "environment_key": "default", "spark_python_task": {"python_file": strenv(FPY),
-        "parameters": ["--source", strenv(FSRC), "--target", strenv(FTGT), "--shards", strenv(SHARDS), "--checkpoint", strenv(FCP), "--once"]}}]' > "$W/job.json"
-    JOB_ID=$(dbx jobs create --json @"$W/job.json" -o json | yq '.job_id') || { echo "fan-out job create failed"; exit 2; }
-    link "fan-out job $JOB_NAME ($BT)" "$HOST/jobs/$JOB_ID"
-  fi
-  run_fanout() { # the fan-out job once over what's in cdc_log; prints its result
-    [ "$BRONZE" = fanout ] || return 0
+        "parameters": ["--source", strenv(FSRC), "--target", strenv(FTGT), "--shards", strenv(SHARDS), "--checkpoint", strenv(FCP), "--once"]
+          + (strenv(FTB) | select(. != "") | ["--tables", .]) // []}}]' > "$W/job.json"
+    JOB_ID=$(dbx jobs create --json @"$W/job.json" -o json | yq '.job_id') || return 1
+    link "fan-out job $JOB_NAME (${3:+tables $3 }to $1)" "$HOST/jobs/$JOB_ID"; }
+  [ "$BRONZE" = fanout ] && { make_fanout "$T.$BT" "$VOL/_fanout" || { echo "fan-out job create failed"; exit 2; }; }
+  run_fanout() { # the fan-out job, when there is one, once over what's in cdc_log; prints its result
+    [ -n "${JOB_ID:-}" ] || return 0
     dbx jobs run-now "$JOB_ID" -o json 2>"$W/fanout.err" | yq '.state.result_state // "FAILED"'; }
 
   run_silver() { # one pipeline update (extra args go to start-update), after the fan-out when there is one; its final state
@@ -796,6 +797,25 @@ if [ "$PHASE" -ge 2 ]; then
     done; use 1
     for t in $TABLES; do history "$t" "${t}_history" claim; same_hist "$t" 3; done
     history "$NODEDUP" "${NODEDUP}_history_nodedup" observe
+
+    # a table moved out of the shared log while the others stay (BRONZE=shared, MOVE=1, the default there): the
+    # fan-out for that table only, from the log's beginning, into cdc_log_<table>; silver's cdc.bronze_table.<table>
+    # points at it; a full refresh of that table rebuilds it from there. The other tables don't stop.
+    if [ "$BRONZE" = shared ] && [ "${MOVE:-1}" = 1 ]; then
+      MV=${MOVE_TABLE:-$NODEDUP}
+      make_fanout "$T.cdc_log_{table}" "$VOL/_fanout_move" "$MV" || claim "move-$MV" FAIL "fan-out job create failed"
+      MVKEY="cdc.bronze_table.$MV" yq -i -p json -o json '.configuration[strenv(MVKEY)] = "cdc_log_{table}"' "$W/pipe.json"
+      dbx pipelines update "$PIPELINE_ID" --json @"$W/pipe.json" >/dev/null 2>"$W/move.err" || claim "move-$MV" FAIL "pipeline update failed: $(head -c 300 "$W/move.err")"
+      st=$(run_silver --json "{\"full_refresh_selection\": [$(refresh_tables "$MV")]}" 2>"$W/err-move")
+      a=$(q "SELECT COUNT(*) FROM $LOGQ WHERE substring_index(destination, '.', -1) = '$MV'" 2>&1); b=$(q "SELECT COUNT(*) FROM $T.cdc_log_$MV" 2>&1)
+      [ "$st" = COMPLETED ] && [ "$a" = "$b" ] && claim "move-$MV" PASS "$MV moved to its own bronze, cdc_log_$MV (fan-out --tables $MV, from the log's beginning: $b of $a events), and silver rebuilt from it by a full refresh of that table only" \
+        || claim "move-$MV" FAIL "update $st; events in cdc_log $a, in cdc_log_$MV $b; $(cut -c1-200 "$W/err-move" | tr '\n' ' ')"
+      link "moved table's bronze cdc_log_$MV" "$HOST/explore/data/$CATALOG/$S/cdc_log_$MV"
+      st=$(run_silver); [ "$st" = COMPLETED ] || claim silver-update-move FAIL "plain update after the move: $st"
+      for t in $TABLES; do same "$t" move; done
+      same_hist "$MV" move
+      gold move
+    fi
 
     # round 4, schema drift on one host: a column added on source 1 only (model-sql.py: lfc_r4 on the first table with
     # a key), with a default, then a change that sets it

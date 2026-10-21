@@ -4,7 +4,11 @@
 # Rows are copied as they are (the log's own shape); silver-from-schema.py normalizes them.
 #
 #   fanout.py --source <catalog.schema.cdc_log> --target '<catalog.schema>.cdc_log_{table}' | '<...>.cdc_log_s{shard}'
-#             [--shards K] --checkpoint /Volumes/<catalog>/<schema>/<volume>/_fanout [--once]
+#             [--shards K] [--tables t1,t2] --checkpoint /Volumes/<catalog>/<schema>/<volume>/_fanout [--once]
+#
+# --tables: only those tables, so tables move out of the shared log one at a time (the hot ones first) while the rest
+# stay in it; silver-from-schema.py's cdc.bronze_table.<table> points a moved table at its own. A new checkpoint
+# starts at the log's beginning, so the moved table's bronze holds its history from T (as long as the log is kept).
 #
 # A serverless job task (spark_python_task). --once processes what's there and stops (availableNow); without it the
 # stream runs continuously. Exactly once per target: each micro-batch writes each target with txnAppId (the target)
@@ -22,12 +26,15 @@ ap.add_argument("--target", required=True)
 ap.add_argument("--shards", type=int, default=1)
 ap.add_argument("--checkpoint", required=True)
 ap.add_argument("--once", action="store_true")
+ap.add_argument("--tables", default="")
 a = ap.parse_args()
 spark = SparkSession.builder.getOrCreate()
 
 
 def write(batch, batch_id):
     b = batch.withColumn("_table", F.substring_index("destination", ".", -1))
+    if a.tables:
+        b = b.where(F.col("_table").isin(a.tables.split(",")))
     if "{shard}" in a.target:
         # Spark's crc32 is zlib's (CRC-32, unsigned), so this is silver-from-schema.py's shard_of
         b = b.withColumn("_part", (F.crc32(F.col("_table").cast("binary")) % a.shards).cast("string"))
