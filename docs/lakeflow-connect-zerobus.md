@@ -36,6 +36,7 @@ Every ✅ ran end to end on Azure, into a serverless workspace, from the committ
 
 | Date (UTC) | Commit | Database | Route | Where | Claims | Run |
 |---|---|---|---|---|---|---|
+| 2026-10-21 | `e6a64fc` | CockroachDB v25.4.13 | Debezium Server → Zerobus (gRPC) | Laptop, Lima `forgedb-lima-rosetta2-podman`, no cloud storage (Ubuntu 25.10, podman version 5.4.2) → azure centralus serverless | 30 of 30 | 1792586012, [run-all.sh](../skills/zerobus-debezium-test/scripts/run-all.sh) |
 | 2026-10-21 | `96c5547` | CockroachDB v25.4.13 | Debezium Server → Zerobus (gRPC) | Azure VM (Ubuntu 24.04, Podman 4.9.3) → Azure serverless, centralus | 30 of 30 | 1792582600, [run-all.sh](../skills/zerobus-debezium-test/scripts/run-all.sh) |
 | 2026-10-21 | `96c5547` | YugabyteDB 2026.1.2.0 | Kafka Connect → Zerobus Kafka endpoint | Azure VM → Azure serverless, centralus | 30 of 30 | 1792582605, [run-all.sh](../skills/zerobus-debezium-test/scripts/run-all.sh) |
 | 2026-10-20 | `f0f9bbb` | CockroachDB v25.4.13 | Debezium Server → Zerobus (gRPC) | Laptop, Lima (Ubuntu 25.10 arm64, Podman 5.4.2), no cloud storage → Azure serverless | 30 of 30 | 1792541354 |
