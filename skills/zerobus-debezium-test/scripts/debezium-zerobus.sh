@@ -1,40 +1,57 @@
 #!/usr/bin/env bash
-# crdb-debezium-zerobus.sh: CockroachDB -> snapshot as of T into a Volume, and Debezium Server (Zerobus sink) from T
-# -> one append-only bronze change log -> silver, one AUTO CDC table per source table.
+# debezium-zerobus.sh: a source database -> snapshot as of T into a Volume, and Debezium Server (Zerobus sink) from T
+# -> one append-only bronze change log -> silver (SCD type 1 and 2, AUTO CDC) -> gold (a materialized view).
 #
+# SOURCE=crdb (CockroachDB, the default) or SOURCE=yb (YugabyteDB, through its PostgreSQL logical replication).
 # Runs from the laptop and drives a cloud VM over SSH (lfc-source-cloud-vm). It creates, on a fresh epoch:
 #   - a schema in CATALOG with one bronze change-log table, cdc_log, for every source table: Debezium's envelope with the
-#     key, the event (after, op, ts_ns) and the position as VARIANT, liquid-clustered by destination (the source table);
+#     key, the event and the position as VARIANT, liquid-clustered by destination (the source table);
 #   - a service principal with an OAuth secret, granted SELECT and MODIFY on cdc_log (Zerobus writes as it);
-#   - on the VM, a Podman network with CockroachDB and Debezium Server, which streams a sinkless changefeed to Zerobus.
-#   - phase 2: a Volume with the snapshot (EXPORT INTO PARQUET ... AS OF SYSTEM TIME T), a UC connection to CockroachDB
-#     (the schema comes through it with remote_query), and a serverless pipeline with the silver tables.
-# Phase 1 checks that no snapshot events reach the log and counts each op in bronze. Phase 2 checks that silver equals
-# the source, after the phase 1 changes and again after a second round. Everything it created is removed on exit
-# (KEEP=1 keeps it). Nothing secret is printed: the OAuth secret lives only in 0600 files (a temp dir here, a temp dir
-# on the VM), both deleted at the end.
+#   - on the VM, a Podman network with the source and Debezium Server, which streams the source's changes from T to Zerobus;
+#   - phase 2: a Volume with the snapshot as of T, a UC connection to the source (the schema comes through it with
+#     remote_query), and a serverless pipeline with the silver tables; phase 3 adds gold and rounds 3 to 5.
+# T is CockroachDB's cluster time (the changefeed's cursor), or YugabyteDB's replication slot snapshot (the slot is
+# created first; the dump reads with yb_read_time set to it). Everything it created is removed on exit (KEEP=1 keeps
+# it). Nothing secret is printed: the OAuth secret lives only in 0600 files (a temp dir here, a temp dir on the VM).
 #
-#   PHASE=1 stops after bronze, PHASE=2 after silver; PHASE=3 (the default) adds gold, a materialized view. DROP_FIELDS (default before,transaction,ts_ms,ts_us,source) drops top-level event fields
-#   with Kafka's ReplaceField transform; keep ts_ns, which silver sequences by. ENRICHED_PROPERTIES=source asks
-#   CockroachDB for its source block (the 3.7.0.Final connector drops its commit time anyway).
+#   PHASE=1 stops after bronze, PHASE=2 after silver; PHASE=3 (the default) adds gold and rounds 3 to 5.
+#   DROP_FIELDS drops top-level event fields with Kafka's ReplaceField transform (default before,transaction,ts_ms,ts_us,
+#   source for crdb, before,transaction,ts_ms,ts_us for yb); keep ts_ns, which silver sequences by.
+#   ENRICHED_PROPERTIES=source (crdb) asks CockroachDB for its source block (the 3.7.0.Final connector drops its commit
+#   time anyway).
 # Needs: PROFILE (Databricks CLI profile), CATALOG (with its own storage), VM_IP; optional VM_USER (azureuser),
-#   SSH_KEY (~/.ssh/lfc_test_rsa), CRDB_IMAGE, DBZ_IMAGE, CRDB_PORT (published for the UC connection, default 30026),
+#   SSH_KEY (~/.ssh/lfc_test_rsa), SRC_IMAGE, DBZ_IMAGE, SRC_PORT (published for the UC connection, default 30026),
 #   WAIT (seconds to wait for rows, default 180), OUT=<file.md>.
 # Exit 0 when every claim passed, 1 when one failed, 2 when a prerequisite is missing.
 set -uo pipefail
 export PATH=/opt/homebrew/bin:$PATH
-: "${PROFILE:?}" "${CATALOG:?}" "${VM_IP:?}"
-CRDB_IMAGE=${CRDB_IMAGE:-docker.io/cockroachdb/cockroach:v25.4.13}
+: "${PROFILE:?}" "${CATALOG:?}"
+[ -n "${LIMA:-}" ] || : "${VM_IP:?set VM_IP (a cloud VM) or LIMA (a local Lima instance with Podman)}"
+SOURCE=${SOURCE:-crdb}
+case $SOURCE in
+  crdb) SRC_IMAGE=${SRC_IMAGE:-docker.io/cockroachdb/cockroach:v25.4.13}; SRC_NAME=CockroachDB; SRC_SCHEMA=public
+        DROP_FIELDS=${DROP_FIELDS-before,transaction,ts_ms,ts_us,source};;
+  yb)   SRC_IMAGE=${SRC_IMAGE:-docker.io/yugabytedb/yugabyte:2026.1.2.0-b137}; SRC_NAME=YugabyteDB; SRC_SCHEMA=shop
+        DROP_FIELDS=${DROP_FIELDS-before,transaction,ts_ms,ts_us};;
+  *) echo "SOURCE: crdb or yb"; exit 2;;
+esac
+DEST_PREFIX=$SOURCE.$SRC_SCHEMA   # the topic prefix and the schema: the change log's destination is <DEST_PREFIX>.<table>
 DBZ_IMAGE=${DBZ_IMAGE:-quay.io/debezium/server:3.7.0.Final}
-WAIT=${WAIT:-180}; PHASE=${PHASE:-3}; CHECK=${CHECK:-$PWD/scripts/scd2-history-check.py} CRDB_PORT=${CRDB_PORT:-30026}
-DROP_FIELDS=${DROP_FIELDS-before,transaction,ts_ms,ts_us,source}   # DROP_FIELDS= (empty) keeps the whole event
+WAIT=${WAIT:-180}; PHASE=${PHASE:-3}; CHECK=${CHECK:-$PWD/scripts/scd2-history-check.py}; SRC_PORT=${SRC_PORT:-${CRDB_PORT:-30026}}
 dbx() { databricks "$@" --profile "$PROFILE"; }
-SSH=(ssh -i "${SSH_KEY:-$HOME/.ssh/lfc_test_rsa}" -o BatchMode=yes "${VM_USER:-azureuser}@$VM_IP")
-vm() { "${SSH[@]}" "$@"; }
+if [ -n "${LIMA:-}" ]; then   # the laptop: Podman in a Lima VM; nothing on the laptop is reachable from Databricks
+  vm() { limactl shell "$LIMA" -- bash -c "$*"; }; HOSTDESC="Lima $LIMA"
+else
+  SSH=(ssh -i "${SSH_KEY:-$HOME/.ssh/lfc_test_rsa}" -o BatchMode=yes "${VM_USER:-azureuser}@$VM_IP")
+  vm() { "${SSH[@]}" "$@"; }; HOSTDESC="VM $VM_IP"
+fi
+# the schema: through a UC connection (remote_query, the source must be reachable from serverless), or as statschema's
+# canonical schema.yaml in the Volume, which the pipeline reads (the laptop)
+SCHEMA_VIA=${SCHEMA_VIA:-$([ -n "${LIMA:-}" ] && echo volume || echo connection)}
+STATSCHEMA=${STATSCHEMA:-$PWD/../lfc-source-statschema/scripts}
 RESULTS=(); FAILED=0
 claim() { RESULTS+=("| \`$1\` | $2 | $3 |"); [ "$2" = PASS ] || FAILED=1; echo "$2 $1: $3"; }
 observe() { RESULTS+=("| \`$1\` | OBSERVED | $2 |"); echo "OBSERVED $1: $2"; }
-
 # --- pre-flight -------------------------------------------------------------------------------------------------------
 umask 077; W=$(mktemp -d)
 ME=$(dbx current-user me -o json | yq '.userName') || { echo "profile $PROFILE doesn't authenticate"; exit 2; }
@@ -46,10 +63,10 @@ case $CLOUD in azure) ZB="https://$WS_ID.zerobus.$REGION.azuredatabricks.net";; 
   *) echo "cloud $CLOUD: set the Zerobus endpoint form for it"; exit 2;; esac
 [ -n "$HOST" ] && [ "$HOST" != null ] || { echo "no host for profile $PROFILE"; exit 2; }
 WAREHOUSE=${WAREHOUSE:-$(dbx warehouses list -o json | yq '[.[] | select(.enable_serverless_compute)][0].id')}; export WAREHOUSE
-vm 'command -v podman >/dev/null' || { echo "no Podman on $VM_IP"; exit 2; }
-E=$(date +%s); S=${PREFIX}_crdb_dbz_$E; NET=crdb-dbz-$E; CRDB=$PREFIX-crdb-$E; DBZ=$PREFIX-debezium-$E; RD=/tmp/dbz-$E
+vm 'command -v podman >/dev/null' || { echo "no Podman on $HOSTDESC"; exit 2; }
+E=$(date +%s); S=${PREFIX}_${SOURCE}_dbz_$E; NET=$SOURCE-dbz-$E; SRCC=$PREFIX-$SOURCE-$E; DBZ=$PREFIX-debezium-$E; RD=/tmp/dbz-$SOURCE-$E
 T="\`$CATALOG\`.$S"
-echo "run $E: schema $CATALOG.$S, VM containers $CRDB and $DBZ"
+echo "run $E: schema $CATALOG.$S, VM containers $SRCC and $DBZ"
 
 sql() {
   yq -n -o json '.warehouse_id = strenv(WAREHOUSE) | .wait_timeout = "50s" | .statement = strenv(Q)' > "$W/st.json"
@@ -58,54 +75,104 @@ sql() {
   yq -r '(.result.data_array // [])[] | @tsv' "$W/st.out"
 }
 q() { export Q=$1; sql; }
-crdb() { vm "sudo podman exec -i $CRDB cockroach sql --insecure --format=tsv"; }   # SQL from stdin
+# src: SQL from stdin on the source, tab-separated with a header row
+case $SOURCE in
+  crdb) src() { vm "sudo podman exec -i $SRCC cockroach sql --insecure --format=tsv"; };;
+  yb)   src() { vm "sudo podman exec -i $SRCC bin/ysqlsh -h yugabytedb -U yugabyte -d shop -q -A -z -P footer=off -v ON_ERROR_STOP=1 | tr '\\000' '\\t'"; };;
+esac
 
 cleanup() {
   [ "${KEEP:-0}" = 1 ] && { echo "KEEP=1: left $CATALOG.$S, SP ${SP_NAME:-}, VM containers and $RD"; rm -rf "$W"; return; }
-  vm "sudo podman rm -f $DBZ $CRDB >/dev/null 2>&1; sudo podman network rm $NET >/dev/null 2>&1; sudo rm -rf $RD" || true
+  vm "sudo podman rm -f $DBZ $SRCC >/dev/null 2>&1; sudo podman network rm $NET >/dev/null 2>&1; sudo rm -rf $RD" || true
   [ -n "${SP_ID:-}" ] && dbx service-principals delete "$SP_ID" >/dev/null 2>&1
   [ -n "${PIPELINE_ID:-}" ] && dbx pipelines delete "$PIPELINE_ID" >/dev/null 2>&1
   [ -n "${CONN:-}" ] && dbx connections delete "$CONN" >/dev/null 2>&1
   [ -n "${WSDIR:-}" ] && dbx workspace delete "$WSDIR" --recursive >/dev/null 2>&1
   dbx schemas delete "$CATALOG.$S" --force >/dev/null 2>&1
-  left=$(vm "sudo podman ps -a --format '{{.Names}}' | grep -c -E '^($DBZ|$CRDB)\$'" 2>/dev/null)
+  left=$(vm "sudo podman ps -a --format '{{.Names}}' | grep -c -E '^($DBZ|$SRCC)\$'" 2>/dev/null)
   echo "cleanup: containers left ${left:-?}; SP ${SP_ID:+deleted}; pipeline ${PIPELINE_ID:+deleted}; connection ${CONN:+deleted}; schema dropped"
   rm -rf "$W"
 }
 trap cleanup EXIT
 
-# --- source: CockroachDB with a small schema ---------------------------------------------------------------------------
-vm "sudo podman network create $NET >/dev/null && sudo podman run -d --name $CRDB --network $NET --network-alias cockroachdb \
-  -p $CRDB_PORT:26257 $CRDB_IMAGE start-single-node --insecure --advertise-addr=cockroachdb >/dev/null" || { echo "CockroachDB start failed"; exit 2; }
-for _ in $(seq 1 30); do echo 'SELECT 1;' | crdb >/dev/null 2>&1 && break; sleep 2; done
-crdb >/dev/null <<'SQL' || { echo "CockroachDB setup failed"; exit 2; }
-SET CLUSTER SETTING kv.rangefeed.enabled = true;
-CREATE DATABASE shop;
-CREATE TABLE shop.customers (id INT PRIMARY KEY, name STRING NOT NULL, tier STRING NOT NULL);
-CREATE TABLE shop.orders (id INT PRIMARY KEY, customer_id INT NOT NULL, amount DECIMAL(10,2) NOT NULL, status STRING NOT NULL);
-INSERT INTO shop.customers SELECT g, 'customer_' || g::STRING, 'bronze' FROM generate_series(1, 5) g;
-INSERT INTO shop.orders SELECT g, 1 + g % 5, g * 10.5, 'placed' FROM generate_series(1, 5) g;
-SQL
-CRDB_VERSION=$(echo 'SELECT version();' | crdb | tail -1 | cut -c1-80)
-# T: the snapshot time. The snapshot is taken out of band as of T; Debezium starts its change feed at T and takes no
-# snapshot of its own, so the log holds only changes after the snapshot.
-T_HLC=$(echo 'SELECT cluster_logical_timestamp();' | crdb | tail -1)
-T_NS=${T_HLC%%.*}   # the wall time in nanoseconds: silver's sequence for the snapshot rows
+# --- source: a small schema ----------------------------------------------------------------------------------------
 TABLES="customers orders"
-if [ "$PHASE" -ge 2 ]; then
-  # the snapshot: every table as of T, into Parquet in the node's external directory, then onto the laptop. DECIMAL goes
-  # out as STRING: v25.4.13 writes a DECIMAL column as BYTE_ARRAY annotated DECIMAL but filled with the number's text,
-  # so readers get "21.00" as the unscaled integer 0x32312E3030 (2155734753.76). Silver casts it back.
-  for t in $TABLES; do
-    cols=$(echo "SELECT string_agg(CASE WHEN data_type = 'numeric' THEN column_name || '::STRING AS ' || column_name ELSE column_name END,
-      ', ' ORDER BY ordinal_position) FROM shop.information_schema.columns
-      WHERE table_schema = 'public' AND table_name = '$t' AND is_hidden = 'NO';" | crdb | tail -1)
-    echo "EXPORT INTO PARQUET 'nodelocal://self/snap/$t' FROM SELECT $cols FROM shop.$t AS OF SYSTEM TIME '$T_HLC';" | crdb >/dev/null \
-      || { echo "EXPORT of $t failed"; exit 2; }
-  done
-  mkdir -p "$W/snap" && vm "sudo podman exec $CRDB tar -C /cockroach/cockroach-data/extern/snap -cf - ." | tar -xf - -C "$W/snap" \
-    || { echo "snapshot copy failed"; exit 2; }
+SETUP_SQL="CREATE TABLE shop.customers (id INT PRIMARY KEY, name TEXT NOT NULL, tier TEXT NOT NULL);
+CREATE TABLE shop.orders (id INT PRIMARY KEY, customer_id INT NOT NULL, amount DECIMAL(10,2) NOT NULL, status TEXT NOT NULL);
+INSERT INTO shop.customers SELECT g, 'customer_' || g::TEXT, 'bronze' FROM generate_series(1, 5) g;
+INSERT INTO shop.orders SELECT g, 1 + g % 5, g * 10.5, 'placed' FROM generate_series(1, 5) g;"
+if [ "$SOURCE" = crdb ]; then
+  vm "sudo podman network create $NET >/dev/null && sudo podman run -d --name $SRCC --network $NET --network-alias cockroachdb \
+    $([ "$SCHEMA_VIA" = connection ] && echo "-p $SRC_PORT:26257") $SRC_IMAGE start-single-node --insecure --advertise-addr=cockroachdb >/dev/null" || { echo "CockroachDB start failed"; exit 2; }
+  for _ in $(seq 1 30); do echo 'SELECT 1;' | src >/dev/null 2>&1 && break; sleep 2; done
+  printf 'SET CLUSTER SETTING kv.rangefeed.enabled = true;\nCREATE DATABASE shop;\n%s\n' "$SETUP_SQL" | src >/dev/null || { echo "CockroachDB setup failed"; exit 2; }
+  SRC_VERSION=$(echo 'SELECT version();' | src | tail -1 | cut -c1-80)
+  # T: the cluster time. Debezium's changefeed starts there, with no snapshot of its own.
+  T_HLC=$(echo 'SELECT cluster_logical_timestamp();' | src | tail -1)
+  T_NS=${T_HLC%%.*}   # the wall time in nanoseconds: silver's sequence for the snapshot rows
+  snap_select() { echo "SELECT $2 FROM shop.$1 AS OF SYSTEM TIME '$T_HLC';"; }   # snap_select <table> <columns>: the rows at T
+else
+  vm "sudo podman network create $NET >/dev/null && sudo podman run -d --name $SRCC --network $NET --network-alias yugabytedb \
+    $([ "$SCHEMA_VIA" = connection ] && echo "-p $SRC_PORT:5433") $SRC_IMAGE bin/yugabyted start --background=false --advertise_address=yugabytedb >/dev/null" || { echo "YugabyteDB start failed"; exit 2; }
+  for _ in $(seq 1 60); do vm "sudo podman exec $SRCC bin/ysqlsh -h yugabytedb -U yugabyte -c 'SELECT 1'" >/dev/null 2>&1 && break; sleep 3; done
+  vm "sudo podman exec $SRCC bin/ysqlsh -h yugabytedb -U yugabyte -c 'CREATE DATABASE shop'" >/dev/null || { echo "YugabyteDB setup failed"; exit 2; }
+  # the truth for the history check: an audit trigger writes every change, in commit order, to a table not published
+  { echo "CREATE SCHEMA shop;"; echo "$SETUP_SQL"; cat <<'SQL'; } | src >/dev/null || { echo "YugabyteDB setup failed"; exit 2; }
+CREATE TABLE shop.audit (seq BIGSERIAL PRIMARY KEY, tbl TEXT NOT NULL, op TEXT NOT NULL, row_data JSONB);
+CREATE FUNCTION shop.audit_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+  INSERT INTO shop.audit (tbl, op, row_data) VALUES (TG_TABLE_NAME, TG_OP, CASE WHEN TG_OP = 'DELETE' THEN NULL ELSE to_jsonb(NEW) END);
+  RETURN NULL; END $$;
+CREATE TRIGGER customers_audit AFTER INSERT OR UPDATE OR DELETE ON shop.customers FOR EACH ROW EXECUTE FUNCTION shop.audit_fn();
+CREATE TRIGGER orders_audit AFTER INSERT OR UPDATE OR DELETE ON shop.orders FOR EACH ROW EXECUTE FUNCTION shop.audit_fn();
+CREATE PUBLICATION dbz_pub FOR TABLE shop.customers, shop.orders;
+SELECT 1 FROM pg_create_logical_replication_slot('dbz_slot', 'pgoutput');
+SQL
+  SRC_VERSION=$(echo 'SELECT version();' | src | tail -1 | cut -c1-80)
+  # T: the slot's consistent snapshot, a hybrid time (microseconds << 12). Debezium streams from the slot, with no
+  # snapshot of its own; the dump reads as of T with yb_read_time.
+  T_HT=$(echo "SELECT yb_restart_commit_ht FROM pg_replication_slots WHERE slot_name = 'dbz_slot';" | src | tail -1)
+  T_US=$((T_HT >> 12)); T_NS=$((T_US * 1000)); T_HLC="slot dbz_slot, hybrid time $T_HT ($T_US us)"
+  snap_select() { printf 'SET yb_read_time TO %s;\nSELECT %s FROM shop.%s;\nRESET yb_read_time;\n' "$T_US" "$2" "$1"; }
 fi
+if [ "$PHASE" -ge 2 ]; then
+  # the snapshot: every table as of T, onto the laptop. CockroachDB: EXPORT INTO PARQUET; DECIMAL goes out as STRING
+  # because v25.4.13 writes a DECIMAL column as BYTE_ARRAY annotated DECIMAL but filled with the number's text, so
+  # readers get "21.00" as the unscaled integer 0x32312E3030 (2155734753.76). YugabyteDB: COPY ... CSV under
+  # yb_read_time. Silver casts every column to its type.
+  mkdir -p "$W/snap"
+  for t in $TABLES; do
+    if [ "$SOURCE" = crdb ]; then
+      cols=$(echo "SELECT string_agg(CASE WHEN data_type = 'numeric' THEN column_name || '::STRING AS ' || column_name ELSE column_name END,
+        ', ' ORDER BY ordinal_position) FROM shop.information_schema.columns
+        WHERE table_schema = 'public' AND table_name = '$t' AND is_hidden = 'NO';" | src | tail -1)
+      echo "EXPORT INTO PARQUET 'nodelocal://self/snap/$t' FROM SELECT $cols FROM shop.$t AS OF SYSTEM TIME '$T_HLC';" | src >/dev/null \
+        || { echo "EXPORT of $t failed"; exit 2; }
+    else
+      mkdir -p "$W/snap/$t"
+      printf 'SET yb_read_time TO %s;\nCOPY (SELECT * FROM shop.%s) TO STDOUT WITH (FORMAT csv, HEADER);\n' "$T_US" "$t" \
+        | vm "sudo podman exec -i $SRCC bin/ysqlsh -h yugabytedb -U yugabyte -d shop -q -v ON_ERROR_STOP=1" > "$W/snap/$t/$t.csv" 2>/dev/null \
+        || { echo "COPY of $t failed"; exit 2; }
+    fi
+  done
+  [ "$SOURCE" = crdb ] && { vm "sudo podman exec $SRCC tar -C /cockroach/cockroach-data/extern/snap -cf - ." | tar -xf - -C "$W/snap" \
+    || { echo "snapshot copy failed"; exit 2; }; }
+  SNAP_FMT=$([ "$SOURCE" = crdb ] && echo parquet || echo csv)
+fi
+# dump_schema: the source's DDL -> statschema's canonical schema.yaml ($W/schema.yaml), with the lfc-source-statschema
+# skill's ddl-to-schema.py; then $W/schema.tsv (table, ordinal, column, Databricks type, 1 for a key) for the checks.
+# sqlglot's postgres dialect doesn't take CockroachDB's "PRIMARY KEY (id ASC)" or its typed literals ('none':::STRING),
+# so the key order and the casts go.
+dump_schema() {
+  [ "$SOURCE" = crdb ] || { echo "SCHEMA_VIA=volume: only SOURCE=crdb dumps DDL so far"; return 1; }
+  vm "sudo podman exec $SRCC cockroach sql --insecure -d shop --format=raw -e 'SHOW CREATE ALL TABLES'" | grep -v '^#' \
+    | sed -E 's/ (ASC|DESC)([,)])/\2/g; s/:::[A-Za-z0-9_]+(\[\])?//g' | (cd "$STATSCHEMA/.." && uv run -q scripts/ddl-to-schema.py --dialect postgres) > "$W/schema.yaml" 2>"$W/schema.err" || return 1
+  yq -r '.tables[] | .name as $t | .columns | to_entries[] | [$t, .key + 1, .value.name,
+    (.value.type as $y | {"integer": "INT", "long": "BIGINT", "float": "FLOAT", "double": "DOUBLE", "boolean": "BOOLEAN", "date": "DATE",
+      "timestamp": "TIMESTAMP_NTZ", "timestamptz": "TIMESTAMP", "binary": "BINARY"}[$y] //
+      (select($y == "decimal") | "DECIMAL(" + (.value.precision // 38 | tostring) + "," + (.value.scale // 0 | tostring) + ")") // "STRING"),
+    ((.value.primary_key // false) | tostring | sub("true"; "1") | sub("false"; "0"))] | @tsv' "$W/schema.yaml" > "$W/schema.tsv"
+}
+[ "$PHASE" -ge 2 ] && [ "$SCHEMA_VIA" = volume ] && { dump_schema || { echo "schema dump failed: $(head -c 300 "$W/schema.err")"; exit 2; }; cp "$W/schema.yaml" "$W/snap-schema-at-T.yaml"; }
 
 # --- destination: bronze tables, a service principal with a secret, grants -------------------------------------------
 dbx schemas create "$S" "$CATALOG" >/dev/null || exit 2
@@ -113,19 +180,25 @@ LOG=$T.cdc_log
 q "CREATE TABLE $LOG (target_table STRING NOT NULL, destination STRING NOT NULL, partition INT, operation STRING NOT NULL,
   idempotency_key STRING, key VARIANT, value VARIANT, source_position VARIANT, headers VARIANT) CLUSTER BY (destination)
   COMMENT 'Append-only change log: one Debezium envelope per source change, all source tables'" >/dev/null || exit 2
+if [ -n "${SP_CLIENT_ID:-}" ]; then   # a service principal someone else created: its application ID and a file with its secret
+  [ -r "${SP_SECRET_FILE:-}" ] || { echo "SP_CLIENT_ID needs SP_SECRET_FILE, a file with the OAuth secret"; exit 2; }
+  SP_APP=$SP_CLIENT_ID; SP_NAME="existing $SP_CLIENT_ID"; SECRET=$(cat "$SP_SECRET_FILE") yq -n -o json '.secret = strenv(SECRET)' > "$W/secret.json"
+else
 SP_NAME=$PREFIX-zerobus-dbz-$E
 eval "$(dbx service-principals create --display-name "$SP_NAME" -o json | yq -o shell '{"SP_ID": .id, "SP_APP": .applicationId}')"
 [ -n "${SP_ID:-}" ] || { echo "service principal create failed"; exit 2; }
 dbx service-principal-secrets-proxy create "$SP_ID" -o json > "$W/secret.json" || { echo "secret create failed"; exit 2; }
+fi
 for g in "GRANT USE CATALOG ON CATALOG \`$CATALOG\` TO \`$SP_APP\`" "GRANT USE SCHEMA ON SCHEMA $T TO \`$SP_APP\`" \
          "GRANT SELECT, MODIFY ON TABLE $LOG TO \`$SP_APP\`"; do
   q "$g" >/dev/null || exit 2
 done
 
-# --- Debezium Server: CockroachDB connector, envelopes into one change-log table ------------------------------------------
+# --- Debezium Server: the source's connector, envelopes into one change-log table ---------------------------------------
 export SP_APP ZB HOST CATALOG S
 yq -r '"debezium.sink.zerobus.client.secret=" + .secret' "$W/secret.json" > "$W/secret.line"
 cat > "$W/application.properties" <<EOF
+$( if [ "$SOURCE" = crdb ]; then cat <<CRDB
 debezium.source.connector.class=io.debezium.connector.cockroachdb.CockroachDBConnector
 debezium.source.name=crdb-zerobus
 debezium.source.topic.prefix=crdb
@@ -137,15 +210,33 @@ debezium.source.database.dbname=shop
 debezium.source.database.sslmode=disable
 debezium.source.database.server.name=crdb
 debezium.source.table.include.list=public.customers,public.orders
-debezium.source.snapshot.mode=no_data
 debezium.source.cockroachdb.changefeed.cursor=$T_HLC
-debezium.source.extended.headers.enabled=false
-debezium.source.tombstones.on.delete=false
 debezium.source.cockroachdb.changefeed.sink.type=sinkless
 debezium.source.cockroachdb.changefeed.resolved.interval=5s
 debezium.source.cockroachdb.changefeed.include.diff=false
 debezium.source.cockroachdb.changefeed.include.updated=true
-$( [ -n "${ENRICHED_PROPERTIES:-}" ] && echo "debezium.source.cockroachdb.changefeed.enriched.properties=$ENRICHED_PROPERTIES" )
+CRDB
+[ -n "${ENRICHED_PROPERTIES:-}" ] && echo "debezium.source.cockroachdb.changefeed.enriched.properties=$ENRICHED_PROPERTIES"
+else cat <<YB
+debezium.source.connector.class=${YB_CONNECTOR_CLASS:-io.debezium.connector.postgresql.PostgresConnector}
+debezium.source.name=yb-zerobus
+debezium.source.topic.prefix=yb
+debezium.source.database.hostname=yugabytedb
+debezium.source.database.port=5433
+debezium.source.database.user=yugabyte
+debezium.source.database.password=yugabyte
+debezium.source.database.dbname=shop
+debezium.source.plugin.name=pgoutput
+debezium.source.slot.name=dbz_slot
+debezium.source.publication.name=dbz_pub
+debezium.source.publication.autocreate.mode=disabled
+debezium.source.table.include.list=shop.customers,shop.orders
+debezium.source.decimal.handling.mode=string
+YB
+fi )
+debezium.source.snapshot.mode=no_data
+debezium.source.extended.headers.enabled=false
+debezium.source.tombstones.on.delete=false
 debezium.source.offset.storage=org.apache.kafka.connect.storage.FileOffsetBackingStore
 debezium.source.offset.storage.file.filename=/debezium/data/offsets.dat
 debezium.source.offset.flush.interval.ms=1000
@@ -184,7 +275,7 @@ R=$(q "SELECT COUNT(*) FROM $LOG WHERE operation = 'read'" 2>/dev/null)
 [ "$R" = 0 ] && claim no-snapshot-events PASS "no read events: the snapshot stays out of the log (feed starts at T=$T_HLC)" \
   || claim no-snapshot-events FAIL "read events in the log: ${R:-query failed}"
 
-crdb >/dev/null <<'SQL'
+src >/dev/null <<'SQL'
 INSERT INTO shop.customers VALUES (6, 'customer_6', 'silver'), (7, 'customer_7', 'gold');
 UPDATE shop.customers SET tier = 'gold' WHERE id = 1;
 DELETE FROM shop.customers WHERE id = 2;
@@ -202,7 +293,7 @@ R=$(q "SELECT key:id::INT, value:after IS NULL OR value:after::STRING = 'null', 
 observe delete-event "customers delete (key.id, after is null, ts_ns): $R"
 R=$(q "SELECT value:after:tier::STRING, value:before IS NULL FROM $LOG WHERE destination LIKE '%.customers' AND operation = 'update'" 2>&1 | tr '\t\n' ' ')
 observe update-event "customers update (after.tier, before is null with include.diff=false): $R"
-observe commit-time "events, distinct source.ts_hlc, distinct source.ts_ns, distinct ts_ns: $(q "SELECT COUNT(*), COUNT(DISTINCT value:source:ts_hlc::STRING), COUNT(DISTINCT value:source:ts_ns::STRING), COUNT(DISTINCT value:ts_ns::STRING) FROM $LOG" 2>&1 | tr '\t' ' ')"
+observe commit-time "events, distinct source.ts_hlc, distinct source.ts_ns, distinct ts_ns, distinct source.lsn, distinct source.ts_ms: $(q "SELECT COUNT(*), COUNT(DISTINCT value:source:ts_hlc::STRING), COUNT(DISTINCT value:source:ts_ns::STRING), COUNT(DISTINCT value:ts_ns::STRING), COUNT(DISTINCT value:source:lsn::STRING), COUNT(DISTINCT value:source:ts_ms::STRING) FROM $LOG" 2>&1 | tr '\t' ' ')"
 observe variant-paths "value top-level keys: $(q "SELECT CONCAT_WS(',', SORT_ARRAY(MAP_KEYS(FROM_JSON(TO_JSON(value), 'MAP<STRING,STRING>')))) FROM $LOG LIMIT 1" 2>&1 | cut -c1-200)"
 observe event-bytes "per event, average bytes (op: total value after source key position headers): $(q "SELECT operation, ROUND(AVG(LENGTH(TO_JSON(value)) + LENGTH(TO_JSON(key)) + LENGTH(COALESCE(TO_JSON(source_position),'')) + LENGTH(COALESCE(TO_JSON(headers),'')) + LENGTH(idempotency_key))), ROUND(AVG(LENGTH(TO_JSON(value)))), ROUND(AVG(LENGTH(TO_JSON(value:after)))), ROUND(AVG(LENGTH(TO_JSON(value:source)))), ROUND(AVG(LENGTH(TO_JSON(key)))), ROUND(AVG(LENGTH(COALESCE(TO_JSON(source_position),'')))), ROUND(AVG(LENGTH(COALESCE(TO_JSON(headers),'')))) FROM $LOG GROUP BY operation ORDER BY 1" 2>&1 | tr '\t\n' ' ;')"
 observe event-sample "one update event value: $(q "SELECT TO_JSON(value) FROM $LOG WHERE operation = 'update' LIMIT 1" 2>&1 | cut -c1-400)"
@@ -213,14 +304,24 @@ if [ "$PHASE" -ge 2 ]; then
   VOL=/Volumes/$CATALOG/$S/snapshot
   q "CREATE VOLUME $T.snapshot COMMENT 'Snapshot as of T, one folder per source table'" >/dev/null || exit 2
   dbx fs cp -r "$W/snap" "dbfs:$VOL" --overwrite >/dev/null || { echo "snapshot upload failed"; exit 2; }
-  F=$(for t in $TABLES; do printf '%s=%s ' "$t" "$(dbx fs ls "dbfs:$VOL/$t" -o json | yq '[.[] | select(.name | test("parquet$"))] | length')"; done)
-  echo "$F" | grep -q '=0' && claim snapshot-in-volume FAIL "parquet files per table: $F" \
-    || claim snapshot-in-volume PASS "EXPORT INTO PARQUET ... AS OF SYSTEM TIME T, into $VOL: parquet files per table: $F"
+  F=$(for t in $TABLES; do printf '%s=%s ' "$t" "$(dbx fs ls "dbfs:$VOL/$t" -o json | SNAP_FMT=$SNAP_FMT yq '[.[] | select(.name | test(strenv(SNAP_FMT) + "$"))] | length')"; done)
+  echo "$F" | grep -q '=0' && claim snapshot-in-volume FAIL "$SNAP_FMT files per table: $F" \
+    || claim snapshot-in-volume PASS "the tables as of T ($([ "$SOURCE" = crdb ] && echo 'EXPORT INTO PARQUET ... AS OF SYSTEM TIME' || echo 'COPY ... CSV under yb_read_time')), into $VOL: $SNAP_FMT files per table: $F"
 
-  # the schema: columns, types and primary keys from CockroachDB's information_schema, through a UC connection
-  CONN=$PREFIX-crdb-dbz-$E; export CONN VM_IP CRDB_PORT
+  if [ "$SCHEMA_VIA" = volume ]; then
+  # the schema: statschema's schema.yaml in the Volume, as at T and as now; the pipeline reads both when it starts
+  dbx fs mkdir "dbfs:$VOL/_schema" && dbx fs cp "$W/snap-schema-at-T.yaml" "dbfs:$VOL/_schema/schema-at-T.yaml" --overwrite >/dev/null \
+    && dbx fs cp "$W/schema.yaml" "dbfs:$VOL/_schema/schema.yaml" --overwrite >/dev/null || { echo "schema upload failed"; exit 2; }
+  cp "$W/schema.tsv" "$W/schema0.tsv"
+  claim schema-in-volume PASS "statschema schema.yaml (ddl-to-schema.py from the source's DDL) in $VOL/_schema: $(awk -F'\t' '{c[$1]=c[$1] (c[$1]?", ":"") $3 " " $4 ($5==1?" key":"")} END {for (t in c) printf "%s (%s); ", t, c[t]}' "$W/schema.tsv")"
+  fetch_schema() { dump_schema && dbx fs cp "$W/schema.yaml" "dbfs:$VOL/_schema/schema.yaml" --overwrite >/dev/null; }
+  gen_silver() { :; }   # the pipeline builds itself from schema.yaml
+  else
+  # the schema: columns, types and primary keys from the source's information_schema, through a UC connection
+  CONN=$PREFIX-$SOURCE-dbz-$E; export CONN VM_IP SRC_PORT
+  [ "$SOURCE" = crdb ] && { export DB_USER=root DB_PASS=unused-insecure-node; } || { export DB_USER=yugabyte DB_PASS=yugabyte; }
   yq -n -o json '.name = strenv(CONN) | .connection_type = "POSTGRESQL" |
-    .options = {"host": strenv(VM_IP), "port": strenv(CRDB_PORT), "user": "root", "password": "unused-insecure-node"}' > "$W/conn.json"
+    .options = {"host": strenv(VM_IP), "port": strenv(SRC_PORT), "user": strenv(DB_USER), "password": strenv(DB_PASS)}' > "$W/conn.json"
   dbx connections create --json @"$W/conn.json" >/dev/null || { echo "connection create failed"; exit 2; }
   # table, ordinal, column, Databricks type, 1 when in the primary key
   fetch_schema() { q "SELECT table_name, ordinal_position, column_name,
@@ -237,28 +338,30 @@ if [ "$PHASE" -ge 2 ]; then
          ON tc.table_schema = c.table_schema AND tc.table_name = c.table_name AND tc.constraint_type = 'PRIMARY KEY'
        LEFT JOIN information_schema.key_column_usage k
          ON k.constraint_schema = tc.constraint_schema AND k.constraint_name = tc.constraint_name AND k.column_name = c.column_name
-       WHERE c.table_schema = 'public' AND c.is_hidden = 'NO'\")
+       WHERE c.table_schema = '$SRC_SCHEMA' AND c.table_name IN ('customers', 'orders')$([ "$SOURCE" = crdb ] && echo " AND c.is_hidden = 'NO'")\")
      ORDER BY 1, 2" > "$W/schema.tsv" 2>"$W/schema.err"; }
   fetch_schema; cp "$W/schema.tsv" "$W/schema0.tsv"   # schema0: the columns the snapshot has
   if [ -s "$W/schema.tsv" ]; then
     claim schema-from-connection PASS "remote_query on a POSTGRESQL connection: $(awk -F'\t' '{c[$1]=c[$1] (c[$1]?", ":"") $3 " " $4 ($5==1?" key":"")} END {for (t in c) printf "%s (%s); ", t, c[t]}' "$W/schema.tsv")"
   else claim schema-from-connection FAIL "$(cut -c1-300 "$W/schema.err")"; exit 1; fi
+  fi
 
   # silver: per table, the snapshot rows sequenced by T and the change-log rows sequenced by ts_ns, into one AUTO CDC table.
   # A column added after T isn't in the snapshot, so its snapshot rows get NULL there.
-  gen_silver() { awk -F'\t' -v vol="$VOL" -v lg="$LOG" -v tns="$T_NS" '
+  SNAP_OPTS=$([ "$SNAP_FMT" = csv ] && echo "format => 'csv', header => true" || echo "format => 'parquet'")
+  [ "$SCHEMA_VIA" = volume ] || gen_silver() { awk -F'\t' -v vol="$VOL" -v lg="$LOG" -v tns="$T_NS" -v dp="$DEST_PREFIX" -v so="$SNAP_OPTS" '
     FNR==NR { insnap[$1 "." $3]=1; next }
     { t=$1; col=$3; ty=$4; cols[t]=cols[t] (cols[t]?", ":"") col; if ($5==1) keys[t]=keys[t] (keys[t]?", ":"") col
       snap[t]=snap[t] (snap[t]?", ":"") "CAST(" ((t "." col) in insnap ? col : "NULL") " AS " ty ") AS " col
       chg[t]=chg[t] (chg[t]?", ":"") ($5==1 ? "key:" : "value:after:") col "::" ty " AS " col }
     END { for (t in cols) {
-      printf "CREATE TEMPORARY VIEW %s_snapshot AS SELECT %s, CAST(%s AS BIGINT) AS _seq, \047read\047 AS _op\n  FROM STREAM read_files(\047%s/%s\047, format => \047parquet\047);\n\n", t, snap[t], tns, vol, t
-      printf "CREATE TEMPORARY VIEW %s_changes AS SELECT %s, value:ts_ns::BIGINT AS _seq, operation AS _op\n  FROM STREAM(%s) WHERE destination = \047crdb.public.%s\047;\n\n", t, chg[t], lg, t
+      printf "CREATE TEMPORARY VIEW %s_snapshot AS SELECT %s, CAST(%s AS BIGINT) AS _seq, \047read\047 AS _op\n  FROM STREAM read_files(\047%s/%s\047, %s);\n\n", t, snap[t], tns, vol, t, so
+      printf "CREATE TEMPORARY VIEW %s_changes AS SELECT %s, value:ts_ns::BIGINT AS _seq, operation AS _op\n  FROM STREAM(%s) WHERE destination = \047" dp ".%s\047;\n\n", t, chg[t], lg, t
       printf "CREATE OR REFRESH STREAMING TABLE %s CLUSTER BY (%s)\n  COMMENT \047Current rows of the source table: the snapshot as of T, then the change log\047;\n\n", t, keys[t]
       printf "CREATE FLOW %s_from_snapshot AS AUTO CDC INTO %s FROM STREAM(%s_snapshot)\n  KEYS (%s) SEQUENCE BY _seq COLUMNS * EXCEPT (_seq, _op) STORED AS SCD TYPE 1;\n\n", t, t, t, keys[t]
       printf "CREATE FLOW %s_from_changes AS AUTO CDC INTO %s FROM STREAM(%s_changes)\n  KEYS (%s) APPLY AS DELETE WHEN _op = \047delete\047 SEQUENCE BY _seq COLUMNS * EXCEPT (_seq, _op) STORED AS SCD TYPE 1;\n\n", t, t, t, keys[t]
       # SCD type 2 from the same snapshot, and from the change log without replays (cdc_log_dedup, in dedupe.py)
-      printf "CREATE TEMPORARY VIEW %s_changes_dedup AS SELECT %s, value:ts_ns::BIGINT AS _seq, operation AS _op\n  FROM STREAM(cdc_log_dedup) WHERE destination = \047crdb.public.%s\047;\n\n", t, chg[t], t
+      printf "CREATE TEMPORARY VIEW %s_changes_dedup AS SELECT %s, value:ts_ns::BIGINT AS _seq, operation AS _op\n  FROM STREAM(cdc_log_dedup) WHERE destination = \047" dp ".%s\047;\n\n", t, chg[t], t
       hist(t "_history", t "_changes_dedup", "Every version of each source row (SCD type 2), replays removed")
       if (t == "customers") hist(t "_history_nodedup", t "_changes", "Every version (SCD type 2) from the change log as it is, replays included: shows what a restart does") } }
     function hist(h, src, comment) {
@@ -288,13 +391,17 @@ def cdc_log_dedup():
             .dropDuplicatesWithinWatermark(["destination", "idempotency_key", "operation", "_after"])
             .drop("_event_time", "_after"))
 PY
-  WSDIR=/Users/$ME/crdb_dbz_$E; LIBS="silver.sql dedupe.py"; [ "$PHASE" -ge 3 ] && LIBS="silver.sql dedupe.py gold.sql"
+  WSDIR=/Users/$ME/${SOURCE}_dbz_$E; LIBS="silver.sql dedupe.py"
+  [ "$SCHEMA_VIA" = volume ] && { LIBS=silver-from-schema.py; cp "$(dirname "$CHECK")/silver-from-schema.py" "$W/"; }
+  [ "$PHASE" -ge 3 ] && LIBS="$LIBS gold.sql"
   dbx workspace mkdirs "$WSDIR" || exit 2
   for f in $LIBS; do dbx workspace import "$WSDIR/$f" --file "$W/$f" --format RAW >/dev/null || { echo "$f upload failed"; exit 2; }; done
-  export WSDIR CATALOG S PIPE_NAME=$PREFIX-crdb-dbz-silver-$E LIBS
+  export VOL T_NS DEST_PREFIX SNAP_FMT WSDIR CATALOG S PIPE_NAME=$PREFIX-$SOURCE-dbz-silver-$E LIBS
   yq -n -o json '.name = strenv(PIPE_NAME) | .catalog = strenv(CATALOG) | .schema = strenv(S) | .serverless = true |
     .continuous = false | .development = true | .channel = "CURRENT" |
-    .libraries = [strenv(LIBS) | split(" ") | .[] | {"file": {"path": strenv(WSDIR) + "/" + .}}]' > "$W/pipe.json"
+    .libraries = [strenv(LIBS) | split(" ") | .[] | {"file": {"path": strenv(WSDIR) + "/" + .}}] |
+    .configuration = {"cdc.volume": strenv(VOL), "cdc.t_ns": strenv(T_NS), "cdc.dest_prefix": strenv(DEST_PREFIX),
+      "cdc.snapshot_format": strenv(SNAP_FMT), "cdc.nodedup_table": "customers"}' > "$W/pipe.json"
   PIPELINE_ID=$(dbx pipelines create --json @"$W/pipe.json" -o json | yq '.pipeline_id') || { echo "pipeline create failed"; exit 2; }
 
   run_silver() { # one pipeline update (extra args go to start-update); prints its final state
@@ -309,7 +416,7 @@ PY
   same_hist() { # same_hist <table> <round>: the history table's current versions equal the source
     local cols keys a b; cols=$(awk -F'\t' -v t="$1" '$1==t {printf "%s%s", (n++?", ":""), $3}' "$W/schema.tsv")
     keys=$(awk -F'\t' -v t="$1" '$1==t && $5==1 {printf "%s%s", (n++?", ":""), $3}' "$W/schema.tsv")
-    a=$(echo "SELECT $cols FROM shop.$1 ORDER BY $keys;" | crdb | tail -n +2)
+    a=$(echo "SELECT $cols FROM shop.$1 ORDER BY $keys;" | src | tail -n +2)
     b=$(q "SELECT $cols FROM $T.$1_history WHERE __END_AT IS NULL ORDER BY $keys")
     [ "$a" = "$b" ] && claim "history-current-$1-$2" PASS "the current versions in $1_history equal the source: $(echo "$a" | grep -c .) rows" \
       || claim "history-current-$1-$2" FAIL "source vs current history: $(diff <(echo "$a") <(echo "$b") | grep '^[<>]' | tr '\t\n' ', ' | cut -c1-300)"
@@ -318,7 +425,7 @@ PY
     local cols keys r
     cols=$(awk -F'\t' -v t="$1" '$1==t {printf "%s%s", (n++?", ":""), $3}' "$W/schema.tsv")
     keys=$(awk -F'\t' -v t="$1" '$1==t && $5==1 {printf "%s%s", (n++?", ":""), $3}' "$W/schema.tsv")
-    echo "SELECT $cols FROM shop.$1 AS OF SYSTEM TIME '$T_HLC';" | crdb > "$W/snap-$1.tsv"
+    snap_select "$1" "$cols" | src > "$W/snap-$1.tsv"
     q "SELECT $cols FROM $T.$2 ORDER BY $keys, __START_AT" > "$W/hist-$2.tsv"
     r=$(python3 -I "$CHECK" "$W/schema.tsv" "$1" "$W/snap-$1.tsv" "$W/feed.tsv" "$W/hist-$2.tsv" 2>&1); local rc=$?
     if [ "$3" = observe ]; then observe "history-$2" "versions expected, in silver, keys that differ: $r"
@@ -329,7 +436,7 @@ PY
   same() { # same <table> <round>: silver equals the source, row by row, ordered by the key
     local cols keys a b; cols=$(awk -F'\t' -v t="$1" '$1==t {printf "%s%s", (n++?", ":""), $3}' "$W/schema.tsv")
     keys=$(awk -F'\t' -v t="$1" '$1==t && $5==1 {printf "%s%s", (n++?", ":""), $3}' "$W/schema.tsv")
-    a=$(echo "SELECT $cols FROM shop.$1 ORDER BY $keys;" | crdb | tail -n +2)
+    a=$(echo "SELECT $cols FROM shop.$1 ORDER BY $keys;" | src | tail -n +2)
     b=$(q "SELECT $cols FROM $T.$1 ORDER BY $keys")
     if [ "${3:-}" = observe ]; then observe "silver-$1-$2" "source vs silver: $( [ "$a" = "$b" ] && echo equal || diff <(echo "$a") <(echo "$b") | grep '^[<>]' | tr '\t\n' ', ' | cut -c1-300)"
     elif [ "$a" = "$b" ]; then claim "silver-$1-$2" PASS "silver $1 equals the source: $(echo "$a" | grep -c .) rows"
@@ -338,7 +445,7 @@ PY
 
   gold() { # gold <round>: the materialized view equals the same query on the source
     [ "$PHASE" -ge 3 ] || return 0
-    local a b; a=$(echo "${GOLD_Q//customers/shop.customers} ORDER BY customer_id;" | sed 's/JOIN orders/JOIN shop.orders/' | crdb | tail -n +2)
+    local a b; a=$(echo "${GOLD_Q//customers/shop.customers} ORDER BY customer_id;" | sed 's/JOIN orders/JOIN shop.orders/' | src | tail -n +2)
     b=$(q "SELECT * FROM $T.customer_orders ORDER BY customer_id")
     if [ "$a" = "$b" ]; then claim "gold-$1" PASS "customer_orders equals the query on the source: $(echo "$a" | grep -c .) rows"
     else claim "gold-$1" FAIL "source vs gold: $(diff <(echo "$a") <(echo "$b") | grep '^[<>]' | tr '\t\n' ', ' | cut -c1-300)"; fi
@@ -357,7 +464,7 @@ PY
 
   # round 2: two updates of one key, a delete and reinsert of one key, a reinsert of a key deleted in round 1
   N0=$(q "SELECT COUNT(*) FROM $LOG")
-  crdb >/dev/null <<'SQL'
+  src >/dev/null <<'SQL'
 UPDATE shop.customers SET tier = 'platinum' WHERE id = 1;
 UPDATE shop.customers SET tier = 'diamond' WHERE id = 1;
 DELETE FROM shop.customers WHERE id = 3;
@@ -374,7 +481,7 @@ SQL
   if [ "$PHASE" -ge 3 ]; then
     # round 3, retries: changes, then Debezium killed (SIGKILL, no offset flush) and started again, then one more change
     N0=$(q "SELECT COUNT(*) FROM $LOG")
-    crdb >/dev/null <<'SQL'
+    src >/dev/null <<'SQL'
 INSERT INTO shop.customers VALUES (8, 'customer_8', 'gold');
 UPDATE shop.customers SET tier = 'silver' WHERE id = 4;
 UPDATE shop.customers SET tier = 'gold' WHERE id = 4;
@@ -383,7 +490,7 @@ SQL
     t0=$SECONDS; until [ "$(q "SELECT COUNT(*) FROM $LOG" 2>/dev/null)" -ge $((N0 + 4)) ] 2>/dev/null || [ $((SECONDS - t0)) -ge "$WAIT" ]; do sleep 2; done
     vm "sudo podman kill $DBZ >/dev/null && sudo podman start $DBZ >/dev/null" || claim retry-restart FAIL "Debezium restart failed"
     sleep 40
-    echo "UPDATE shop.orders SET status = 'shipped' WHERE id = 7;" | crdb >/dev/null
+    echo "UPDATE shop.orders SET status = 'shipped' WHERE id = 7;" | src >/dev/null
     t0=$SECONDS; until [ "$(q "SELECT COUNT(*) FROM $LOG WHERE operation = 'update' AND destination LIKE '%.orders' AND key:id::INT = 7" 2>/dev/null)" -ge 1 ] 2>/dev/null || [ $((SECONDS - t0)) -ge "$WAIT" ]; do sleep 5; done
     sleep 10
     R=$(q "SELECT COUNT(*) - $N0, COUNT(*) - COUNT(DISTINCT idempotency_key), (SELECT COUNT(*) FROM (SELECT 1 FROM $LOG GROUP BY destination, TO_JSON(key), TO_JSON(value:after), operation HAVING COUNT(*) > 1)) FROM $LOG" 2>&1 | tr '\t' ' ')
@@ -394,14 +501,18 @@ SQL
     for t in $TABLES; do same "$t" 3; done
     gold 3
     # the source's own history: its changefeed from T, with each row's commit time (`updated`)
-    vm "timeout 20 sudo podman exec $CRDB cockroach sql --insecure --format=tsv -e \"EXPERIMENTAL CHANGEFEED FOR shop.customers, shop.orders WITH updated, cursor = '$T_HLC'\"" > "$W/feed.tsv" 2>/dev/null
+    if [ "$SOURCE" = crdb ]; then
+      vm "timeout 20 sudo podman exec $SRCC cockroach sql --insecure --format=tsv -e \"EXPERIMENTAL CHANGEFEED FOR shop.customers, shop.orders WITH updated, cursor = '$T_HLC'\"" > "$W/feed.tsv" 2>/dev/null
+    else   # the audit table, in the changefeed's form: table, key, \x hex of {"after": row, "updated": commit order}
+      echo "SELECT tbl, '', '\\x' || encode(convert_to(jsonb_build_object('after', row_data, 'updated', seq::TEXT)::TEXT, 'UTF8'), 'hex') FROM shop.audit ORDER BY seq;" | src > "$W/feed.tsv"
+    fi
     for t in $TABLES; do history "$t" "${t}_history" claim; same_hist "$t" 3; done
     history customers customers_history_nodedup observe
 
     # round 4, schema change: a column added on the source, with a default, then a change that sets it
-    echo "ALTER TABLE shop.customers ADD COLUMN email STRING NOT NULL DEFAULT 'none';" | crdb >/dev/null
+    echo "ALTER TABLE shop.customers ADD COLUMN email TEXT NOT NULL DEFAULT 'none';" | src >/dev/null
     sleep 15
-    echo "UPDATE shop.customers SET email = 'c6@example.com' WHERE id = 6;" | crdb >/dev/null
+    echo "UPDATE shop.customers SET email = 'c6@example.com' WHERE id = 6;" | src >/dev/null
     t0=$SECONDS; until [ "$(q "SELECT COUNT(*) FROM $LOG WHERE value:after:email::STRING = 'c6@example.com'" 2>/dev/null)" -ge 1 ] 2>/dev/null || [ $((SECONDS - t0)) -ge "$WAIT" ]; do sleep 5; done
     R=$(q "SELECT COUNT(*), COUNT_IF(value:after:email::STRING = 'none') FROM $LOG WHERE destination LIKE '%.customers' AND value:after:email IS NOT NULL" 2>&1 | tr '\t' ' ')
     [ "$(q "SELECT COUNT(*) FROM $LOG WHERE value:after:email::STRING = 'c6@example.com'")" -ge 1 ] \
@@ -411,8 +522,8 @@ SQL
     # silver as it is, without the column: the old columns still match
     st=$(run_silver); observe schema-silver-before-regenerate "update with the old flow: $st; silver customers columns: $(q "SELECT CONCAT_WS(',', COLLECT_LIST(column_name)) FROM \`$CATALOG\`.information_schema.columns WHERE table_schema = '$S' AND table_name = 'customers'" 2>&1)"
     # regenerate: the schema again through the connection, the flow from it, then a refresh of that table and a plain update
-    fetch_schema; gen_silver
-    dbx workspace import "$WSDIR/silver.sql" --file "$W/silver.sql" --format RAW --overwrite >/dev/null
+    fetch_schema || claim schema-refetch FAIL "the schema didn't come through again: $(head -c 300 "$W/schema.err" 2>/dev/null)"; gen_silver
+    [ "$SCHEMA_VIA" = volume ] || dbx workspace import "$WSDIR/silver.sql" --file "$W/silver.sql" --format RAW --overwrite >/dev/null
     st=$(run_silver); observe schema-update-after-regenerate "plain update with the regenerated flow: $st"
     [ "$st" = COMPLETED ] && same customers 4a observe
     st=$(run_silver --json '{"full_refresh_selection": ["customers", "customers_history", "customers_history_nodedup"]}'); [ "$st" = COMPLETED ] || claim silver-full-refresh-4 FAIL "full refresh of customers: $st"
@@ -422,19 +533,18 @@ SQL
     gold 4
 
     # round 5: a dropped column and a retyped one (DECIMAL(10,2) -> DECIMAL(12,2)), then a value only the new type holds
-    crdb >/dev/null <<'SQL'
-SET sql_safe_updates = false;
-SET enable_experimental_alter_column_type_general = true;
+    { [ "$SOURCE" = crdb ] && printf 'SET sql_safe_updates = false;\nSET enable_experimental_alter_column_type_general = true;\n'
+      cat <<'SQL'; } | src >/dev/null || observe schema-change-ddl "the ALTERs failed on $SRC_NAME"
 ALTER TABLE shop.orders DROP COLUMN status;
 ALTER TABLE shop.orders ALTER COLUMN amount TYPE DECIMAL(12,2);
 SQL
     sleep 15
-    echo "UPDATE shop.orders SET amount = 1234567890.12 WHERE id = 1;" | crdb >/dev/null
+    echo "UPDATE shop.orders SET amount = 1234567890.12 WHERE id = 1;" | src >/dev/null
     t0=$SECONDS; until [ "$(q "SELECT COUNT(*) FROM $LOG WHERE value:after:amount::STRING = '1234567890.12'" 2>/dev/null)" -ge 1 ] 2>/dev/null || [ $((SECONDS - t0)) -ge "$WAIT" ]; do sleep 5; done
     observe schema-change-bronze "all orders events, by operation and whether they have status (a backfill would add updates without it): $(q "SELECT CONCAT(operation, ' status=', value:after:status IS NOT NULL), COUNT(*) FROM $LOG WHERE destination LIKE '%.orders' GROUP BY 1" 2>&1 | tr '\t\n' '= '); the new value: $(q "SELECT COUNT(*) FROM $LOG WHERE value:after:amount::STRING = '1234567890.12'" 2>&1)"
     st=$(run_silver 2>/dev/null); observe schema-change-old-flow "update with the old flow (status still selected, amount still DECIMAL(10,2)): $st; $(q "SELECT REGEXP_EXTRACT(error.exceptions[0].message, '\\[(INVALID_[A-Z_]+|[A-Z_]+CAST[A-Z_]*)\\][^\\n]*', 0) FROM event_log('$PIPELINE_ID') WHERE event_type = 'flow_progress' AND origin.flow_name LIKE '%.orders_from_changes' AND error IS NOT NULL ORDER BY timestamp DESC LIMIT 1" 2>&1 | cut -c1-300)"
-    fetch_schema; gen_silver
-    dbx workspace import "$WSDIR/silver.sql" --file "$W/silver.sql" --format RAW --overwrite >/dev/null
+    fetch_schema || claim schema-refetch FAIL "the schema didn't come through again: $(head -c 300 "$W/schema.err" 2>/dev/null)"; gen_silver
+    [ "$SCHEMA_VIA" = volume ] || dbx workspace import "$WSDIR/silver.sql" --file "$W/silver.sql" --format RAW --overwrite >/dev/null
     st=$(run_silver --json '{"full_refresh_selection": ["orders", "orders_history"]}' 2>"$W/err5b")
     [ "$st" = COMPLETED ] || claim silver-full-refresh-5 FAIL "regenerated flow, full refresh of orders: $st $(cut -c1-300 "$W/err5b" | tr '\n' ' ')"
     st=$(run_silver); [ "$st" = COMPLETED ] || claim silver-update-5 FAIL "plain update after the full refresh: $st"
@@ -446,10 +556,10 @@ fi
 
 # --- result -----------------------------------------------------------------------------------------------------------
 {
-  echo "# crdb-debezium-zerobus run $E"; echo
+  echo "# debezium-zerobus run $E ($SRC_NAME)"; echo
   echo "- Date (UTC): $(date -u +%F)"
-  echo "- Source: CockroachDB $CRDB_VERSION, image $CRDB_IMAGE ($(vm "sudo podman inspect -f '{{.ImageDigest}}' $CRDB"))"
-  echo "- Debezium: $DBZ_IMAGE ($(vm "sudo podman inspect -f '{{.ImageDigest}}' $DBZ")), CockroachDB connector, sinkless changefeed, Zerobus sink (envelope into one change-log table, VARIANT fields, idempotency source)"
+  echo "- Source: $SRC_NAME $SRC_VERSION, image $SRC_IMAGE ($(vm "sudo podman inspect -f '{{.ImageDigest}}' $SRCC"))"
+  echo "- Debezium: $DBZ_IMAGE ($(vm "sudo podman inspect -f '{{.ImageDigest}}' $DBZ")), $([ "$SOURCE" = crdb ] && echo 'CockroachDB connector, sinkless changefeed' || echo 'PostgreSQL connector, pgoutput on a YugabyteDB logical replication slot'), Zerobus sink (envelope into one change-log table, VARIANT fields, idempotency source)"
   echo "- Host: $(vm '. /etc/os-release; echo $PRETTY_NAME'), $(vm 'podman --version')"
   echo "- Destination: Zerobus in $CLOUD $REGION, one append-only change-log Delta table, liquid-clustered by destination (the source table)"
   echo; echo "| Claim | Result | Observation |"; echo "|---|---|---|"

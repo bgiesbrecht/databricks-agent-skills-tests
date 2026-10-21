@@ -51,7 +51,7 @@ def main():
         parts = line.rstrip("\n").split("\t")
         if len(parts) < 3 or parts[0] != table or not parts[2].startswith("\\x"):
             continue
-        value = json.loads(bytes.fromhex(parts[2][2:]))
+        value = json.loads(bytes.fromhex(parts[2][2:]), parse_float=Decimal)
         events.append((Decimal(value["updated"]), value))
     for _, value in sorted(events, key=lambda e: e[0]):
         after = value.get("after")

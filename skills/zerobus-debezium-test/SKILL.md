@@ -6,7 +6,7 @@ parent: lfc-source-cloud-vm
 
 # Debezium -> Zerobus -> bronze -> silver -> gold
 
-[scripts/crdb-debezium-zerobus.sh](scripts/crdb-debezium-zerobus.sh) runs the whole test from your laptop. It drives a cloud VM over SSH, and the VM runs the source database and Debezium Server in Podman. Debezium pushes each change to Zerobus, which appends it to one change-log Delta table for all source tables. Debezium needs only outbound 443 to the Zerobus endpoint. Phase 2 adds a snapshot as of T, taken with `EXPORT INTO PARQUET` and copied into a Volume, and a silver pipeline. The pipeline is generated from the source's schema, read through a UC connection, so serverless reaches CockroachDB on `CRDB_PORT`. Phase 3 adds gold and rounds 3 and 4. `PHASE=1` stops after bronze, `PHASE=2` after silver.
+[scripts/debezium-zerobus.sh](scripts/debezium-zerobus.sh) runs the whole test from your laptop. It drives a cloud VM over SSH, and the VM runs the source database and Debezium Server in Podman. Debezium pushes each change to Zerobus, which appends it to one change-log Delta table for all source tables. Debezium needs only outbound 443 to the Zerobus endpoint. Phase 2 adds a snapshot as of T, taken with `EXPORT INTO PARQUET` and copied into a Volume, and a silver pipeline. The pipeline is generated from the source's schema, read through a UC connection, so serverless reaches CockroachDB on `CRDB_PORT`. Phase 3 adds gold and rounds 3 and 4. `PHASE=1` stops after bronze, `PHASE=2` after silver.
 
 This isn't Lakeflow Connect. It's for sources Lakeflow Connect doesn't cover, or for teams that want the change log itself as an append-only bronze table.
 
@@ -32,11 +32,34 @@ The OAuth secret is never printed. It goes from the CLI's response into Debezium
 
 ```bash
 cd skills/zerobus-debezium-test
-export PROFILE=<cli-profile> CATALOG=<catalog> VM_IP=<vm-ip>
-C=/tmp/crdb-dbz-$(date +%s).sh; cp scripts/crdb-debezium-zerobus.sh $C && OUT=/tmp/crdb-dbz-result.md bash $C
+export PROFILE=<cli-profile> CATALOG=<catalog> VM_IP=<vm-ip>   # SOURCE=yb for YugabyteDB (see below)
+C=/tmp/dbz-$(date +%s).sh; cp scripts/debezium-zerobus.sh $C && OUT=/tmp/dbz-result.md bash $C
 ```
 
 Run a copy with its own name, as above, so that editing the script, or starting another run, can't change a run in progress (bash reads a script as it runs). It exits 0 when every claim passed, 1 when one failed and 2 when a prerequisite is missing. The images are pinned by default: `CRDB_IMAGE` (CockroachDB v25.4.13) and `DBZ_IMAGE` (Debezium Server 3.7.0.Final).
+
+## Without cloud storage or service principal permissions: the laptop
+
+Many users can't create object storage (an S3 bucket, an Azure storage account), can't get the Databricks permissions that reach it (a storage credential, an external location), or can't create service principals. They can still run the whole test:
+
+| Piece | On a cloud VM (above) | On the laptop |
+|---|---|---|
+| Source and Debezium | Podman on a VM over SSH (`VM_IP`) | Podman in a local Lima VM (`LIMA=<instance>`). Images and the Zerobus native library exist for arm64 |
+| Change log | Zerobus | Zerobus, the same. Zerobus authenticates only with a service principal's OAuth secret, and Debezium's sink takes only `client.id` and `client.secret`. So someone who can create one makes it once and hands over its application ID and secret: `SP_CLIENT_ID` and `SP_SECRET_FILE` (a 0600 file). The script then creates no service principal; as the owner of `cdc_log`, you grant it `SELECT` and `MODIFY` |
+| Snapshot | `databricks fs cp` into a Volume | The same: dumped on the laptop, then `databricks fs cp` into a **managed** Volume. A managed Volume uses the catalog's own storage, so it needs no storage credential or external location: only `CREATE SCHEMA` (or a schema you own) in a catalog you can use |
+| Schema | `remote_query` through a UC connection (serverless must reach the database) | **Through the Volume too** (`SCHEMA_VIA=volume`, the default with `LIMA`). The source's DDL becomes statschema's canonical `schema.yaml` with the **lfc-source-statschema** skill's `ddl-to-schema.py`, and goes to `<volume>/_schema/schema.yaml`, with a copy as at T, `schema-at-T.yaml` |
+| Silver | Generated `silver.sql` and `dedupe.py` | [scripts/silver-from-schema.py](scripts/silver-from-schema.py): one Python pipeline file that reads both YAML files when the pipeline starts and defines every view, table and flow (SCD type 1 and 2, replays removed). A schema change is: upload the new `schema.yaml`, then full-refresh the changed tables. Nothing is regenerated |
+
+```bash
+cd skills/zerobus-debezium-test
+export PROFILE=<cli-profile> CATALOG=<a catalog you can create a schema in> LIMA=<lima instance with podman>
+export SP_CLIENT_ID=<application id> SP_SECRET_FILE=<file with its OAuth secret>
+C=/tmp/dbz-$(date +%s).sh; cp scripts/debezium-zerobus.sh $C && OUT=/tmp/dbz-result.md bash $C
+```
+
+Passed all 30 claims on 2026-10-20, run 1792541354 (Lima `forgedb-lima-rosetta2-podman`, Ubuntu 25.10 arm64, Podman 5.4.2), the same claims as on the VM (run 1792541366 after the `SOURCE` change, also 30). The schema changes in rounds 4 and 5 went through a new `schema.yaml` in the Volume and a full refresh.
+
+`ddl-to-schema.py` runs with `uv`. sqlglot's postgres dialect rejects two things in CockroachDB's `SHOW CREATE ALL TABLES`: `PRIMARY KEY (id ASC)` and typed literals such as `DEFAULT 'none':::STRING`. So the script removes `ASC`, `DESC` and `:::<type>` first. When the dump fails, the round fails (`schema-refetch`), rather than checking against the old schema. `SCHEMA_VIA=volume` dumps DDL for `SOURCE=crdb` only, so far.
 
 ## Silver (phase 2)
 
@@ -135,6 +158,29 @@ Dropping `source` loses nothing silver can use. The source table is in `destinat
 CockroachDB's changefeed sends each row's commit time (`updated`, or `source.ts_hlc` with `enriched_properties = 'source'`, a nanosecond HLC). The connector drops it. In the event, `source.ts_hlc` is null, and `source.ts_ns` / `ts_ms` and the position's `offset.cursor` hold the connector's offset time, which advances only on resolved timestamps. Measured on 2026-10-20: 8 changes committed within 4 ms of each other, at `...511.329226021` s, all carried `source.ts_ns = ...481000000000`, a whole second 30 s earlier. Setting `cockroachdb.changefeed.enriched.properties=source` (`ENRICHED_PROPERTIES=source`) changed nothing: the same null `ts_hlc`, the same bytes. In the bytecode, the connector reads only `schema_name` and `table_name` from the changefeed's source block, and nothing calls `SourceInfo.setHlc`.
 
 So silver can't sequence by the commit time. What's left is the top-level `ts_ns`: when Debezium processed the event, in nanoseconds, distinct for all 8 changes. It still orders each key's changes. A changefeed emits each key's changes in commit order, and one Debezium Server processes them one at a time. After a restart, Debezium re-sends the changes after its offset, in order, with later `ts_ns`. It's Debezium's clock, though, not the database's. The snapshot is sequenced by T, from the database's clock, so the two only compare correctly when the clocks agree, as they do on one VM.
+
+## YugabyteDB (`SOURCE=yb`): blocked at the connector
+
+`SOURCE=yb` runs the same test on YugabyteDB 2026.1.2.0 (`yugabytedb/yugabyte:2026.1.2.0-b137`), tables in a schema named `shop`. Tested 2026-10-20.
+
+**What works:**
+
+| Step | How |
+|---|---|
+| T | Create the publication and the logical replication slot first (`pg_create_logical_replication_slot('dbz_slot', 'pgoutput')`). The slot's consistent snapshot is `pg_replication_slots.yb_restart_commit_ht`, a hybrid time: shift it right by 12 bits for microseconds (it matches `yb_restart_time`). Logical replication is on by default in 2026.1 (`wal_level=logical`, `yb_enable_replication_commands=on`) |
+| Snapshot as of T | `SET yb_read_time TO <microseconds>`, then `COPY (SELECT * FROM shop.<table>) TO STDOUT WITH (FORMAT csv, HEADER)`. A row updated after the slot was created still reads as it was at T. Silver reads the CSV with `read_files(..., format => 'csv', header => true)` |
+| Schema | `remote_query` on a POSTGRESQL UC connection (port 5433, user `yugabyte`) |
+| History truth | An audit trigger writes every change to `shop.audit`, which isn't in the publication |
+
+**What doesn't: Debezium Server 3.7 can't read the slot.**
+
+| Connector | Result |
+|---|---|
+| Debezium's PostgreSQL connector 3.7.0.Final (in the image) | Fails and retries forever: "ERROR: pg_current_wal_lsn() is not yet supported", [yugabyte-db#30243](https://github.com/yugabyte/yugabyte-db/issues/30243) |
+| Yugabyte's connector `dz.2.5.2.yb.2026.1.2.0.1` (`io.debezium.connector.postgresql.YugabyteDBConnector`), jar with dependencies, in place of the PostgreSQL connector jar | Debezium Server doesn't start: `ClassNotFoundException: io.debezium.connector.postgresql.PostgresConnector` (Quarkus expects it) |
+| The same jar next to the PostgreSQL connector jar | Starts, and the Zerobus sink connects, but the engine never runs: health `DOWN`, no connector task thread, no events. The jar bundles Debezium core and API 2.5.2, and Debezium Server 3.7 needs 3.7 |
+
+Debezium Server has the Zerobus sink only from 3.7, and Yugabyte's connector is built on Debezium 2.5.2. The routes left: Kafka Connect, standalone, with Yugabyte's connector, producing to the Zerobus Apache Kafka-compatible API (one topic per table, the topic being the table's full name); or the PostgreSQL connector once YugabyteDB supports `pg_current_wal_lsn()`.
 
 ## CockroachDB licensing
 
