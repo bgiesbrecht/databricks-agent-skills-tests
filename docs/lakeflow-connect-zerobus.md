@@ -36,6 +36,9 @@ Every ✅ ran end to end on Azure, into a serverless workspace, from the committ
 
 | Date (UTC) | Commit | Database | Route | Where | Claims | Run |
 |---|---|---|---|---|---|---|
+| 2026-10-21 | `a3d478a` | CockroachDB v25.4.13 | Debezium Server → Zerobus (gRPC) | Cloud VM (Ubuntu 24.04.4 LTS, podman version 4.9.3) → azure centralus serverless | 33 of 33 | 1792595214, [run-all.sh](../skills/zerobus-debezium-test/scripts/run-all.sh) |
+| 2026-10-21 | `a3d478a` | YugabyteDB 2026.1.2.0 | Kafka Connect → Zerobus Kafka endpoint | Cloud VM (Ubuntu 24.04.4 LTS, podman version 4.9.3) → azure centralus serverless | 33 of 33 | 1792595219, [run-all.sh](../skills/zerobus-debezium-test/scripts/run-all.sh) |
+| 2026-10-21 | `a3d8c16` | CockroachDB v25.4.13 | Debezium Server → Zerobus (gRPC) | Laptop, Lima `forgedb-lima-rosetta2-podman`, no cloud storage (Ubuntu 25.10, podman version 5.4.2) → azure centralus serverless | 33 of 33 | 1792594109, [run-all.sh](../skills/zerobus-debezium-test/scripts/run-all.sh) |
 | 2026-10-21 | `e1720c0` | CockroachDB v25.4.13 | Debezium Server → Zerobus (gRPC) | Cloud VM (Ubuntu 24.04.4 LTS, podman version 4.9.3) → azure centralus serverless | 30 of 30 | 1792591170, [run-all.sh](../skills/zerobus-debezium-test/scripts/run-all.sh) |
 | 2026-10-21 | `e1720c0` | YugabyteDB 2026.1.2.0 | Kafka Connect → Zerobus Kafka endpoint | Cloud VM (Ubuntu 24.04.4 LTS, podman version 4.9.3) → azure centralus serverless | 30 of 30 | 1792591175, [run-all.sh](../skills/zerobus-debezium-test/scripts/run-all.sh) |
 | 2026-10-21 | `e1720c0` | CockroachDB v25.4.13 | Debezium Server → Zerobus (gRPC) | Laptop, Lima `forgedb-lima-rosetta2-podman`, no cloud storage (Ubuntu 25.10, podman version 5.4.2) → azure centralus serverless | 30 of 30 | 1792591183, [run-all.sh](../skills/zerobus-debezium-test/scripts/run-all.sh) |
