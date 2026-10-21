@@ -48,5 +48,6 @@ The standard name is **`account-<cloud>-<account-id>`**, logged in to the cloud'
 
 - A minted token lasts about an hour. Rerun `ws-token.sh` when calls start failing, or before a long run.
 - Never print a token or copy a config file elsewhere; delete it when done. It holds a live credential.
+- **The scripts never read the CLI's config file themselves.** Profile fields (host, account_id, which profiles are account profiles) come from `databricks auth profiles --skip-validate -o json`, and the CLI reads the file. Security hooks in some agent setups block any command that names the file, and a parser of our own would drift from the CLI's rules. `DATABRICKS_CONFIG_FILE_SOURCE` still points the scripts at another real config file.
 - An account login acts as you: it doesn't need account admin, and it gives no more than your own workspace permissions.
 - Tested 2026-10 against 30 workspace profiles on AWS, Azure and GCP (`profiles-check.sh --verify`, 41 s): 8 logged in on their own; the Azure CLI covered 4 expired Azure profiles, one of them in a second Entra tenant; an account login covered an AWS field sandbox workspace when forced (not account admin). Field sandbox `fe-sandbox-*` workspaces refused account tokens, a deleted workspace failed the same way, and most of the rest needed an account login that had itself expired.

@@ -3,7 +3,7 @@
 #   a token from another login you already have: the Azure CLI (Azure), or the account login for the same account.
 #   - The profile's own login works: prints nothing, exits 0 (keep using ~/.databrickscfg).
 #   - It doesn't: on Azure, tries an Entra ID token from the Azure CLI (any workspace in its tenant); then an account
-#     profile in ~/.databrickscfg with the same account_id, minting a short-lived token from it (databricks auth token
+#     profile (from `databricks auth profiles`) with the same account_id, minting a short-lived token from it (databricks auth token
 #     --host <accounts host> --account-id <id>). Checks the token against the workspace, writes a
 #     one-profile config FILE (mode 600; default $TMPDIR/ws-token-<profile>.cfg) and prints FILE. Use it as
 #       CFG=$(ws-token.sh <profile>) && [ -n "$CFG" ] && export DATABRICKS_CONFIG_FILE=$CFG
@@ -13,16 +13,19 @@
 set -uo pipefail
 P=$1; shift; CFG=; FORCE=
 while [ $# -gt 0 ]; do case $1 in --cfg) CFG=$2; shift 2;; --force) FORCE=1; shift;; *) echo "unknown $1" >&2; exit 2;; esac; done
-SRC=${DATABRICKS_CONFIG_FILE_SOURCE:-$HOME/.databrickscfg}       # where the real profiles are
 CFG=${CFG:-${TMPDIR:-/tmp}/ws-token-$P.cfg}
 say() { echo "ws-token: $*" >&2; }
-# one key of one section of an ini file
-key() { awk -v s="[$2]" -v k="$3" '$0==s{f=1;next} /^\[/{f=0} f{sub(/[ \t]*=[ \t]*/,"="); split($0,a,"="); if (a[1]==k) {print a[2]; exit}}' "$1"; }
+# run with the real profiles: DATABRICKS_CONFIG_FILE_SOURCE if set, else the CLI's default config (not a token file this
+# script wrote earlier). Profile fields come from `databricks auth profiles`; this script never reads the config file.
+real() { if [ -n "${DATABRICKS_CONFIG_FILE_SOURCE:-}" ]; then DATABRICKS_CONFIG_FILE=$DATABRICKS_CONFIG_FILE_SOURCE "$@"; else env -u DATABRICKS_CONFIG_FILE "$@"; fi; }
+PROFILES=$(real timeout 60 databricks auth profiles --skip-validate -o json 2> /dev/null)
+# field $2 of profile $1
+field() { printf '%s' "$PROFILES" | yq -p json -o tsv ".profiles[] | select(.name == \"$1\") | .$2 // \"\""; }
 
-if [ -z "$FORCE" ] && DATABRICKS_CONFIG_FILE=$SRC timeout 60 databricks current-user me --profile "$P" -o json > /dev/null 2>&1; then
+if [ -z "$FORCE" ] && real timeout 60 databricks current-user me --profile "$P" -o json > /dev/null 2>&1; then
   say "$P: its own login works"; exit 0; fi
-HOST=$(key "$SRC" "$P" host); AID=$(key "$SRC" "$P" account_id)
-[ -n "$HOST" ] || { say "$P: no such profile in $SRC"; exit 1; }
+HOST=$(field "$P" host); AID=$(field "$P" account_id)
+[ -n "$HOST" ] || { say "$P: no such profile (databricks auth profiles)"; exit 1; }
 # write the one-profile config for token $1 and check it; prints the file and exits 0 when the workspace accepts it
 try() { ( umask 077; printf '[%s]\nhost  = %s\ntoken = %s\n' "$P" "$HOST" "$1" > "$CFG" )
   if DATABRICKS_CONFIG_FILE=$CFG timeout 60 databricks current-user me --profile "$P" -o json > /dev/null 2> "$CFG.err"; then
@@ -45,10 +48,9 @@ case $HOST in *.azuredatabricks.net*)
 esac
 [ -n "$AID" ] || { say "$P: no account_id in its profile, so no account login to fall back on: databricks auth login --profile $P"; exit 1; }
 # account profiles for the same account: an accounts.* host and the same account_id
-for A in $(awk '/^\[/{gsub(/[][]/,""); print}' "$SRC"); do
-  AH=$(key "$SRC" "$A" host); [ "$(key "$SRC" "$A" account_id)" = "$AID" ] || continue
-  case $AH in https://accounts.*) ;; *) continue;; esac
-  tok=$(DATABRICKS_CONFIG_FILE=$SRC timeout 60 databricks auth token --host "$AH" --account-id "$AID" --profile "$A" -o json 2> /dev/null \
+for A in $(printf '%s' "$PROFILES" | yq -p json -o tsv ".profiles[] | select(.account_id == \"$AID\" and ((.host // \"\") | test(\"^https://accounts[.]\"))) | .name"); do
+  AH=$(field "$A" host)
+  tok=$(real timeout 60 databricks auth token --host "$AH" --account-id "$AID" --profile "$A" -o json 2> /dev/null \
         | yq -p json -o tsv '.access_token // ""')
   [ -n "$tok" ] || { say "account profile $A: no token (login expired?): databricks auth login --profile $A"; continue; }
   try "$tok" "account profile $A"; unset tok
