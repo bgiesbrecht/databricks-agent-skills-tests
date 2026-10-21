@@ -74,7 +74,9 @@ ports=; has grpc && ports="$ports 443"; has kafka && ports="$ports 9092"; has mq
 for port in $ports; do
   # nc where there is one: macOS bash's /dev/tcp hung on this endpoint while nc connected (2026-10-21)
   cmd="if command -v nc >/dev/null; then nc -z -w 5 $ZB $port >/dev/null 2>&1; else timeout 8 bash -c 'exec 3<>/dev/tcp/$ZB/$port' 2>/dev/null; fi && echo open || echo closed"
-  st=$(if [ -n "$FROM" ]; then $FROM bash -c "\"$cmd\"" 2>/dev/null; else bash -c "$cmd"; fi)
+  # ssh joins its arguments into one string for the remote shell, so the command goes quoted; limactl shell (and any
+  # other prefix) passes them as they are
+  st=$(case "$FROM" in "") bash -c "$cmd";; ssh\ *) $FROM bash -c "\"$cmd\"" 2>/dev/null;; *) $FROM bash -c "$cmd" 2>/dev/null;; esac)
   [ "$st" = open ] && row PASS "TCP $port to the endpoint${FROM:+ from $FROM}" "open" \
     || row FAIL "TCP $port to the endpoint${FROM:+ from $FROM}" "${st:-no answer}" "open outbound $port to $ZB (firewall, proxy, VPN)"; done
 
