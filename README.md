@@ -23,6 +23,15 @@ Every ✅ ran end to end in a real workspace: source database, UC connection, pi
 | PostgreSQL 16 | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | not offered | not enabled on any test workspace |
 | SQL Server 2022 | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure (serverless gateway) |
 
+## Tested end to end: Lakeflow Connect Zerobus, by database
+
+Database changes through Zerobus Ingest into bronze, silver (current rows and every version) and gold, each checked against the source after five rounds of changes, a producer restart and schema changes included. The runs, and how to repeat them: [docs/lakeflow-connect-zerobus.md](docs/lakeflow-connect-zerobus.md).
+
+| Database | Producer into Zerobus | Bronze | Silver SCD 1 and 2 | Gold | Producer restart | Schema changes | No cloud storage (laptop) |
+|---|---|---|---|---|---|---|---|
+| CockroachDB v25.4.13 | Debezium Server, Zerobus sink | ✅ Azure | ✅ Azure | ✅ Azure | ✅ Azure | ✅ Azure | ✅ |
+| YugabyteDB 2026.1.2.0 | Kafka Connect (no broker), Zerobus Kafka endpoint | ✅ Azure | ✅ Azure | ✅ Azure | ✅ Azure | ✅ Azure | not run yet |
+
 ## Quick start
 
 Open Claude Code (or another coding agent) in this repo, with a Databricks CLI login, and ask in plain words:
@@ -46,6 +55,7 @@ The test space is large: where the source runs, the database and version, the in
 
 - [A skill for each step of the test and validation journey](docs/test-and-validation-journey.md): sources on every cloud or a laptop, the firewall, the four ingestion modes, data at size, database copies in seconds, changes, schema changes, Zerobus, and the runtime each test ran on.
 - [Numbers from the tests](docs/numbers-from-the-tests.md): branch and read/write times, 110M rows generated inside the database, change events half the size, how long the schema-change tests take.
+- [docs/lakeflow-connect-zerobus.md](docs/lakeflow-connect-zerobus.md): Lakeflow Connect Zerobus, tested end to end by database, with every successful run.
 - [docs/zerobus-debezium.md](docs/zerobus-debezium.md): database changes through Debezium and Zerobus into bronze, silver and gold, what was checked, and the prompts to run it again.
 - [docs/lakeflow-connect-database.md](docs/lakeflow-connect-database.md): the prompts that reproduce each cell of the table, and what they create, in order.
 - [docs/coverage.md](docs/coverage.md): every axis tested, what the product refuses by design, and what's not tested yet.

@@ -664,7 +664,11 @@ fi
   echo "# debezium-zerobus run $E ($SRC_NAME)"; echo
   echo "- Date (UTC): $(date -u +%F)"
   echo "- Source: $SRC_NAME $SRC_VERSION, image $SRC_IMAGE ($(vm "sudo podman inspect -f '{{.ImageDigest}}' $SRCC"))"
-  echo "- Debezium: $DBZ_IMAGE ($(vm "sudo podman inspect -f '{{.ImageDigest}}' $DBZ")), $([ "$SOURCE" = crdb ] && echo 'CockroachDB connector, sinkless changefeed' || echo 'PostgreSQL connector, pgoutput on a YugabyteDB logical replication slot'), Zerobus sink (envelope into one change-log table, VARIANT fields, idempotency source)"
+  if [ "$SINK" = kafka ]; then
+    echo "- Producer: Kafka Connect standalone, $CONNECT_IMAGE ($(vm "sudo podman inspect -f '{{.ImageDigest}}' $DBZ")), no broker; Yugabyte connector $(basename "$YB_CONNECTOR_URL" .jar | sed 's/-jar-with-dependencies//'), pgoutput on a logical replication slot; StringifyField; into Zerobus's Kafka-compatible endpoint (one change-log table, VARIANT value)"
+  else
+    echo "- Debezium: $DBZ_IMAGE ($(vm "sudo podman inspect -f '{{.ImageDigest}}' $DBZ")), $([ "$SOURCE" = crdb ] && echo 'CockroachDB connector, sinkless changefeed' || echo 'PostgreSQL connector, pgoutput on a YugabyteDB logical replication slot'), Zerobus sink (envelope into one change-log table, VARIANT fields, idempotency source)"
+  fi
   echo "- Host: $(vm '. /etc/os-release; echo $PRETTY_NAME'), $(vm 'podman --version')"
   echo "- Destination: Zerobus in $CLOUD $REGION, one append-only change-log Delta table, liquid-clustered by destination (the source table)"
   echo; echo "| Claim | Result | Observation |"; echo "|---|---|---|"
