@@ -1,0 +1,296 @@
+# lib.sh: shared steps of the SQL Server Lakeflow Connect scenario tests. Source it from a test script after setting
+# PROFILE, CONNECTION, CATALOG, SRC_SQL, CONN_USER (see sqlserver-add-column.sh for what each is), then:
+# (ENGINE=postgres for a PostgreSQL source: SRC_SQL is then scripts/vm-psql.sh or alike, src_util and track are not
+# used, and each pipeline gets its own publication and slot, both named $SLOT)
+#
+#   lfc_init <short-name>      pre-flight checks; sets PREFIX, WAREHOUSE, E (epoch), DB, S, STG, GWN, APN, W, T
+#   src_db  <<'EOF' ... EOF    create the fresh source database $DB and run the T-SQL in it (schema lfcddemo, tables)
+#   src_util                   install the utility objects in $DB
+#   src <<'EOF' ... EOF        run T-SQL in $DB
+#   obj <table> [json]         one ingestion object (SCD=SCD_TYPE_2 for type 2; extra table_configuration JSON)
+#   pipelines_create <objs>    MODE=standard: gateway + ingestion pipeline; MODE=integrated: one pipeline. Sets GW, AP
+#   update [t1,t2]             start an update (full refresh of the listed tables), follow the chain until idle
+#   settle <table> <column>    after a source change, update until an error or <column> shows in the destination
+#   expect <want> <sql>        query; after an early stop that didn't give <want>, one more update and query again
+#   errs_for <table>, needs_refresh <table>, q <sql>, claim, observe, result_md <title>
+#
+# FP_TABLES (space-separated destination tables) drives the integrated-CDC early stop. The EXIT trap deletes the
+# pipelines, the schemas and the source database (KEEP=1 keeps them).
+export PATH=/opt/homebrew/bin:$PATH
+: "${PROFILE:?}" "${CONNECTION:?}" "${CATALOG:?}" "${SRC_SQL:?}" "${CONN_USER:?}"
+LIB=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+WAIT=${GATEWAY_WAIT:-90}
+ENGINE=${ENGINE:-sqlserver}   # sqlserver | postgres
+MODE=${MODE:-standard}   # standard: gateway + ingestion pipeline; integrated: one pipeline (connector_type CDC)
+case $MODE in standard|integrated) ;; *) echo "MODE must be standard or integrated"; exit 2;; esac
+[ "$MODE" = integrated ] && WAIT=0   # integrated CDC reads the source inside each update
+dbx() { databricks "$@" --profile "$PROFILE"; }
+RESULTS=(); FAILED=0
+claim() { RESULTS+=("| \`$1\` | $2 | $3 |"); [ "$2" = PASS ] || FAILED=1; echo "$2 $1: $3"; }
+observe() { RESULTS+=("| \`$1\` | OBSERVED | $2 |"); echo "OBSERVED $1: $2"; }   # no expected answer yet
+
+lfc_init() {
+  ME=$(dbx current-user me -o json | yq '.userName')
+  PREFIX=${PREFIX:-$(echo "$ME" | cut -d@ -f1 | tr -d '.-' | tr 'A-Z' 'a-z')}
+  local root def
+  root=$(dbx catalogs get "$CATALOG" -o json | yq '.storage_root // ""')
+  def=$(dbx external-locations get __databricks_managed_storage_location -o json 2>/dev/null | yq '.url // ""')
+  [ -n "$root" ] || { echo "catalog $CATALOG has no storage root"; exit 2; }
+  [ -n "$def" ] && [[ "$root" == "$def"* ]] && { echo "catalog $CATALOG is on Default Storage: CDC refuses it"; exit 2; }
+  local ct=SQLSERVER; [ "$ENGINE" = postgres ] && ct=POSTGRESQL
+  [ "$(dbx connections get "$CONNECTION" -o json | yq '.connection_type')" = $ct ] || { echo "$CONNECTION is not $ct"; exit 2; }
+  WAREHOUSE=${WAREHOUSE:-$(dbx warehouses list -o json | yq '[.[] | select(.enable_serverless_compute)][0].id')}
+  export WAREHOUSE
+  E=$(date +%s); DB=${PREFIX}_$1_$E; BASE=${PREFIX}_$(echo "$CONNECTION" | tr -- '-' '_' | sed "s/^${PREFIX}_//")
+  S=${BASE}_$E; STG=${S}_stg; GWN=${BASE}_gw_$E; APN=${BASE}_ap_$E; W=$(mktemp -d)
+  T="\`$CATALOG\`.$S"; SLOT=${PREFIX}_$1_$E
+  echo "run $E ($MODE): source database $DB, catalog $CATALOG, schemas $S and $STG"
+  trap cleanup EXIT
+}
+
+# sql "<statement>": run on the warehouse, print rows tab-separated
+sql() {
+  yq -n -o json '.warehouse_id = strenv(WAREHOUSE) | .wait_timeout = "50s" | .statement = strenv(Q)' > "$W/st.json"
+  dbx api post /api/2.0/sql/statements --json @"$W/st.json" > "$W/st.out"
+  [ "$(yq '.status.state' "$W/st.out")" = SUCCEEDED ] || { yq '.status.state + ": " + (.status.error.message // "")' "$W/st.out" | cut -c1-300 >&2; return 1; }
+  yq -r '.result.data_array[]? | @tsv' "$W/st.out"
+}
+q() { export Q=$1; sql; }
+# rq "<T-SQL>": run a query on the source through the UC connection (what serverless sees)
+rq() { q "SELECT * FROM remote_query('$CONNECTION', database => '$DB', query => '${1//\'/\'\'}')"; }
+
+# --- source ---------------------------------------------------------------------------------------------------------
+src_db() {
+  if [ "$ENGINE" = postgres ]; then
+    echo "CREATE DATABASE $DB;" | $SRC_SQL postgres >/dev/null || { echo "source setup failed"; exit 2; }
+    SRC_CREATED=1
+    { echo "CREATE SCHEMA lfcddemo;"; cat
+      printf 'GRANT CONNECT ON DATABASE %s TO %s;\nGRANT USAGE ON SCHEMA lfcddemo TO %s;\nGRANT SELECT ON ALL TABLES IN SCHEMA lfcddemo TO %s;\nALTER DEFAULT PRIVILEGES IN SCHEMA lfcddemo GRANT SELECT ON TABLES TO %s;\n' \
+        "$DB" "$CONN_USER" "$CONN_USER" "$CONN_USER" "$CONN_USER"; } | $SRC_SQL "$DB" >/dev/null || { echo "source setup failed"; exit 2; }
+    return
+  fi
+  { printf 'CREATE DATABASE %s;\nGO\nUSE %s;\nGO\nCREATE SCHEMA lfcddemo;\nGO\n' "$DB" "$DB"; cat
+    printf '\nGO\nCREATE USER %s FOR LOGIN %s;\n' "$CONN_USER" "$CONN_USER"; } | $SRC_SQL master >/dev/null \
+    || { echo "source setup failed"; exit 2; }
+  SRC_CREATED=1
+}
+src() { $SRC_SQL "$DB"; }
+src_util() {
+  curl -fsSL -o "$W/utility_script.sql" https://learn.microsoft.com/en-us/azure/databricks/_extras/documents/utility_script.sql
+  $SRC_SQL "$DB" < "$W/utility_script.sql" >/dev/null || { echo "utility objects install failed"; exit 2; }
+  UTIL=$(printf 'SET NOCOUNT ON; SELECT dbo.lakeflowUtilityVersion();\n' | src | head -1 | tr -d '[:space:]')
+}
+# track <ct|cdc> <table> [table...]: change tracking or CDC on lfcddemo.<table>, with the connection login's grants
+# Each table is checked afterwards (sys.tables.is_tracked_by_cdc, sys.change_tracking_tables), and set up again up to
+# 3 times: enabling CDC in several databases at once (parallel runs) can fail, and a table left untracked fails the
+# run later with INGESTION_GATEWAY_CDC_NOT_ENABLED, which looks like a product result.
+track() {
+  local kind=$1 t n ok; shift
+  for t in "$@"; do
+    for n in 1 2 3; do
+      if [ "$kind" = ct ]; then echo "EXEC dbo.lakeflowSetupChangeTracking @Tables = 'lfcddemo.$t', @User = '$CONN_USER';"
+      else echo "EXEC dbo.lakeflowSetupChangeDataCapture @Tables = 'lfcddemo.$t', @User = '$CONN_USER';"; fi | src > "$W/track.out" 2>&1
+      if [ "$kind" = ct ]; then ok=$(echo "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.change_tracking_tables WHERE object_id = OBJECT_ID('lfcddemo.$t');" | src)
+      else ok=$(echo "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.tables WHERE object_id = OBJECT_ID('lfcddemo.$t') AND is_tracked_by_cdc = 1;" | src); fi
+      [ "${ok//[[:space:]]/}" = 1 ] && break
+      echo "track $kind $t: not tracked after try $n: $(grep -i -m1 -E 'error|msg [0-9]' "$W/track.out" | cut -c1-160)" >&2; sleep 10
+    done
+    [ "${ok//[[:space:]]/}" = 1 ] || { echo "could not set up $kind on lfcddemo.$t"; exit 2; }
+  done
+  echo "EXEC dbo.lakeflowFixPermissions @User = '$CONN_USER', @Tables = 'SCHEMAS:lfcddemo';" | src >/dev/null
+}
+# fill <table> <n> [first id]: n rows (id, v='before')
+fill() {
+  [ "$ENGINE" = postgres ] && { printf "INSERT INTO lfcddemo.%s (id, v) SELECT g, 'before' FROM generate_series(%s, %s) g;\n" "$1" "${3:-1}" "$(( ${3:-1} + $2 - 1 ))" | src >/dev/null; return; }
+  printf "INSERT INTO lfcddemo.%s (id, v) SELECT TOP %s %s + ROW_NUMBER() OVER (ORDER BY (SELECT 1)) - 1, 'before' FROM sys.all_objects;\n" "$1" "$2" "${3:-1}" | src >/dev/null; }
+
+# --- pipelines ------------------------------------------------------------------------------------------------------
+obj() { echo "{\"table\":{\"source_catalog\":\"$DB\",\"source_schema\":\"lfcddemo\",\"source_table\":\"$1\",\"destination_catalog\":\"$CATALOG\",\"destination_schema\":\"$S\",\"table_configuration\":{\"scd_type\":\"${SCD:-SCD_TYPE_1}\"${2:+,$2}}}}"; }
+AFR='"auto_full_refresh_policy":{"enabled":true,"min_interval_hours":1}'
+# gateway_create: a serverless continuous gateway with its own staging schema $STG. Sets GW
+gateway_create() {
+  dbx schemas create "$STG" "$CATALOG" >/dev/null 2>&1
+  GW=$(dbx pipelines create -o json --json "{\"name\":\"$GWN\",\"catalog\":\"$CATALOG\",\"schema\":\"$STG\",\"serverless\":true,\"continuous\":true,
+    \"gateway_definition\":{\"connection_name\":\"$CONNECTION\",\"gateway_storage_catalog\":\"$CATALOG\",\"gateway_storage_schema\":\"$STG\",\"gateway_storage_name\":\"$GWN\"}}" | yq '.pipeline_id')
+  [ -n "$GW" ] && [ "$GW" != null ] || { echo "gateway create failed"; exit 2; }
+}
+pipelines_create() {
+  dbx schemas create "$S" "$CATALOG" >/dev/null || exit 2
+  if [ "$MODE" = standard ]; then
+    gateway_create
+    SRCDEF="\"ingestion_gateway_id\":\"$GW\""
+  else
+    SRCDEF="\"connection_name\":\"$CONNECTION\",\"connector_type\":\"CDC\""
+  fi
+  # Postgres: one publication per pipeline, for the whole test schema (PostgreSQL 15+), so a table added later is in it
+  [ "$ENGINE" = postgres ] && { echo "CREATE PUBLICATION ${SLOT}_pub FOR TABLES IN SCHEMA lfcddemo;" | src >/dev/null || { echo "publication create failed"; exit 2; }; }
+  [ "$ENGINE" = postgres ] && SRCDEF+=",\"source_type\":\"POSTGRESQL\",\"source_configurations\":[{\"catalog\":{\"source_catalog\":\"$DB\",\"postgres\":{\"slot_config\":{\"slot_name\":\"$SLOT\",\"publication_name\":\"${SLOT}_pub\"}}}}]"
+  AP=$(dbx pipelines create -o json --json "{\"name\":\"$APN\",\"catalog\":\"$CATALOG\",\"schema\":\"$S\",\"serverless\":true,
+    \"ingestion_definition\":{$SRCDEF,\"objects\":[$1]}}" | yq '.pipeline_id')
+  [ -n "$AP" ] && [ "$AP" != null ] || { echo "ingestion pipeline create failed"; exit 2; }
+  # Postgres: the slot after the pipelines exist, so a refused create leaves none holding WAL
+  [ "$ENGINE" = postgres ] && { echo "SELECT pg_create_logical_replication_slot('$SLOT', 'pgoutput');" | src >/dev/null || { echo "slot create failed"; exit 2; }; }
+  echo "LINK pipeline $(dbx auth describe -o json 2>/dev/null | yq -r '.details.host // ""')/pipelines/$AP"
+}
+# set_objects <objs>: replace the ingestion pipeline's table list (pipelines update needs the whole spec)
+set_objects() {
+  dbx pipelines get "$AP" -o json | O="[$1]" yq -o json '.spec | .ingestion_definition.objects = (strenv(O) | from_json)' > "$W/spec.json"
+  dbx pipelines update "$AP" --json @"$W/spec.json" >/dev/null
+}
+
+# --- updates --------------------------------------------------------------------------------------------------------
+# update [table,table]: start an ingestion update (full refresh of the listed tables) and wait until the pipeline is idle.
+# A failed or canceled update can be followed by one the pipeline starts itself (cause RETRY_ON_FAILURE or SCHEMA_CHANGE;
+# seen on integrated CDC after an added column, 2026-10-20), and while that one runs start-update is refused. So the
+# wait follows the chain: STATE is the last update's state, ERRS the error classes of every update in it, CHAIN the
+# cause and state of each.
+# Integrated CDC keeps an update running until its smart closure (20 minutes or more) even when nothing is left to do.
+# So in that mode (unless EARLY_STOP=0) an update that has run 3 minutes is stopped once fp() is unchanged for 3 polls;
+# EARLY=1 then, and ok_state accepts it in place of COMPLETED.
+fp() { q "SELECT $(for t in $FP_TABLES "__${AP//-/_}_cdc_staging_table"; do printf '(SELECT COUNT(*) FROM %s.%s),' "$T" "$t"; done)
+  (SELECT COUNT(*) FROM \`$CATALOG\`.information_schema.columns WHERE table_schema = '$S')" 2>/dev/null | tr '\t' ' '; }
+ok_state() { [ "$STATE" = COMPLETED ] || [ "${EARLY:-0}" = 1 ]; }
+# expect <expected> <sql>: print the query's result. When it isn't <expected> and the last update was stopped early, run
+# one more update first (it picks up what the stopped one left over) and query again. The last update's events are
+# kept, so errs_for still reads the update the step ran.
+expect() {
+  local r; r=$(q "$2" 2>&1)
+  if [ "$r" != "$1" ] && [ "${EARLY:-0}" = 1 ]; then
+    cp "$W/ev_last.json" "$W/ev_keep.json"; echo "after an early stop got '${r//$'\t'/ }': one more update" >&2
+    update >&2; r=$(q "$2" 2>&1); cp "$W/ev_keep.json" "$W/ev_last.json"
+  fi
+  echo "$r"
+}
+# snaps_done <update> <table,table>: the extractor finished reading every listed table in that update (its
+# extractor_..._<table>_snapshot_flow reported COMPLETED). A full refresh re-reads the table and counts can sit still
+# while it does, so for a refresh the early stop only counts stable polls after this. ("Snapshot of ... has been
+# APPLIED" is no use here: it comes when the update closes.)
+snaps_done() {
+  local t n; dbx api get "/api/2.0/pipelines/$AP/events?max_results=250" -o json > "$W/ev_snap.json"
+  for t in ${2//,/ }; do
+    n=$(U=$1 T1=$t yq '[.events[] | select(.origin.update_id == strenv(U) and .event_type == "flow_progress" and .details.flow_progress.status == "COMPLETED" and ((.origin.flow_name // "") | test("^extractor_.*_" + strenv(T1) + "_snapshot_flow$")))] | length' "$W/ev_snap.json")
+    [ "${n:-0}" -ge 1 ] || return 1
+  done
+}
+newest() { dbx pipelines list-updates "$AP" --max-results 1 -o json | yq '.updates[0].update_id'; }
+update() {
+  local body='{}' out u ids=() p tok=""; [ -n "${1:-}" ] && body=$(echo "$1" | yq -o json -I0 'split(",") | {"full_refresh_selection": .}')
+  out=$(dbx pipelines start-update "$AP" --json "$body" -o json 2>&1); u=$(echo "$out" | yq '.update_id' 2>/dev/null)
+  if [ -z "$u" ] || [ "$u" = null ]; then
+    u=$(newest); echo "start-update refused ($(echo "$out" | head -1 | cut -c1-120)); following $u"
+  fi
+  CHAIN=""; EARLY=0
+  while :; do
+    ids+=("$u"); local t0 f pf="" stable=0 early=""; t0=$(date +%s)
+    for _ in $(seq 1 90); do
+      STATE=$(dbx pipelines get-update "$AP" "$u" -o json | yq '.update.state')
+      case $STATE in COMPLETED|FAILED|CANCELED) break;; esac
+      if [ "$MODE" = integrated ] && [ "${EARLY_STOP:-1}" = 1 ] && [ "$STATE" = RUNNING ]; then
+        f=$(fp); if [ -n "$f" ] && [ "$f" = "$pf" ]; then stable=$((stable + 1)); else stable=0; fi; pf=$f
+        [ -n "${1:-}" ] && ! snaps_done "$u" "$1" && stable=0   # a refresh: count only after the extractor read the tables
+        if [ $stable -ge 3 ] && [ $(( $(date +%s) - t0 )) -ge 180 ]; then
+          dbx pipelines stop "$AP" >/dev/null 2>&1; EARLY=1; early=" (stopped early after $(( $(date +%s) - t0 ))s)"
+          STATE=$(dbx pipelines get-update "$AP" "$u" -o json | yq '.update.state'); break
+        fi
+      fi
+      sleep 20
+    done
+    CHAIN+="${CHAIN:+ -> }$(dbx pipelines get-update "$AP" "$u" -o json | yq '.update.cause') $STATE$early"
+    case $STATE in COMPLETED|FAILED|CANCELED) ;; *) break;; esac   # timed out: don't follow further
+    sleep 30   # a follow-up update starts within seconds of the last one ending
+    p=$(newest); [ "$p" = "$u" ] && break; u=$p
+  done
+  : > "$W/ev_chain.json"
+  for _ in 1 2 3 4; do   # events of every update in the chain; newest first, 250 a page
+    dbx api get "/api/2.0/pipelines/$AP/events?max_results=250${tok:+&page_token=$tok}" -o json > "$W/ev_page.json"
+    yq -o json -I0 '.events[]' "$W/ev_page.json" >> "$W/ev_chain.json"
+    tok=$(yq '.next_page_token // ""' "$W/ev_page.json"); [ -z "$tok" ] && break
+    IDS="${ids[0]}" yq -e '[.events[] | select(.origin.update_id == strenv(IDS))] | length > 0' "$W/ev_page.json" >/dev/null 2>&1 && break
+  done
+  for p in "${ids[@]}"; do U=$p yq -p json -o json -I0 'select(.origin.update_id == strenv(U))' "$W/ev_chain.json"; done > "$W/ev_sel.json"
+  if [ -s "$W/ev_sel.json" ]; then yq -p json -o json ea '[.]' "$W/ev_sel.json" > "$W/ev_last.json"; else echo '[]' > "$W/ev_last.json"; fi
+  ERRS=$(yq -r '.[] | .error.exceptions[]?.error_class // ""' "$W/ev_last.json" | grep -v '^$' | sort -u | tr '\n' ' ')
+  echo "update ${1:+(full refresh $1) }$STATE ${ERRS}[$CHAIN]"
+  # the message of each error, so a failure can be read after cleanup has deleted the pipeline
+  [ -n "${ERRS// /}" ] && yq -r '.[] | .error.exceptions[]? | select(.error_class) | .message | @json' "$W/ev_last.json" \
+    | sort -u | cut -c1-300 | sed 's/^/  error: /'
+  return 0
+}
+
+# errs_for <table>: error classes the last update reported for that table's flows
+# needs_refresh <table>: the last update reported an error for that table that asks for a full refresh. The hand-off
+# errors of a schema change (CDC_APPLIER_SCHEMA_CHANGED_DURING_STREAMING, FLOW_SCHEMA_CHANGED) don't, and a needless
+# refresh resets an SCD type 2 table's history.
+needs_refresh() { errs_for "$1" | grep -qE 'CDC_INCOMPATIBLE_SCHEMA_CHANGES|PRIMARY_KEY_CHANGE|CDC_LOG_TRUNCATED'; }
+errs_for() { T1=$1 yq -r '.[] | select((.origin.flow_name // "") | test("_" + strenv(T1) + "_")) | .error.exceptions[]?.error_class // ""' "$W/ev_last.json" | grep -v '^$' | sort -u | tr '\n' ' '; }
+# msgs_for <table>: the messages of those errors, one per line
+msgs_for() { T1=$1 yq -r '.[] | select((.origin.flow_name // "") | test("_" + strenv(T1) + "_")) | .error.exceptions[]? | select(.error_class) | .message' "$W/ev_last.json" | sort -u | cut -c1-200; }
+
+# settle <table> <column>: after a source change, run updates until one reports an error, or <column> shows up in the
+# destination <table> (applied inline). The gateway can take longer than one fixed wait to pick up a change, and an
+# update that ran before it did proves nothing.
+settle() {
+  for _ in 1 2 3 4; do
+    sleep "$WAIT"; update
+    [ -n "${ERRS// /}" ] && return
+    q "SELECT $2 FROM $T.$1 LIMIT 0" >/dev/null 2>&1 && return
+  done
+}
+# settle_rows <sql> <want>: after a source DML change, update until <sql> returns <want> or an update reports an error
+# (4 tries). SETTLED=1 when it matched.
+settle_rows() {
+  SETTLED=0; local r
+  for _ in 1 2 3 4; do
+    sleep "$WAIT"; update
+    r=$(q "$1" 2>&1); [ "$r" = "$2" ] && { SETTLED=1; return; }
+    [ -n "${ERRS// /}" ] && return
+  done
+}
+
+cleanup() {
+  [ "${KEEP:-0}" = 1 ] && { echo "KEEP=1: left $DB, $GWN, $APN, $CATALOG.$S"; return; }
+  [ -n "${AP:-}" ] && [ "$AP" != null ] && dbx pipelines delete "$AP"; [ -n "${GW:-}" ] && [ "$GW" != null ] && dbx pipelines delete "$GW"; sleep 15
+  dbx schemas delete "$CATALOG.$S" --force 2>/dev/null; dbx schemas delete "$CATALOG.$STG" --force 2>/dev/null
+  local left=0
+  if [ "${SRC_CREATED:-0}" = 1 ] && [ "$ENGINE" = postgres ]; then
+    for _ in 1 2 3; do   # the slot is held while the deleted gateway's session lingers
+      printf "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE slot_name = '%s' AND NOT active;\nDROP DATABASE IF EXISTS %s WITH (FORCE);\n" "$SLOT" "$DB" \
+        | $SRC_SQL postgres > "$W/drop.out" 2>&1
+      left=$(printf "SELECT (SELECT COUNT(*) FROM pg_database WHERE datname = '%s') + (SELECT COUNT(*) FROM pg_replication_slots WHERE slot_name = '%s');\n" "$DB" "$SLOT" | $SRC_SQL postgres)
+      [ "${left//[[:space:]]/}" = 0 ] && break; sleep 30
+    done
+    [ "${left//[[:space:]]/}" = 0 ] || { echo "source database $DB or slot $SLOT not dropped:"; tail -3 "$W/drop.out"; }
+  elif [ "${SRC_CREATED:-0}" = 1 ]; then
+    for _ in 1 2 3; do   # a pipeline that was just deleted can still hold a session for a while
+      printf 'USE %s;\nEXEC sys.sp_cdc_disable_db;\nGO\nUSE master;\nALTER DATABASE %s SET SINGLE_USER WITH ROLLBACK IMMEDIATE;\nDROP DATABASE %s;\n' \
+        "$DB" "$DB" "$DB" | $SRC_SQL master > "$W/drop.out" 2>&1
+      left=$(printf "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.databases WHERE name = '%s';\n" "$DB" | $SRC_SQL master)
+      [ "${left//[[:space:]]/}" = 0 ] && break; sleep 30
+    done
+    [ "${left//[[:space:]]/}" = 0 ] || { echo "source database $DB not dropped:"; tail -3 "$W/drop.out"; }
+  fi
+  echo "cleanup: pipelines and schemas deleted; source database left: ${left//[[:space:]]/}"
+  rm -rf "$W"
+}
+
+# result_md <title>: the runtime each pipeline ran on, the source, and the claim table; to stdout and $OUT
+result_md() {
+  local rt=${LFC_RUNTIME:-$LIB/../../../bin/lfc-runtime.sh} runtime   # set LFC_RUNTIME when running a copy
+  "$rt" "$PROFILE" "$AP" >&2 || true
+  runtime="- Ingestion pipeline: $("$rt" --summary "$PROFILE" "$AP" 2>/dev/null | sed 's/^Lakeflow runtime: //')"
+  [ -n "${GW:-}" ] && runtime+=$'\n'"- Gateway: $("$rt" --summary "$PROFILE" "$GW" 2>/dev/null | sed 's/^Lakeflow runtime: //')"
+  {
+    echo "# $1 run $E"
+    echo
+    echo "- Date (UTC): $(date -u +%F)"
+    [ "$MODE" = standard ] && echo "- Mode: standard CDC, serverless gateway and ingestion pipeline" || echo "- Mode: integrated CDC, one serverless pipeline"
+    echo "$runtime"
+    [ -n "${SRC_ENV:-}" ] && $SRC_ENV | sed 's/^/- /'
+    if [ "$ENGINE" = postgres ]; then echo "- Source: $(echo 'SELECT version();' | $SRC_SQL postgres | head -1 | cut -d, -f1)"; else
+    echo "- Source: $(printf "SET NOCOUNT ON; SELECT CONCAT('SQL Server ', CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(64)), ' ', CAST(SERVERPROPERTY('ProductUpdateLevel') AS nvarchar(64)), ' ', CAST(SERVERPROPERTY('ProductUpdateReference') AS nvarchar(64)), ', ', CAST(SERVERPROPERTY('Edition') AS nvarchar(128)));\n" | $SRC_SQL master | head -1); utility objects ${UTIL:-?}"; fi
+    echo
+    echo "| Claim | Result | Observation |"
+    echo "|---|---|---|"
+    printf '%s\n' "${RESULTS[@]}"
+  } | tee "${OUT:-/dev/null}"
+}

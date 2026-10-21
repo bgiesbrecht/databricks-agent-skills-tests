@@ -5,6 +5,8 @@
 # the CDC staging table per table. Seen 2026-10-20: s2ct got none of A's or A2's rows until B's ADD COLUMN released
 # them, and then held B's; no error. SCD_TYPE_2 needs CDC on SQL Server.
 # Needs PROFILE, CONNECTION, CATALOG, CONN_USER, SRC_SQL (as sqlserver-add-column.sh).
+# SERVER_STATE=1 grants the connection's login VIEW SERVER STATE for the run (revoked at the end): on change tracking,
+# SCD type 2 reads each change's commit time from sys.dm_tran_commit_table, which shows a login without it no rows.
 set -uo pipefail
 export PATH=/opt/homebrew/bin:$PATH
 dbx() { databricks "$@" --profile "$PROFILE"; }
@@ -16,6 +18,7 @@ q() { export Q=$1; yq -n -o json '.warehouse_id = strenv(WAREHOUSE) | .wait_time
   dbx api post /api/2.0/sql/statements --json @"$W/st.json" -o json > "$W/st.out"; yq -r '.result.data_array[] | @tsv' "$W/st.out" 2>/dev/null || yq '.status.error.message' "$W/st.out"; }
 TABLES="s1ct s2ct s2cdc"
 cleanup() {
+  [ "${SERVER_STATE:-0}" = 1 ] && echo "REVOKE VIEW SERVER STATE FROM $CONN_USER;" | $SRC_SQL master >/dev/null 2>&1
   [ -n "${AP:-}" ] && dbx pipelines delete "$AP"; sleep 30; dbx schemas delete "$CATALOG.$S" --force 2>/dev/null
   for _ in 1 2 3; do
     printf 'USE %s;\nEXEC sys.sp_cdc_disable_db;\nGO\nUSE master;\nALTER DATABASE %s SET SINGLE_USER WITH ROLLBACK IMMEDIATE;\nDROP DATABASE %s;\n' "$DB" "$DB" "$DB" | $SRC_SQL master >/dev/null 2>&1
@@ -48,6 +51,11 @@ EXEC dbo.lakeflowSetupChangeTracking @Tables = 'lfcddemo.s2ct', @User = '$CONN_U
 EXEC dbo.lakeflowSetupChangeDataCapture @Tables = 'lfcddemo.s2cdc', @User = '$CONN_USER';
 EXEC dbo.lakeflowFixPermissions @User = '$CONN_USER', @Tables = 'SCHEMAS:lfcddemo';
 SQL
+# a table left untracked (CDC setup can fail when several runs set it up at once) fails later as if it were a product result
+TRACKED=$(printf "SET NOCOUNT ON; SELECT (SELECT COUNT(*) FROM sys.change_tracking_tables WHERE object_id IN (OBJECT_ID('lfcddemo.s1ct'), OBJECT_ID('lfcddemo.s2ct'))), (SELECT COUNT(*) FROM sys.tables WHERE object_id = OBJECT_ID('lfcddemo.s2cdc') AND is_tracked_by_cdc = 1);\n" | $SRC_SQL "$DB" | tr -s ' \t' ' ' | xargs)
+[ "$TRACKED" = "2 1" ] || { echo "source tracking not set up (change tracking, CDC tables): $TRACKED"; exit 2; }
+[ "${SERVER_STATE:-0}" = 1 ] && echo "GRANT VIEW SERVER STATE TO $CONN_USER;" | $SRC_SQL master >/dev/null
+echo "commit-time rows the login sees in sys.dm_tran_commit_table: $(printf "SET NOCOUNT ON; EXECUTE AS LOGIN = '%s'; SELECT COUNT(*) FROM sys.dm_tran_commit_table; REVERT;\n" "$CONN_USER" | $SRC_SQL "$DB" | tr -d '[:space:]')"
 dbx schemas create "$S" "$CATALOG" >/dev/null
 obj() { echo "{\"table\":{\"source_catalog\":\"$DB\",\"source_schema\":\"lfcddemo\",\"source_table\":\"$1\",\"destination_catalog\":\"$CATALOG\",\"destination_schema\":\"$S\",\"table_configuration\":{\"scd_type\":\"$2\"}}}"; }
 AP=$(dbx pipelines create -o json --json "{\"name\":\"${PREFIX}_scd2ct_$E\",\"catalog\":\"$CATALOG\",\"schema\":\"$S\",\"serverless\":true,
