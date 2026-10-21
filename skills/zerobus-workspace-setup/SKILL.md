@@ -24,6 +24,8 @@ bash $S/enable.sh $P kafka --apply                                # a FAIL's fix
 bash $S/grant.sh $P --table <catalog.schema.table> --sp <application id> --apply
 ```
 
+`grant.sh` and `sp.sh` print a link to the table (its Permissions tab) and to the service principal, to check the result.
+
 ## 1. The Zerobus previews (Settings API)
 
 Each Zerobus feature in preview is a workspace setting, read and changed with `workspace-settings-v2`, like the Lakeflow Connect connectors (**lfc-workspace-setup** step 1). On an Azure serverless test workspace (2026-10-21):

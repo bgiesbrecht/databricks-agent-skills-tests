@@ -18,4 +18,8 @@ for g in "catalog $CAT USE_CATALOG" "schema $CAT.$SCH USE_SCHEMA" "table $TABLE 
   J=$(printf '{"changes": [{"principal": "%s", "add": [%s]}]}' "$SP" "$(for p in $add; do printf '"%s",' "$p"; done | sed 's/,$//')")
   databricks grants update "$1" "$2" --json "$J" --profile "$P" >/dev/null && echo "        done" || echo "        refused: run as the owner, or with MANAGE"
 done
+HOST=$(databricks auth describe --profile "$P" -o json 2>/dev/null | yq -p json '.details.host // ""' | sed 's:/*$::')
+SPID=$(databricks service-principals list --filter "applicationId eq \"$SP\"" --profile "$P" -o json 2>/dev/null | yq -p json '.[0].id // ""')
+echo "LINK table $TABLE (Permissions tab): $HOST/explore/data/$CAT/$SCH/$TBL"
+[ -n "$SPID" ] && echo "LINK service principal $SP: $HOST/settings/workspace/identity-and-access/service-principals/$SPID"
 [ $APPLY = yes ] || echo "plan only: run again with --apply"

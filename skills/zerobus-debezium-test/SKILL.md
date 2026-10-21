@@ -38,6 +38,10 @@ C=/tmp/dbz-$(date +%s).sh; cp scripts/debezium-zerobus.sh $C && OUT=/tmp/dbz-res
 
 Run a copy with its own name, as above, so that editing the script, or starting another run, can't change a run in progress (bash reads a script as it runs). It exits 0 when every claim passed, 1 when one failed and 2 when a prerequisite is missing. The images are pinned by default: `CRDB_IMAGE` (CockroachDB v25.4.13) and `DBZ_IMAGE` (Debezium Server 3.7.0.Final).
 
+## Links to inspect
+
+Every Databricks object a run creates gets a clickable link, printed as `LINK <what>: <url>` when it's created: the schema, the change log, the service principal, the snapshot volume, the UC connection, the pipeline and its source folder, and the silver and gold tables. The result file lists them under "Created in Databricks". The run removes them when it ends, so to inspect them, run with `KEEP=1`; the links are printed again at the end, and `sweep.sh` removes the run later. On a VM, `run-all.sh` also writes **lfc-source-cloud-vm**'s `cloud-links.sh` links (the VM, its network rules, its disks) into `summary.md`.
+
 ## The repeatable test
 
 [scripts/run-all.sh](scripts/run-all.sh) runs the committed skills unchanged and records which commit passed. Use it after any change, and before relying on these skills:

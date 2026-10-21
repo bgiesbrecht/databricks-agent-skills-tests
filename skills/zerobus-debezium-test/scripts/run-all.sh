@@ -29,7 +29,7 @@ cd "$REPO" || exit 2
 
 # --- 1. pre-flight
 COMMIT=$(git rev-parse --short HEAD)
-DIRTY=$(git status --porcelain -- skills/zerobus-debezium-test skills/zerobus-workspace-setup skills/lfc-source-statschema skills/lfc-source-podman)
+DIRTY=$(git status --porcelain -- skills/zerobus-debezium-test skills/zerobus-workspace-setup skills/lfc-source-statschema skills/lfc-source-podman skills/lfc-source-cloud-vm/scripts/cloud-links.sh)
 if [ -n "$DIRTY" ] && [ "${ALLOW_DIRTY:-0}" != 1 ]; then
   echo "uncommitted changes in the skills; commit them, or run from a clean checkout (git worktree add <dir> HEAD):"; echo "$DIRTY"; exit 2; fi
 if [ -n "${LIMA:-}" ]; then
@@ -39,6 +39,8 @@ else
   ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10 "$VM_USER@$VM_IP" true 2>/dev/null \
     || { echo "no SSH to $VM_IP: is this laptop's IP ($(curl -s -m 5 https://api.ipify.org)) still allowed by the VM's firewall?"; exit 2; }
   FROM="ssh -i $SSH_KEY -o BatchMode=yes $VM_USER@$VM_IP"; WHERE_HOST="Cloud VM"
+  # links to the VM and its network rules and disks, in whichever cloud has it (not fatal: the CLI may not be logged in)
+  bash skills/lfc-source-cloud-vm/scripts/cloud-links.sh "$VM_IP" > "$RESULTS/cloud-links.txt" 2>&1; grep '^LINK' "$RESULTS/cloud-links.txt"
   bash skills/lfc-source-podman/scripts/ensure-podman-socket.sh --on "$FROM" | tee "$RESULTS/host.txt" || { echo "the VM isn't ready: rootful Podman through the socket"; exit 2; }
 fi
 [ "${SWEEP:-0}" = 1 ] && bash skills/zerobus-debezium-test/scripts/sweep.sh --apply | tee "$RESULTS/sweep.txt"
@@ -77,6 +79,8 @@ version() { case $1 in crdb) echo "CockroachDB $(grep -m1 '^- Source:' "$RESULTS
     ROWS="$ROWS| $(date -u +%F) | \`$COMMIT\` | $(version $s) | $(route $s) | $WHERE_HOST ($host) → $dest serverless | $p of $((p + f)) | $r, [run-all.sh](../skills/zerobus-debezium-test/scripts/run-all.sh) |
 "; done
   for s in $SOURCES; do f=$(grep '^FAIL' "$RESULTS/$s.log"); [ -n "$f" ] && { echo; echo "## $s failures"; echo; echo "$f" | cut -c1-300 | sed 's/^/- /'; }; done
+  if grep -q '^LINK' "$RESULTS/cloud-links.txt" 2>/dev/null; then echo; echo "## Cloud resources"; echo; grep '^LINK' "$RESULTS/cloud-links.txt" | sed -E 's/^LINK ([^:]*): (.*)/- \1: <\2>/'; fi
+  echo; echo "Each run's Databricks objects, with links, are in <source>.md (removed at the end of the run unless KEEP=1)."
 } > "$RESULTS/summary.md"
 printf '%s' "$ROWS" > "$RESULTS/rows.md"
 PAGE=docs/lakeflow-connect-zerobus.md

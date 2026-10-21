@@ -62,6 +62,9 @@ STATSCHEMA=${STATSCHEMA:-$PWD/../lfc-source-statschema/scripts}
 RESULTS=(); FAILED=0
 claim() { RESULTS+=("| \`$1\` | $2 | $3 |"); [ "$2" = PASS ] || FAILED=1; echo "$2 $1: $3"; }
 observe() { RESULTS+=("| \`$1\` | OBSERVED | $2 |"); echo "OBSERVED $1: $2"; }
+# link <what> <url>: every Databricks object the run creates gets a clickable link, printed when it's created and kept for
+# the result file (the objects are removed at the end, unless KEEP=1)
+LINKS=(); link() { LINKS+=("- $1: <$2>"); echo "LINK $1: $2"; }
 # --- pre-flight -------------------------------------------------------------------------------------------------------
 umask 077; W=$(mktemp -d)
 ME=$(dbx current-user me -o json | yq '.userName') || { echo "profile $PROFILE doesn't authenticate"; exit 2; }
@@ -92,7 +95,7 @@ case $SOURCE in
 esac
 
 cleanup() {
-  [ "${KEEP:-0}" = 1 ] && { echo "KEEP=1: left $CATALOG.$S, SP ${SP_NAME:-}, VM containers and $RD"; rm -rf "$W"; return; }
+  [ "${KEEP:-0}" = 1 ] && { echo "KEEP=1: left $CATALOG.$S, SP ${SP_NAME:-}, VM containers and $RD, to inspect:"; printf '%s\n' "${LINKS[@]}"; rm -rf "$W"; return; }
   vm "$PODMAN rm -f --ignore $DBZ $SRCC >/dev/null 2>&1; $PODMAN network rm $NET >/dev/null 2>&1; $(rmc $RD)" || true
   [ -n "${SP_ID:-}" ] && dbx service-principals delete "$SP_ID" >/dev/null 2>&1
   [ -n "${PIPELINE_ID:-}" ] && dbx pipelines delete "$PIPELINE_ID" >/dev/null 2>&1
@@ -188,6 +191,7 @@ dump_schema() {
 
 # --- destination: bronze tables, a service principal with a secret, grants -------------------------------------------
 dbx schemas create "$S" "$CATALOG" >/dev/null || exit 2
+link "schema $CATALOG.$S" "$HOST/explore/data/$CATALOG/$S"
 LOG=$T.cdc_log
 # NORM: the change log in one shape for both sinks: destination, operation (create/update/delete/read), idempotency_key,
 # key, value, source_position, headers, _seq (orders each key's changes) and _event_ns (for the deduplication watermark).
@@ -206,6 +210,7 @@ q "CREATE TABLE $LOG (target_table STRING NOT NULL, destination STRING NOT NULL,
   idempotency_key STRING, key VARIANT, value VARIANT, source_position VARIANT, headers VARIANT) CLUSTER BY (destination)
   COMMENT 'Append-only change log: one Debezium envelope per source change, all source tables'" >/dev/null || exit 2
 fi
+link "change log (bronze) $CATALOG.$S.cdc_log" "$HOST/explore/data/$CATALOG/$S/cdc_log"
 LOGQ="($NORM FROM $LOG)"
 if [ -n "${SP_CLIENT_ID:-}" ]; then   # a service principal someone else created: its application ID and a file with its secret
   [ -r "${SP_SECRET_FILE:-}" ] || { echo "SP_CLIENT_ID needs SP_SECRET_FILE, a file with the OAuth secret"; exit 2; }
@@ -214,6 +219,7 @@ else
 SP_NAME=$PREFIX-zerobus-dbz-$E
 eval "$(dbx service-principals create --display-name "$SP_NAME" -o json | yq -o shell '{"SP_ID": .id, "SP_APP": .applicationId}')"
 [ -n "${SP_ID:-}" ] || { echo "service principal create failed"; exit 2; }
+link "service principal $SP_NAME" "$HOST/settings/workspace/identity-and-access/service-principals/$SP_ID"
 dbx service-principal-secrets-proxy create "$SP_ID" -o json > "$W/secret.json" || { echo "secret create failed"; exit 2; }
 fi
 for g in "GRANT USE CATALOG ON CATALOG \`$CATALOG\` TO \`$SP_APP\`" "GRANT USE SCHEMA ON SCHEMA $T TO \`$SP_APP\`" \
@@ -407,6 +413,7 @@ observe change-log "rows by operation, customers: $(counts customers); orders: $
 if [ "$PHASE" -ge 2 ]; then
   VOL=/Volumes/$CATALOG/$S/snapshot
   q "CREATE VOLUME $T.snapshot COMMENT 'Snapshot as of T, one folder per source table'" >/dev/null || exit 2
+  link "volume $CATALOG.$S.snapshot" "$HOST/explore/data/volumes/$CATALOG/$S/snapshot"
   dbx fs cp -r "$W/snap" "dbfs:$VOL" --overwrite >/dev/null || { echo "snapshot upload failed"; exit 2; }
   F=$(for t in $TABLES; do printf '%s=%s ' "$t" "$(dbx fs ls "dbfs:$VOL/$t" -o json | SNAP_FMT=$SNAP_FMT yq '[.[] | select(.name | test(strenv(SNAP_FMT) + "$"))] | length')"; done)
   echo "$F" | grep -q '=0' && claim snapshot-in-volume FAIL "$SNAP_FMT files per table: $F" \
@@ -427,6 +434,7 @@ if [ "$PHASE" -ge 2 ]; then
   yq -n -o json '.name = strenv(CONN) | .connection_type = "POSTGRESQL" |
     .options = {"host": strenv(VM_IP), "port": strenv(SRC_PORT), "user": strenv(DB_USER), "password": strenv(DB_PASS)}' > "$W/conn.json"
   dbx connections create --json @"$W/conn.json" >/dev/null || { echo "connection create failed"; exit 2; }
+  link "connection $CONN" "$HOST/explore/connections/$CONN"
   # table, ordinal, column, Databricks type, 1 when in the primary key
   fetch_schema() { q "SELECT table_name, ordinal_position, column_name,
        CASE data_type WHEN 'bigint' THEN 'BIGINT' WHEN 'integer' THEN 'INT' WHEN 'smallint' THEN 'SMALLINT'
@@ -506,6 +514,7 @@ PY
   [ "$SCHEMA_VIA" = volume ] && { LIBS=silver-from-schema.py; cp "$(dirname "$CHECK")/silver-from-schema.py" "$W/"; }
   [ "$PHASE" -ge 3 ] && LIBS="$LIBS gold.sql"
   dbx workspace mkdirs "$WSDIR" || exit 2
+  link "pipeline source folder $WSDIR" "$HOST/#workspace$WSDIR"
   for f in $LIBS; do dbx workspace import "$WSDIR/$f" --file "$W/$f" --format RAW >/dev/null || { echo "$f upload failed"; exit 2; }; done
   export VOL SINK DEST_PREFIX SNAP_FMT; export T_NS=$SNAP_SEQ; export WSDIR CATALOG S PIPE_NAME=$PREFIX-$SOURCE-dbz-silver-$E LIBS
   yq -n -o json '.name = strenv(PIPE_NAME) | .catalog = strenv(CATALOG) | .schema = strenv(S) | .serverless = true |
@@ -514,6 +523,9 @@ PY
     .configuration = {"cdc.volume": strenv(VOL), "cdc.t_ns": strenv(T_NS), "cdc.dest_prefix": strenv(DEST_PREFIX),
       "cdc.snapshot_format": strenv(SNAP_FMT), "cdc.nodedup_table": "customers", "cdc.bronze": strenv(SINK)}' > "$W/pipe.json"
   PIPELINE_ID=$(dbx pipelines create --json @"$W/pipe.json" -o json | yq '.pipeline_id') || { echo "pipeline create failed"; exit 2; }
+  link "pipeline $PIPE_NAME (silver, gold)" "$HOST/pipelines/$PIPELINE_ID"
+  for t in $TABLES; do link "silver $t" "$HOST/explore/data/$CATALOG/$S/$t"; done
+  [ "$PHASE" -ge 3 ] && link "gold customer_orders" "$HOST/explore/data/$CATALOG/$S/customer_orders"
 
   run_silver() { # one pipeline update (extra args go to start-update); prints its final state
     local u st; u=$(dbx pipelines start-update "$PIPELINE_ID" "$@" -o json | yq '.update_id'); echo "$u" > "$W/update_id"
@@ -677,6 +689,7 @@ fi
   fi
   echo "- Host: $(vm '. /etc/os-release; echo $PRETTY_NAME'), $(vm 'podman --version')"
   echo "- Destination: Zerobus in $CLOUD $REGION, one append-only change-log Delta table, liquid-clustered by destination (the source table)"
+  echo; echo "Created in Databricks ($([ "${KEEP:-0}" = 1 ] && echo 'kept, KEEP=1' || echo 'removed at the end of the run: rerun with KEEP=1 to inspect')):"; printf '%s\n' "${LINKS[@]}"
   echo; echo "| Claim | Result | Observation |"; echo "|---|---|---|"
   printf '%s\n' "${RESULTS[@]}"
 } | tee "${OUT:-/dev/null}"
