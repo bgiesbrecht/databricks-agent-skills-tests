@@ -1,0 +1,48 @@
+# shop: the test's own small model, two tables, in statschema's canonical format (lfc-source-statschema), the same as
+# a TPC model: shape.py -> ddl.py -> lfc-source-datagen fill it, and model-sql.py writes its workload and checks.
+# Gold: shop-gold.sql next to it.
+version: "1.0"
+tables:
+  - name: customers
+    row_count: 5
+    columns:
+      - name: id
+        type: integer
+        not_null: true
+        primary_key: true
+        generation: {distribution: sequential, min_value: 1, unique: true}
+      - name: name
+        type: string
+        not_null: true
+      - name: tier
+        type: string
+        not_null: true
+        generation:
+          values: [bronze, silver, gold]
+  - name: orders
+    row_count: 5
+    load_after: [customers]
+    fk_constraints:
+      - columns: [customer_id]
+        parent_table: customers
+        parent_columns: [id]
+        fk_distribution: uniform
+    columns:
+      - name: id
+        type: integer
+        not_null: true
+        primary_key: true
+        generation: {distribution: sequential, min_value: 1, unique: true}
+      - name: customer_id
+        type: integer
+        not_null: true
+      - name: amount
+        type: decimal
+        precision: 10
+        scale: 2
+        not_null: true
+      - name: status
+        type: string
+        not_null: true
+        generation:
+          values: [placed, shipped]
