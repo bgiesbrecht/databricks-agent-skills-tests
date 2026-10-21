@@ -2,6 +2,8 @@
 
 **End-to-end testing of Databricks Lakeflow Connect, made easy.** Stand up a real source database with change capture on, reachable from your workspace, in minutes. Fill it with data shaped like a customer's, run every ingestion mode against it, check what landed, and record the result, so the next person knows what's been tested and what still needs testing.
 
+The scripts are the skill, so what was tested is what anyone runs. You can run them, or an agent can run them for you. The agent's job is to run them, and to improve them when they fail.
+
 ## What's unique
 
 - **A fresh copy of any database, in a fraction of a second.** One approach for every engine, with the master in your own bucket and only a cache on the VM, built from open-source parts (Podman, JuiceFS).
