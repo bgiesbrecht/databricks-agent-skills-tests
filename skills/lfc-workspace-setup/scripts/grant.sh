@@ -15,7 +15,7 @@ while [ $# -gt 0 ]; do case $1 in --level) LEVEL=$2; shift 2;; --catalog) CAT=$2
   --foreign-catalogs) FC=1; shift;; --create-connections) CC=1; shift;; --apply) APPLY=1; shift;; *) echo "unknown $1"; exit 2;; esac; done
 case $LEVEL in login|qbc|cdc) ;; *) echo "--level login|qbc|cdc"; exit 2;; esac
 [ $LEVEL != login ] && [ -z "$CAT" ] && { echo "--catalog is needed for $LEVEL"; exit 2; }
-T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+T=$(mktemp -d); trap 'rm -rf "${T:?}"' EXIT
 q() { printf '%s' "$1" | jq -sRr @uri; }
 do_() { echo "  $1"; [ -n "$APPLY" ] || return 0; shift; "$@" > "$T/out" 2>&1 && echo "    done" || { echo "    FAILED: $(grep -m1 -i error "$T/out" | cut -c1-200)"; }; }
 grant() { # securable-type name privileges...

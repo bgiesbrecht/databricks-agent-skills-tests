@@ -13,7 +13,7 @@
 #   account profile covers. Exit 1 if any workspace profile is neither ok nor covered/try.
 set -uo pipefail
 J=; VERIFY=; while [ $# -gt 0 ]; do case $1 in --json) J=$2; shift 2;; --verify) VERIFY=1; shift;; *) echo "unknown $1" >&2; exit 2;; esac; done
-D=$(cd "$(dirname "$0")" && pwd); T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+D=$(cd "$(dirname "$0")" && pwd); T=$(mktemp -d); trap 'rm -rf "${T:?}"' EXIT
 if [ -n "$J" ]; then cp "$J" "$T/ap.json"; else databricks auth profiles -o json > "$T/ap.json" 2> "$T/err" || { cat "$T/err" >&2; exit 1; }; fi
 # one row per profile: kind (account | workspace), name, cloud, account_id, valid, auth_type
 yq -p json -o tsv '.profiles[] | [(.host | test("^https://accounts\.") | tostring),

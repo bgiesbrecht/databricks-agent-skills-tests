@@ -12,7 +12,7 @@ set -uo pipefail
 P=$1; shift; CAT=; WHO=
 ENABLE=yes
 while [ $# -gt 0 ]; do case $1 in --catalog) CAT=$2; shift 2;; --principal) WHO=$2; shift 2;; --no-enable) ENABLE=no; shift;; *) echo "unknown $1"; exit 2;; esac; done
-D=$(cd "$(dirname "$0")" && pwd); T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; fails=0
+D=$(cd "$(dirname "$0")" && pwd); T=$(mktemp -d); trap 'rm -rf "${T:?}"' EXIT; fails=0
 row() { printf "%-5s %-40s %s\n" "$1" "$2" "$3" | tee -a $T/rows; case $1 in FAIL|ASK) fails=$((fails + 1));; esac; [ -n "${4:-}" ] && printf "      next: %s\n" "$4"; return 0; }
 j() { databricks "$@" --profile $P -o json 2> $T/err; }
 

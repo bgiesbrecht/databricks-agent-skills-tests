@@ -48,8 +48,8 @@ osascript -e "quit app id \"$ID\"" 2> /dev/null; sleep 2; pkill -f 'Podman Deskt
 if [ -n "$MACH" ]; then
   # remove machines before their files: a running VM keeps writing to a deleted disk image
   for m in $machines; do run podman machine stop "$m"; run podman machine rm -f "$m"; done
-  for c in "$MD"/*/cache; do [ -d "$c" ] && run rm -rf "$c"; done
+  for c in "$MD"/*/cache; do [ -d "$c" ] && run rm -rf "${c:?}"; done
 fi
 [ -n "$cask" ] && run brew uninstall --cask --zap podman-desktop
-for f in "${FILES[@]}"; do [ -e "$f" ] && run rm -rf "$f"; done
+for f in "${FILES[@]}"; do [ -e "$f" ] && run rm -rf "${f:?}"; done
 sleep 3; echo "disk: $(free) (the virtualization service can take a minute to give the space back)"

@@ -6,7 +6,7 @@
 set -uo pipefail
 P=$1; WHO=$2; shift 2; CAT=; CONN=; MODES=qbc,icdc
 while [ $# -gt 0 ]; do case $1 in --catalog) CAT=$2; shift 2;; --connection) CONN=$2; shift 2;; --modes) MODES=$2; shift 2;; *) echo "unknown $1"; exit 2;; esac; done
-T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; fails=0
+T=$(mktemp -d); trap 'rm -rf "${T:?}"' EXIT; fails=0
 api() { databricks api get "$1" --profile $P -o json 2>/dev/null; }
 row() { printf "%-5s %-44s %s\n" "$1" "$2" "$3"; [ "$1" = FAIL ] && fails=$((fails + 1)); [ -n "${4:-}" ] && printf "      fix: %s\n" "$4"; return 0; }
 has() { case ",$MODES," in *,$1,*) return 0;; esac; return 1; }

@@ -5,7 +5,7 @@
 #   Prints one line per row: created | updated | FAILED <class>: <error>. The password is read from its file into a
 #   private request body that's deleted right away; it never appears on a command line or in the output.
 set -uo pipefail
-T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; umask 077
+T=$(mktemp -d); trap 'rm -rf "${T:?}"' EXIT; umask 077
 class() { case "$1" in
   *"CREATE CONNECTION"*|*"CREATE_CONNECTION"*) echo no_create_connection ;;
   *"does not have"*|*PERMISSION_DENIED*) echo permission ;;

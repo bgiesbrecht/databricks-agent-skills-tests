@@ -58,5 +58,5 @@ db() {                                         # db <pg|my> <client> <planner di
 }
 [ -n "${PSQL:-}" ] && db pg "$PSQL" "${DIR_PG:-$DG/postgres}"
 [ -n "${MYSQL:-}" ] && db my "$MYSQL" "${DIR_MY:-$DG/mysql}"
-rm -rf "$T"
+rm -rf "${T:?}"
 echo; [ $fails -eq 0 ] && echo "all passed" || echo "$fails failed"; exit $((fails > 0))

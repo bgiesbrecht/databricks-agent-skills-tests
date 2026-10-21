@@ -88,36 +88,36 @@ case $2 in
 init)
   podman image exists $IMG || t podman pull -q $IMG > /dev/null
   U=$(podman run --rm --entrypoint id $IMG -u 2>/dev/null); echo "  image user uid: $U"
-  rm -rf $D/m-$E; mkdir -p $D/m-$E; chown $U $D/m-$E
+  rm -rf "${D:?}/m-${E:?}"; mkdir -p $D/m-$E; chown $U $D/m-$E
   t run $C $D/m-$E || exit 1
   echo "  load $N rows:"; echo "$LOAD" | t sql $C > /tmp/load-$E.out 2>&1 || { tail -5 /tmp/load-$E.out; exit 1; }
   check $C "$N|0"; stop $C; podman rm $C > /dev/null
   du -sh $D/m-$E | cut -f1 | sed 's/^/  master size: /'; echo "  files: $(find $D/m-$E -type f | wc -l), empty dirs: $(find $D/m-$E -type d -empty | wc -l)" ;;
 rclone)
   dirs_save $D/m-$E; echo "  upload:"; t rclone sync $D/m-$E az:masters/$E $F -q || exit 1
-  rm -rf $D/cache/$E; mkdir -p $D/cache
+  rm -rf "${D:?}/cache/${E:?}"; mkdir -p $D/cache
   echo "  pull:"; t rclone copy az:masters/$E $D/cache/$E $F -q || exit 1
   [ "${RESTORE:-1}" = 1 ] && { echo "  restore directory owners and modes:"; t dirs_restore $D/cache/$E; }
   diff <(cd $D/m-$E && find . -printf '%y %m %u %p\n' | sort) <(cd $D/cache/$E && find . -printf '%y %m %u %p\n' | sort) > /tmp/diff-$E.txt \
     && echo "  pulled copy matches (types, modes, owners)" || { echo "  pulled copy differs in $(wc -l < /tmp/diff-$E.txt) lines, e.g.:"; head -4 /tmp/diff-$E.txt | sed 's/^/    /'; }
-  rm -rf $D/run-$E; echo "  reflink clone:"; t cp -a --reflink=always $D/cache/$E $D/run-$E
+  rm -rf "${D:?}/run-${E:?}"; echo "  reflink clone:"; t cp -a --reflink=always $D/cache/$E $D/run-$E
   echo "  start the clone as pulled:"
   if ! { t run $C $D/run-$E && check $C "$N|0"; }; then stop $C 2>/dev/null; echo "  retry after chown -R $(owner $D/m-$E):"
     chown -R $(owner $D/m-$E) $D/run-$E; t run $C $D/run-$E && check $C "$N|0" || exit 1; fi
   { echo "$WRITE" | sql $C > /tmp/w.out 2>&1 || { echo "  write failed:"; tail -3 /tmp/w.out; }; }; check $C "$N|100000"
   cold $C; stop $C
   echo "  a save of this clone would upload:"; rclone sync $D/run-$E az:masters/$E $F --dry-run -v 2>&1 | grep -E 'Transferred:' | tail -2 | sed 's/^/    /'
-  podman rm $C > /dev/null; t rm -rf $D/run-$E; df -h $D | tail -1 | awk '{print "  disk used: " $3}' ;;
+  podman rm $C > /dev/null; t rm -rf "${D:?}/run-${E:?}"; df -h $D | tail -1 | awk '{print "  disk used: " $3}' ;;
 jfs)
-  mount_jfs; mkdir -p $J/masters $J/clones; rm -rf $J/masters/$E $J/clones/$E
+  mount_jfs; mkdir -p $J/masters $J/clones; rm -rf "${J:?}/masters/${E:?}" "${J:?}/clones/${E:?}"
   echo "  copy the master into JuiceFS:"; t cp -a $D/m-$E $J/masters/$E; echo "  wait for writeback upload:"; t flush
   echo "  juicefs clone:"; t juicefs clone -p $J/masters/$E $J/clones/$E
   echo "  start the clone:"; t run $C $J/clones/$E || { grep -iE 'direct|einval|not supported|error' /var/log/juicefs.log | tail -3; exit 1; }
   check $C "$N|0"; { echo "$WRITE" | sql $C > /tmp/w.out 2>&1 || { echo "  write failed:"; tail -3 /tmp/w.out; }; }; check $C "$N|100000"
-  stop $C; flush; umount $J; rm -rf $JC/*; mount_jfs; echo "  (JuiceFS cache emptied)"; cold $C; stop $C
-  podman rm $C > /dev/null; echo "  discard:"; t rm -rf $J/clones/$E
+  stop $C; flush; umount $J; rm -rf "${JC:?}"/*; mount_jfs; echo "  (JuiceFS cache emptied)"; cold $C; stop $C
+  podman rm $C > /dev/null; echo "  discard:"; t rm -rf "${J:?}/clones/${E:?}"
   echo "  a new clone has none of the discarded write:"; juicefs clone -p $J/masters/$E $J/clones/$E-2 > /dev/null
-  run $C $J/clones/$E-2 && check $C "$N|0"; stop $C; podman rm $C > /dev/null; rm -rf $J/clones/$E-2 ;;
+  run $C $J/clones/$E-2 && check $C "$N|0"; stop $C; podman rm $C > /dev/null; rm -rf "${J:?}/clones/${E:?}-2" ;;
 reflink)
   mkdir -p $D/cache
   if [ ! -d $D/cache/$E ]; then echo "  pull from Blob:"; t rclone copy az:masters/$E $D/cache/$E $F -q || exit 1
@@ -126,13 +126,13 @@ reflink)
   sum() { (cd $1 && find . -type f ! -name .lfc-dirs -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16); }
   before=$(sum $D/cache/$E); echo "  master checksum before: $before ($(du -sh $D/cache/$E | cut -f1))"
   used0=$(df --output=used -B1M $D | tail -1)
-  rm -rf $D/run-$E; echo "  reflink clone:"; t cp -a --reflink=always $D/cache/$E $D/run-$E
+  rm -rf "${D:?}/run-${E:?}"; echo "  reflink clone:"; t cp -a --reflink=always $D/cache/$E $D/run-$E
   echo "  disk used by the clone: $(( $(df --output=used -B1M $D | tail -1) - used0 )) MB"
   t run $C $D/run-$E || exit 1; check $C "$N|0"
   { echo "$WRITE" | sql $C > /tmp/w.out 2>&1 || { echo "  write failed:"; tail -3 /tmp/w.out; }; }; check $C "$N|100000"
   stop $C; podman rm $C > /dev/null
   after=$(sum $D/cache/$E); [ "$after" = "$before" ] && echo "  master unchanged: $after" || echo "  MASTER CHANGED: $after"
-  rm -rf $D/run-$E-2; cp -a --reflink=always $D/cache/$E $D/run-$E-2
+  rm -rf "${D:?}/run-${E:?}-2"; cp -a --reflink=always $D/cache/$E $D/run-$E-2
   echo "  a second clone has none of the write:"; run $C $D/run-$E-2 && check $C "$N|0"; stop $C; podman rm $C > /dev/null
-  rm -rf $D/run-$E $D/run-$E-2 ;;
+  rm -rf "${D:?}/run-${E:?}" "${D:?}/run-${E:?}-2" ;;
 esac

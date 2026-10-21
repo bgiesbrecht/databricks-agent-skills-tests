@@ -19,7 +19,7 @@ for f in "$@"; do
   f="$(cd "$(dirname "$f")" && pwd)/$(basename "$f")"
   name=$(basename "$f" .txt)
   W=$OUT/$name-work
-  rm -rf "$W" "$OUT/$name-results"
+  rm -rf "${W:?}" "${OUT:?}/${name:?}-results"
   # Tools a deploy test needs. conn.json holds a generated password (Lakebase demo), so allow
   # deleting it by every path a session might use.
   ALLOWED="Read,Write,Edit,Glob,Grep,WebFetch,Bash(databricks:*),Bash(ls:*),Bash(mkdir:*),Bash(jq:*)"

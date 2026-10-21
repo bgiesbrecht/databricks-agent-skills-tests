@@ -16,7 +16,7 @@ SUMMARY=0; [ "${1:-}" = --summary ] && { SUMMARY=1; shift; }
 [ $# -ge 2 ] || { sed -n 2,13p "$0"; exit 2; }
 PROFILE=$1 PIPE=$2 UPD=${3:-}
 export PATH=/opt/homebrew/bin:$PATH
-W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
+W=$(mktemp -d); trap 'rm -rf "${W:?}"' EXIT
 # The REST call, not `databricks pipelines list-pipeline-events`: the CLI drops each event's details.
 echo '[]' > "$W/events.json"; tok=""
 for _ in $(seq 1 40); do

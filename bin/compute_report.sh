@@ -14,7 +14,7 @@
 #
 #   bin/compute_report.sh <profile> janedoe-mssql-azvm
 set -uo pipefail
-P=$1; PREFIX=$2; SINCE=${3:-}; T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+P=$1; PREFIX=$2; SINCE=${3:-}; T=$(mktemp -d); trap 'rm -rf "${T:?}"' EXIT
 printf 'name\tkind\tserverless\tran_on\tstarted\treached_source\tupdate_state\terror\n'
 databricks pipelines list-pipelines --filter "name LIKE '$PREFIX%'" --profile "$P" -o json \
   | yq -p json -o tsv '.[] | .pipeline_id' | while read -r id; do
