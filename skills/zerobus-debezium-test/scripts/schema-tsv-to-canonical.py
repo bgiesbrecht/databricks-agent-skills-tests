@@ -4,7 +4,8 @@
 usage: schema-tsv-to-canonical.py <schema.tsv> <source description> > schema.yaml
 
   schema.tsv  table, ordinal, column, Databricks type, 1 when in the primary key, and the column's default (a literal,
-              or empty), from debezium-zerobus.sh's fetch_schema
+              or empty), from debezium-zerobus.sh's fetch_schema; CHAR is a fixed-length string (STRING in Databricks,
+              compared without its padding)
 
 Writes statschema's format (version, tables, columns with a canonical type, not_null is not known here, primary_key,
 default), plus a comment saying where it came from. The silver views are built from exactly these columns and types.
@@ -14,7 +15,7 @@ import sys
 
 CANON = {"INT": "integer", "SMALLINT": "integer", "BIGINT": "long", "FLOAT": "float", "DOUBLE": "double",
          "BOOLEAN": "boolean", "DATE": "date", "TIMESTAMP_NTZ": "timestamp", "TIMESTAMP": "timestamptz",
-         "BINARY": "binary", "STRING": "string"}
+         "BINARY": "binary", "STRING": "string", "CHAR": "char"}
 
 
 def q(v):

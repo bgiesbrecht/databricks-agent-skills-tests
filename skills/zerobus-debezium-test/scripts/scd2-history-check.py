@@ -4,23 +4,44 @@
 usage: scd2-history-check.py <schema.tsv> <table> <snapshot.tsv> <changefeed.tsv> <history.tsv>
 
   schema.tsv     table, ordinal, column, Databricks type, 1 when in the primary key, and any later fields (ignored)
-  snapshot.tsv   the table as of T, with a header row (cockroach sql --format=tsv)
+  snapshot.tsv   the table as of T, with a header row, as model-sql.py's select renders it
   changefeed.tsv CockroachDB's changefeed from T WITH updated: table, key and value, the last two as \\x hex JSON
-  history.tsv    the silver history table's columns in schema order, ordered by the key and __START_AT
+  history.tsv    the silver history table's columns in schema order (model-sql.py's select), ordered by the key and
+                 __START_AT
 
 The expected versions of a key are its row at T, then the row after every insert or update, in commit order (the
 changefeed's `updated` HLC). A delete adds no version. Prints one line, "<versions expected> <versions in silver>
 <keys that differ>: <first differences>", and exits 0 when they're equal, 1 when not.
 """
+import datetime
 import json
+import re
 import sys
 from decimal import Decimal, InvalidOperation
 
 
+TS = re.compile(r"^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}(:?\d{2})?)?$")
+TOD = re.compile(r"^(\d{2}:\d{2}:\d{2})(\.\d+)?$")
+
+
 def norm(v):
-    if v is None or v == "null" or v == "NULL":
+    """One value, from the changefeed's JSON or as model-sql.py renders it, in one form: numbers normalized, booleans
+    true/false, timestamps (in UTC) and times to the microsecond, fixed-length strings without their padding."""
+    if v is None or v in ("null", "NULL", "<null>"):
         return None
-    s = str(v)
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    s = str(v).rstrip(" ")
+    m = TS.match(s)
+    if m:
+        d = datetime.datetime.fromisoformat(f"{m.group(1)} {m.group(2)}{m.group(3) or ''}"[:26])
+        if m.group(4) and m.group(4) != "Z":
+            off = m.group(4).replace(":", "")
+            d -= datetime.timedelta(hours=int(off[:3]), minutes=int(off[0] + (off[3:5] or "0")))
+        return d.strftime("%Y-%m-%d %H:%M:%S.%f")
+    m = TOD.match(s)
+    if m:
+        return m.group(1) + (m.group(2) or ".")[:7].ljust(7, "0")
     try:
         return str(Decimal(s).normalize())
     except InvalidOperation:

@@ -14,12 +14,38 @@ This isn't Lakeflow Connect. It's for sources Lakeflow Connect doesn't cover, or
 
 | Where | What |
 |---|---|
-| Workspace | Schema `<prefix>_<source>_<model>_dbz_<epoch>` in `CATALOG` (for example `robertlee_crdb_shop_dbz_<epoch>`; `MODEL` is `shop` for this test's own `customers` and `orders`, or the TPC model from **lfc-source-statschema** a run uses: `tpcb`, `tpcc`, `tpch`, `tpcds`, `tpce`, `tpcdi`), with the bronze table `cdc_log`: `target_table`, `operation` (`create`, `update`, `delete`), `idempotency_key`, and `key`, `value` (the Debezium event: `after`, `op`, `ts_ns` with the default `DROP_FIELDS`), `source_position` and `headers` as `VARIANT`. `CLUSTER BY (destination)`, the source table's topic (`target_table` is always the log itself) |
-| Workspace (phase 2) | In the same schema: Volume `snapshot`, one folder per source table, and for traceability `_schema/` (the canonical `schema.yaml` the views were built from: `schema-at-T.yaml`, the current `schema.yaml`, and `history/<step>-schema.yaml` for each regeneration, each checked with statschema's `validate.py`) and `_pipeline/<step>/` (the pipeline files built from it); silver streaming tables `customers` and `orders` (SCD type 1), `customers_history` and `orders_history` (SCD type 2, replays removed), `customers_history_nodedup` (SCD type 2 without that), and the gold materialized view `customer_orders`, made by the serverless pipeline `<prefix>-<source>-<model>-dbz-silver-<epoch>` from `silver-from-schema.py` and `gold.sql` in a workspace folder `<source>_dbz_<epoch>` in your home; UC connection `<prefix>-<source>-dbz-<epoch>` (POSTGRESQL, to the VM's `SRC_PORT`, or the next free port up to 30063) |
+| Workspace | Schema `<prefix>_<source>_<model>_dbz_<epoch>` in `CATALOG` (for example `robertlee_crdb_shop_dbz_<epoch>`; `MODEL` is `shop` for this test's own `customers` and `orders`, or the TPC model from **lfc-source-statschema** a run uses: `tpcb`, `tpcc`, `tpch`, `tpcds`, `tpce`, `tpcdi`; see [Models](#models)), with the bronze table `cdc_log`: `target_table`, `operation` (`create`, `update`, `delete`), `idempotency_key`, and `key`, `value` (the Debezium event: `after`, `op`, `ts_ns` with the default `DROP_FIELDS`), `source_position` and `headers` as `VARIANT`. `CLUSTER BY (destination)`, the source table's topic (`target_table` is always the log itself) |
+| Workspace (phase 2) | In the same schema: Volume `snapshot`, one folder per source table, and for traceability `_schema/` (the canonical `schema.yaml` the views were built from: `schema-at-T.yaml`, the current `schema.yaml`, and `history/<step>-schema.yaml` for each regeneration, each checked with statschema's `validate.py`) and `_pipeline/<step>/` (the pipeline files built from it); silver streaming tables `<table>` for every source table (SCD type 1; append-only for a table without a key), `<table>_history` (SCD type 2, replays removed), `<first table with a key>_history_nodedup` (SCD type 2 without that), and the model's gold materialized view (`customer_orders` for `shop`), made by the serverless pipeline `<prefix>-<source>-<model>-dbz-silver-<epoch>` from `silver-from-schema.py` and `gold.sql` in a workspace folder `<source>_dbz_<epoch>` in your home; UC connection `<prefix>-<source>-dbz-<epoch>` (POSTGRESQL, to the VM's `SRC_PORT`, or the next free port up to 30063) |
 | Workspace | Service principal `<prefix>-zerobus-dbz-<epoch>` with an OAuth secret, granted `USE CATALOG`, `USE SCHEMA`, `SELECT` and `MODIFY` on `cdc_log`. Zerobus writes as it |
 | VM | Podman network `crdb-dbz-<epoch>`, containers `<prefix>-crdb-<epoch>` (CockroachDB, single node, insecure, published on `CRDB_PORT`, default 30026) and `<prefix>-debezium-<epoch>` |
 
 The OAuth secret is never printed. It goes from the CLI's response into Debezium's `application.properties` in 0600 temp files, on the laptop and on the VM, which are deleted when the run ends. `KEEP=1` keeps everything for a look afterwards.
+
+## Models
+
+One canonical `schema.yaml` per model (statschema's format, **lfc-source-statschema**) drives the whole run, and no script names a table or a column. `MODEL=<name>` reads [models/](models/)`<name>.yaml`, or **lfc-source-statschema**'s `schemas/<name>.yaml` (`tpcb`, `tpcc`, `tpch`, `tpcds`, `tpce`, `tpcdi`). `shop`, the default, is [models/shop.yaml](models/shop.yaml). `SF` (default 0.001) scales the TPC models' `row_count_per_sf`.
+
+| Step | Script |
+|---|---|
+| Size it, and tag each column for the data generator | **lfc-source-statschema** `shape.py --sf $SF` |
+| The DDL | **lfc-source-statschema** `ddl.py --dialect cockroachdb` or `postgres` |
+| Fill it, before T | **lfc-source-datagen** `fill.py pg`, in a container on the run's Podman network |
+| The changes of rounds 1 to 3, the schema changes of rounds 4 and 5, and the queries every check compares | [scripts/model-sql.py](scripts/model-sql.py) |
+| Silver | [scripts/silver-from-schema.py](scripts/silver-from-schema.py), from the canonical schema read back from the source |
+| Gold | `models/<name>-gold.sql`, when there is one: `-- name:`, `-- cluster_by:`, `-- comment:` header lines and a query on the model's tables. No file, no gold claims |
+
+`model-sql.py`'s workload, the same for every model:
+
+- **Tables with a key** get inserts of new keys (after each key column's maximum), updates of one column that isn't a key, a foreign key or unique, and deletes only of rows the workload inserted, so a foreign key never blocks one. A foreign key column takes the parent's first row.
+  - Round 1: 3 inserts, 1 update, 1 delete.
+  - Round 2: two updates of one row, a delete and reinsert, and a reinsert of the key deleted in round 1.
+  - Round 3: an insert and two updates, then, after the producer restarts, one more update.
+- **Tables whose key is all foreign keys** get the updates only.
+- **Tables without a key** (TPC-B's `history`) get inserts only. Silver keeps them append-only and compares them as a multiset.
+- **Round 4** adds `lfc_r4 VARCHAR(20) NOT NULL DEFAULT 'none'` to the first table with a key.
+- **Round 5** retypes that model's first non-key decimal column (two more digits; else an integer becomes `BIGINT`, but not on CockroachDB, where `INT` is already 8 bytes). It drops another column that isn't a key, a foreign key or named in the gold file.
+
+A manifest per round lists every table's expected events, which the change-log claims wait for. Both sides render each value alike: NULL as `<null>`, timestamps in UTC to the microsecond, `char` without its padding, booleans as `true`/`false`. The rows are compared sorted, since the two sides' collations differ.
 
 ## Before running
 
@@ -56,7 +82,7 @@ PROFILE=<cli-profile> CATALOG=<catalog> VM_IP=<vm-ip> bash skills/zerobus-debezi
 
 On the laptop, with no cloud VM or storage: `PROFILE=... CATALOG=... LIMA=<instance> SP_CLIENT_ID=<application id> SP_SECRET_FILE=<file> bash skills/zerobus-debezium-test/scripts/run-all.sh` (CockroachDB only so far).
 
-1. **Pre-flight.** It refuses to run with uncommitted changes in `zerobus-debezium-test`, `zerobus-workspace-setup`, `lfc-source-statschema` or `lfc-source-podman`: commit them, or run from a clean checkout (`git worktree add <dir> HEAD`). `ALLOW_DIRTY=1` runs anyway and marks it in the summary. It also checks SSH to the VM first. When the laptop's public IP changes, the VM's firewall drops SSH, every source query comes back empty, and every claim fails. It runs **lfc-source-podman**'s `ensure-podman-socket.sh` on the VM (on the laptop, `ensure-lima-podman.sh`, which runs it inside Lima). So every container runs rootful through the root Podman socket (`$PODMAN`, default `podman --remote --url unix:///run/podman/podman.sock`), in the same store as the database sources, and with no `sudo` anywhere in the test. Files that containers write are removed from a container. `PODMAN=podman` runs rootless, on a host with no rootful store. `SWEEP=1` first removes what earlier runs left behind ([`sweep.sh`](scripts/sweep.sh) below).
+1. **Pre-flight.** It refuses to run with uncommitted changes in `zerobus-debezium-test`, `zerobus-workspace-setup`, `lfc-source-statschema`, `lfc-source-datagen` or `lfc-source-podman`: commit them, or run from a clean checkout (`git worktree add <dir> HEAD`). `ALLOW_DIRTY=1` runs anyway and marks it in the summary. It also checks SSH to the VM first. When the laptop's public IP changes, the VM's firewall drops SSH, every source query comes back empty, and every claim fails. It runs **lfc-source-podman**'s `ensure-podman-socket.sh` on the VM (on the laptop, `ensure-lima-podman.sh`, which runs it inside Lima). So every container runs rootful through the root Podman socket (`$PODMAN`, default `podman --remote --url unix:///run/podman/podman.sock`), in the same store as the database sources, and with no `sudo` anywhere in the test. Files that containers write are removed from a container. `PODMAN=podman` runs rootless, on a host with no rootful store. `SWEEP=1` first removes what earlier runs left behind ([`sweep.sh`](scripts/sweep.sh) below).
 2. **The workspace.** **zerobus-workspace-setup** `check.sh`: the Zerobus previews, and TCP 443 and 9092 from the VM to the endpoint.
 3. **Every source**, `SOURCES="crdb yb"` by default, in parallel on their own ports (CockroachDB 30026, YugabyteDB 30031). Each run cleans up after itself.
 4. **The results**, in `~/.lfc-test/results/zerobus-<UTC time>/`: `check.txt`, `<source>.md` (the result table, with images and digests), `<source>.log`, and `summary.md` (the commit, claims passed and failed per source). The exit code is 0 only when everything passed. When everything passed, it also writes one row per source into the "Successful runs" table of [docs/lakeflow-connect-zerobus.md](../../docs/lakeflow-connect-zerobus.md), newest first (`RECORD=0` to skip): commit that change with the run.
@@ -233,4 +259,4 @@ So silver can't sequence by the commit time. What's left is the top-level `ts_ns
 
 ## After running
 
-Add the result table and the environment lines (images with digests, the CockroachDB version, the host) to the run record. Compare the per-op counts with the workload: 5 snapshot rows per table, then `customers` 2 inserts, 1 update, 1 delete, and `orders` 1 insert, 2 updates, 1 delete.
+Add the result table and the environment lines (images with digests, the CockroachDB version, the host) to the run record. Compare the per-op counts with the workload: the claims `changes-1` to `changes-3` list what each round's manifest expected, per table.

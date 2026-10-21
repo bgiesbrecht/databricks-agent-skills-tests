@@ -9,9 +9,10 @@ usage: model-sql.py <schema.yaml> <command> [options]
                                         the DML of round N (1, 2, 3) on the source, and what it should produce
   alter N --prefix P [--part ddl|after] [--gold gold.sql] [--manifest out.json]
                                         round 4 (a column added, with a default) or 5 (a column dropped, one retyped)
-  select T --side source|databricks --prefix P
+  select T --side source|databricks --prefix P [--from NAME] [--where COND] [--order COLS]
                                         table T's columns, every value rendered as the same text on both sides (NULL as
-                                        <null>), ordered by the key (by every column for a table without one)
+                                        <null>), each under its own name, ordered by the key (every column for a table
+                                        without one), then COLS; --from reads another table with T's columns (T_history)
   --dialect crdb|pg (default pg, which is also YugabyteDB); --only t1,t2 limits the workload to those tables.
 
 The workload, generic over keys and foreign keys:
@@ -321,15 +322,17 @@ def render(c, side, dialect):
              "timestamp": f"date_format({x}, 'yyyy-MM-dd HH:mm:ss.SSSSSS')",
              "timestamptz": f"date_format({x}, 'yyyy-MM-dd HH:mm:ss.SSSSSS')", "char": f"RTRIM({x})",
              "binary": f"lower(hex({x}))"}.get(ty, f"CAST({x} AS STRING)")
-    return f"COALESCE({e}, '<null>')"
+    return f"COALESCE({e}, '<null>') AS {x}"
 
 
 def cmd_select(m, a):
     d = m.t[a.table]
     cols = ", ".join(render(c, a.side, a.dialect) for c in d["cols"])
     q = qi if a.side == "source" else bq
-    order = ", ".join(q(k) for k in d["keys"]) if d["keys"] else ", ".join(str(i + 1) for i in range(len(d["cols"])))
-    print(f"SELECT {cols} FROM {a.prefix}.{q(a.table)} ORDER BY {order}" + (";" if a.side == "source" else ""))
+    order = [q(k) for k in d["keys"]] if d["keys"] else [str(i + 1) for i in range(len(d["cols"]))]
+    where = f" WHERE {a.where}" if a.where else ""
+    print(f"SELECT {cols} FROM {a.prefix}.{q(a.__dict__['from'] or a.table)}{where} ORDER BY {', '.join(order + ([a.order] if a.order else []))}"
+          + (";" if a.side == "source" else ""))
 
 
 def cmd_state(m, a):
@@ -357,6 +360,9 @@ def main():
     ap.add_argument("--side", default="source", choices=["source", "databricks"])
     ap.add_argument("--dialect", default="pg", choices=["pg", "crdb"])
     ap.add_argument("--only")
+    ap.add_argument("--from")
+    ap.add_argument("--where")
+    ap.add_argument("--order")
     a = ap.parse_args()
     m = Model(a.schema, set(a.only.split(",")) if a.only else None)
     if a.cmd in ("round", "alter"):
