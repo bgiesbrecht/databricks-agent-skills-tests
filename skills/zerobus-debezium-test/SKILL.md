@@ -14,8 +14,8 @@ This isn't Lakeflow Connect. It's for sources Lakeflow Connect doesn't cover, or
 
 | Where | What |
 |---|---|
-| Workspace | Schema `<prefix>_crdb_dbz_<epoch>` in `CATALOG`, with the bronze table `cdc_log`: `target_table`, `operation` (`create`, `update`, `delete`), `idempotency_key`, and `key`, `value` (the Debezium event: `after`, `op`, `ts_ns` with the default `DROP_FIELDS`), `source_position` and `headers` as `VARIANT`. `CLUSTER BY (destination)`, the source table's topic (`target_table` is always the log itself) |
-| Workspace (phase 2) | In the same schema: Volume `snapshot`, one folder of Parquet per source table; silver streaming tables `customers` and `orders` (SCD type 1), `customers_history` and `orders_history` (SCD type 2, replays removed), `customers_history_nodedup` (SCD type 2 without that), and the gold materialized view `customer_orders`, made by the serverless pipeline `<prefix>-crdb-dbz-silver-<epoch>` from `silver.sql`, `dedupe.py` and `gold.sql` in a workspace folder `crdb_dbz_<epoch>` in your home; UC connection `<prefix>-crdb-dbz-<epoch>` (POSTGRESQL, to the VM's `CRDB_PORT`) |
+| Workspace | Schema `<prefix>_<source>_<model>_dbz_<epoch>` in `CATALOG` (for example `robertlee_crdb_shop_dbz_<epoch>`; `MODEL` is `shop` for this test's own `customers` and `orders`, or the TPC model from **lfc-source-statschema** a run uses: `tpcb`, `tpcc`, `tpch`, `tpcds`, `tpce`, `tpcdi`), with the bronze table `cdc_log`: `target_table`, `operation` (`create`, `update`, `delete`), `idempotency_key`, and `key`, `value` (the Debezium event: `after`, `op`, `ts_ns` with the default `DROP_FIELDS`), `source_position` and `headers` as `VARIANT`. `CLUSTER BY (destination)`, the source table's topic (`target_table` is always the log itself) |
+| Workspace (phase 2) | In the same schema: Volume `snapshot`, one folder per source table, and for traceability `_schema/` (the canonical `schema.yaml` the views were built from: `schema-at-T.yaml`, the current `schema.yaml`, and `history/<step>-schema.yaml` for each regeneration, each checked with statschema's `validate.py`) and `_pipeline/<step>/` (the pipeline files built from it); silver streaming tables `customers` and `orders` (SCD type 1), `customers_history` and `orders_history` (SCD type 2, replays removed), `customers_history_nodedup` (SCD type 2 without that), and the gold materialized view `customer_orders`, made by the serverless pipeline `<prefix>-crdb-dbz-silver-<epoch>` from `silver.sql`, `dedupe.py` and `gold.sql` in a workspace folder `crdb_dbz_<epoch>` in your home; UC connection `<prefix>-crdb-dbz-<epoch>` (POSTGRESQL, to the VM's `CRDB_PORT`) |
 | Workspace | Service principal `<prefix>-zerobus-dbz-<epoch>` with an OAuth secret, granted `USE CATALOG`, `USE SCHEMA`, `SELECT` and `MODIFY` on `cdc_log`. Zerobus writes as it |
 | VM | Podman network `crdb-dbz-<epoch>`, containers `<prefix>-crdb-<epoch>` (CockroachDB, single node, insecure, published on `CRDB_PORT`, default 30026) and `<prefix>-debezium-<epoch>` |
 
@@ -37,6 +37,10 @@ C=/tmp/dbz-$(date +%s).sh; cp scripts/debezium-zerobus.sh $C && OUT=/tmp/dbz-res
 ```
 
 Run a copy with its own name, as above, so that editing the script, or starting another run, can't change a run in progress (bash reads a script as it runs). It exits 0 when every claim passed, 1 when one failed and 2 when a prerequisite is missing. The images are pinned by default: `CRDB_IMAGE` (CockroachDB v25.4.13) and `DBZ_IMAGE` (Debezium Server 3.7.0.Final).
+
+## Traceability: the schema and the pipeline files, next to the snapshot
+
+A run's volume holds everything silver was built from, so a table can be traced back to its inputs. The snapshot as of T is there. The canonical schema is in `_schema/`: statschema's `schema.yaml`, from the UC connection ([scripts/schema-tsv-to-canonical.py](scripts/schema-tsv-to-canonical.py)) or from the source's DDL (**lfc-source-statschema** `ddl-to-schema.py`), and checked with that skill's `validate.py`. The pipeline files generated from that schema are in `_pipeline/<step>/`. Steps: `1-at-T`, `2-round-4` (a column added), `3-round-5` (a column dropped, another retyped). Each is a claim (`trace-<step>`).
 
 ## Links to inspect
 

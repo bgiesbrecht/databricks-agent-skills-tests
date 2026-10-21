@@ -5,7 +5,7 @@
 #     host (VM_IP over SSH, or LIMA):  containers <prefix>-{crdb,yb,debezium}-<E>, networks {crdb,yb}-dbz-<E>, /tmp/dbz-*-<E>
 #     workspace (PROFILE, CATALOG):    pipelines <prefix>-{crdb,yb}-dbz-silver-<E>, connections <prefix>-{crdb,yb}-dbz-<E>,
 #                                      service principals <prefix>-zerobus-dbz-<E>, folders /Users/<me>/{crdb,yb}_dbz_<E>,
-#                                      schemas <prefix>_{crdb,yb}_dbz_<E> in CATALOG
+#                                      schemas <prefix>_{crdb,yb}[_<model>]_dbz_<E> in CATALOG
 #   It skips runs younger than MIN_AGE seconds (default 7200: one may still be running) and runs in KEEP_RUNS
 #   ("<epoch> <epoch>"). Prints the plan; removes nothing without --apply.
 set -uo pipefail
@@ -32,7 +32,7 @@ for x in $(host "$PODMAN network ls --format '{{.Name}}'" 2>/dev/null | grep -E 
   old "$(epoch "$x")" && act "network $x" host "$PODMAN network rm $x"; done
 for d in $(host "ls -d /tmp/dbz-* 2>/dev/null"); do e=$(epoch "$d"); [ -n "$e" ] && old "$e" && act "host dir $d" host "$(rmc $d)"; done
 
-for p in $(dbx pipelines list-pipelines -o json | yq -r ".[] | select(.name | test(\"^$PREFIX-(crdb|yb)-dbz-silver-[0-9]{10}\$\")) | .name + \"|\" + .pipeline_id"); do
+for p in $(dbx pipelines list-pipelines -o json | yq -r ".[] | select(.name | test(\"^$PREFIX-(crdb|yb)(-[a-z0-9]+)?-dbz-silver-[0-9]{10}\$\")) | .name + \"|\" + .pipeline_id"); do
   old "$(epoch "${p%%|*}")" && act "pipeline ${p%%|*}" dbx pipelines delete "${p##*|}"; done
 for c in $(dbx connections list -o json | yq -r ".[] | select(.name | test(\"^$PREFIX-(crdb|yb)-dbz-[0-9]{10}\$\")) | .name"); do
   old "$(epoch "$c")" && act "connection $c" dbx connections delete "$c"; done
@@ -40,7 +40,7 @@ for s in $(dbx service-principals list --filter "displayName sw \"$PREFIX-zerobu
   old "$(epoch "${s%%|*}")" && act "service principal ${s%%|*}" dbx service-principals delete "${s##*|}"; done
 for w in $(dbx workspace list "/Users/$ME" -o json 2>/dev/null | yq -r '.[] | select(.path | test("/(crdb|yb)_dbz_[0-9]{10}$")) | .path'); do
   old "$(epoch "$w")" && act "folder $w" dbx workspace delete "$w" --recursive; done
-for s in $(dbx schemas list "$CATALOG" -o json | yq -r ".[] | select(.name | test(\"^${PREFIX}_(crdb|yb)_dbz_[0-9]{10}\$\")) | .name"); do
+for s in $(dbx schemas list "$CATALOG" -o json | yq -r ".[] | select(.name | test(\"^${PREFIX}_(crdb|yb)(_[a-z0-9]+)?_dbz_[0-9]{10}\$\")) | .name"); do
   old "$(epoch "$s")" && act "schema $CATALOG.$s" dbx schemas delete "$CATALOG.$s" --force; done
 
 [ $n -eq 0 ] && echo "nothing to sweep (runs younger than ${MIN_AGE}s and KEEP_RUNS are left)"

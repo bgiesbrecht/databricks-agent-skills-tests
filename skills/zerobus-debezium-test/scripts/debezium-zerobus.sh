@@ -77,7 +77,10 @@ case $CLOUD in azure) ZB="https://$WS_ID.zerobus.$REGION.azuredatabricks.net";; 
 [ -n "$HOST" ] && [ "$HOST" != null ] || { echo "no host for profile $PROFILE"; exit 2; }
 WAREHOUSE=${WAREHOUSE:-$(dbx warehouses list -o json | yq '[.[] | select(.enable_serverless_compute)][0].id')}; export WAREHOUSE
 vm 'command -v podman >/dev/null' || { echo "no Podman on $HOSTDESC"; exit 2; }
-E=$(date +%s); S=${PREFIX}_${SOURCE}_dbz_$E; NET=$SOURCE-dbz-$E; SRCC=$PREFIX-$SOURCE-$E; DBZ=$PREFIX-debezium-$E; RD=/tmp/dbz-$SOURCE-$E
+# MODEL: which schema the source has, in every name, so a run's tables show which model they hold: shop (this test's
+# own customers and orders), or a TPC model from lfc-source-statschema (tpcb, tpcc, tpch, tpcds, tpce, tpcdi)
+MODEL=${MODEL:-shop}; case $MODEL in *[!a-z0-9]*|"") echo "MODEL: lowercase letters and digits"; exit 2;; esac
+E=$(date +%s); S=${PREFIX}_${SOURCE}_${MODEL}_dbz_$E; NET=$SOURCE-dbz-$E; SRCC=$PREFIX-$SOURCE-$E; DBZ=$PREFIX-debezium-$E; RD=/tmp/dbz-$SOURCE-$E
 T="\`$CATALOG\`.$S"
 echo "run $E: schema $CATALOG.$S, VM containers $SRCC and $DBZ"
 
@@ -516,7 +519,26 @@ PY
   dbx workspace mkdirs "$WSDIR" || exit 2
   link "pipeline source folder $WSDIR" "$HOST/#workspace$WSDIR"
   for f in $LIBS; do dbx workspace import "$WSDIR/$f" --file "$W/$f" --format RAW >/dev/null || { echo "$f upload failed"; exit 2; }; done
-  export VOL SINK DEST_PREFIX SNAP_FMT; export T_NS=$SNAP_SEQ; export WSDIR CATALOG S PIPE_NAME=$PREFIX-$SOURCE-dbz-silver-$E LIBS
+  # trace <step>: for full traceability, the volume holds, next to the snapshot, the canonical schema the views were built
+  # from (statschema's schema.yaml, lfc-source-statschema; checked with its validate.py) and the pipeline files built
+  # from it: _schema/schema-at-T.yaml, _schema/schema.yaml (the current one), _schema/history/<step>-schema.yaml, and
+  # _pipeline/<step>/<files>. Called at T and after each regeneration.
+  trace() {
+    local step=$1 ok=yes
+    if [ "$SCHEMA_VIA" = connection ]; then
+      python3 -I "$(dirname "$CHECK")/schema-tsv-to-canonical.py" "$W/schema.tsv" "$SRC_NAME $SRC_VERSION, information_schema through the UC connection $CONN, step $step" > "$W/schema.yaml" || ok=no
+    fi
+    (cd "$STATSCHEMA/.." && uv run -q scripts/validate.py "$W/schema.yaml") > "$W/validate.out" 2>&1 || ok=no
+    [ "$step" = 1-at-T ] && { dbx fs cp "$W/schema.yaml" "dbfs:$VOL/_schema/schema-at-T.yaml" --overwrite >/dev/null || ok=no; }
+    dbx fs cp "$W/schema.yaml" "dbfs:$VOL/_schema/schema.yaml" --overwrite >/dev/null || ok=no
+    dbx fs cp "$W/schema.yaml" "dbfs:$VOL/_schema/history/$step-schema.yaml" --overwrite >/dev/null || ok=no
+    for f in $LIBS; do dbx fs cp "$W/$f" "dbfs:$VOL/_pipeline/$step/$f" --overwrite >/dev/null || ok=no; done
+    [ $ok = yes ] && claim "trace-$step" PASS "in $VOL: the canonical schema ($(tail -1 "$W/validate.out" | sed 's/^.*schema.yaml: //'), statschema's validate.py) and the pipeline files ($LIBS) at step $step" \
+      || claim "trace-$step" FAIL "schema or pipeline files not written to the volume: $(tail -2 "$W/validate.out" | tr '\n' ' ' | cut -c1-200)"
+  }
+  trace 1-at-T
+  link "canonical schema and pipeline files (folders _schema, _pipeline)" "$HOST/explore/data/volumes/$CATALOG/$S/snapshot"
+  export VOL SINK DEST_PREFIX SNAP_FMT; export T_NS=$SNAP_SEQ; export WSDIR CATALOG S PIPE_NAME=$PREFIX-$SOURCE-$MODEL-dbz-silver-$E LIBS
   yq -n -o json '.name = strenv(PIPE_NAME) | .catalog = strenv(CATALOG) | .schema = strenv(S) | .serverless = true |
     .continuous = false | .development = true | .channel = "CURRENT" |
     .libraries = [strenv(LIBS) | split(" ") | .[] | {"file": {"path": strenv(WSDIR) + "/" + .}}] |
@@ -647,6 +669,7 @@ SQL
     # regenerate: the schema again through the connection, the flow from it, then a refresh of that table and a plain update
     fetch_schema || claim schema-refetch FAIL "the schema didn't come through again: $(head -c 300 "$W/schema.err" 2>/dev/null)"; gen_silver
     [ "$SCHEMA_VIA" = volume ] || dbx workspace import "$WSDIR/silver.sql" --file "$W/silver.sql" --format RAW --overwrite >/dev/null
+    trace 2-round-4
     st=$(run_silver); observe schema-update-after-regenerate "plain update with the regenerated flow: $st"
     [ "$st" = COMPLETED ] && same customers 4a observe
     st=$(run_silver --json '{"full_refresh_selection": ["customers", "customers_history", "customers_history_nodedup"]}'); [ "$st" = COMPLETED ] || claim silver-full-refresh-4 FAIL "full refresh of customers: $st"
@@ -668,6 +691,7 @@ SQL
     st=$(run_silver 2>/dev/null); observe schema-change-old-flow "update with the old flow (status still selected, amount still DECIMAL(10,2)): $st; $(q "SELECT REGEXP_EXTRACT(error.exceptions[0].message, '\\[(INVALID_[A-Z_]+|[A-Z_]+CAST[A-Z_]*)\\][^\\n]*', 0) FROM event_log('$PIPELINE_ID') WHERE event_type = 'flow_progress' AND origin.flow_name LIKE '%.orders_from_changes' AND error IS NOT NULL ORDER BY timestamp DESC LIMIT 1" 2>&1 | cut -c1-300)"
     fetch_schema || claim schema-refetch FAIL "the schema didn't come through again: $(head -c 300 "$W/schema.err" 2>/dev/null)"; gen_silver
     [ "$SCHEMA_VIA" = volume ] || dbx workspace import "$WSDIR/silver.sql" --file "$W/silver.sql" --format RAW --overwrite >/dev/null
+    trace 3-round-5
     st=$(run_silver --json '{"full_refresh_selection": ["orders", "orders_history"]}' 2>"$W/err5b")
     [ "$st" = COMPLETED ] || claim silver-full-refresh-5 FAIL "regenerated flow, full refresh of orders: $st $(cut -c1-300 "$W/err5b" | tr '\n' ' ')"
     st=$(run_silver); [ "$st" = COMPLETED ] || claim silver-update-5 FAIL "plain update after the full refresh: $st"
