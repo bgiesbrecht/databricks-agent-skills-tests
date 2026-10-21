@@ -48,7 +48,34 @@ eval "$(<cli> ... -o json | yq -p json -o shell '{"NAME": (.path // "")}' | tee 
 
 - `set -a` exports every variable assigned after it, including the ones `eval` sets, so DuckDB can read them. **Don't `set +a` mid-block:** anything set afterwards is invisible to it.
 - `tee -a` appends; a later line for the same name wins when the file is sourced.
-- Only IDs, names, and IPs go in the file. **Never secrets:** keep passwords in their own `umask 077` files and pass them through the client's env var (`PGPASSWORD`, `MYSQL_PWD`, `SQLCMDPASSWORD`).
+- Only IDs, names, and IPs go in the file. **Never secrets:** keep a password in a shell variable and pass it through the client's env var (`PGPASSWORD`, `MYSQL_PWD`, `SQLCMDPASSWORD`). If it must outlive the shell, use its own `umask 077` file, and delete the file when the work is done. To move a secret to another host, see [Profiles and secrets](#profiles-and-secrets-through-the-cli).
+
+## Profiles and secrets: through the CLI
+
+**Read Databricks profile fields from the CLI, never from its config file.** The CLI knows the file's rules (sections, defaults, `DATABRICKS_CONFIG_FILE`), and a parser of your own drifts from them. Some agent setups also block any command that names the file.
+
+```bash
+PROFILES=$(databricks auth profiles --skip-validate -o json)            # name, host, account_id, auth_type per profile
+field() { printf '%s' "$PROFILES" | yq -p json -o tsv ".profiles[] | select(.name == \"$1\") | .$2 // \"\""; }
+HOST=$(field my-ws host); AID=$(field my-ws account_id)
+# account profiles for that account: an accounts.* host and the same account_id
+printf '%s' "$PROFILES" | yq -p json -o tsv ".profiles[] | select(.account_id == \"$AID\" and ((.host // \"\") | test(\"^https://accounts[.]\"))) | .name"
+```
+
+- Leave out `--skip-validate` only when you need `valid`: validating every profile takes seconds per dozen.
+- To add a profile: `databricks auth login --host <host> --profile <name>`. To remove one: `databricks auth logout <profile> --auto-approve --delete`.
+- To use another config file, pass it to the CLI as `DATABRICKS_CONFIG_FILE`. Don't read it yourself.
+
+**Move a secret straight to where it's used.** Hold it in a shell variable, pipe it into a root-only file on the remote host, and `unset` it. Nothing is written on the laptop, and nothing is printed:
+
+```bash
+SAS=$(az storage container generate-sas ... -o tsv)
+printf 'SAS_URL=https://<account>.blob.core.windows.net/<container>?%s\n' "$SAS" \
+  | ssh <host> 'sudo sh -c "umask 077; cat > /etc/<tool>/<name>.env"'
+unset SAS
+```
+
+To check whether a token has expired, read only its expiry field (a SAS's `se=`), not the token itself.
 
 ## Logic: DuckDB SQL files, run from shell or Python
 
