@@ -125,9 +125,15 @@ pipelines_create() {
   # Postgres: one publication per pipeline, for the whole test schema (PostgreSQL 15+), so a table added later is in it
   [ "$ENGINE" = postgres ] && { echo "CREATE PUBLICATION ${SLOT}_pub FOR TABLES IN SCHEMA lfcddemo;" | src >/dev/null || { echo "publication create failed"; exit 2; }; }
   [ "$ENGINE" = postgres ] && SRCDEF+=",\"source_type\":\"POSTGRESQL\",\"source_configurations\":[{\"catalog\":{\"source_catalog\":\"$DB\",\"postgres\":{\"slot_config\":{\"slot_name\":\"$SLOT\",\"publication_name\":\"${SLOT}_pub\"}}}}]"
-  AP=$(dbx pipelines create -o json --json "{\"name\":\"$APN\",\"catalog\":\"$CATALOG\",\"schema\":\"$S\",\"serverless\":true,
-    \"ingestion_definition\":{$SRCDEF,\"objects\":[$1]}}" | yq '.pipeline_id')
-  [ -n "$AP" ] && [ "$AP" != null ] || { echo "ingestion pipeline create failed"; exit 2; }
+  # CREATE_SOFT=1: a refused create returns 1 with the error in CREATE_ERR (a test whose question is "is it refused?")
+  dbx pipelines create -o json --json "{\"name\":\"$APN\",\"catalog\":\"$CATALOG\",\"schema\":\"$S\",\"serverless\":true,
+    \"ingestion_definition\":{$SRCDEF,\"objects\":[$1]}}" > "$W/create.out" 2>&1
+  AP=$(yq '.pipeline_id' "$W/create.out" 2>/dev/null)
+  if [ -z "$AP" ] || [ "$AP" = null ]; then
+    AP=""; CREATE_ERR=$(grep -v -E '^(Profile|Host|Auth type|Next steps|  -|$)' "$W/create.out" | head -2 | tr '\n' ' ' | cut -c1-300)
+    [ "${CREATE_SOFT:-0}" = 1 ] && return 1
+    echo "ingestion pipeline create failed: $CREATE_ERR"; exit 2
+  fi
   # Postgres: the slot after the pipelines exist, so a refused create leaves none holding WAL
   [ "$ENGINE" = postgres ] && { echo "SELECT pg_create_logical_replication_slot('$SLOT', 'pgoutput');" | src >/dev/null || { echo "slot create failed"; exit 2; }; }
   echo "LINK pipeline $(dbx auth describe -o json 2>/dev/null | yq -r '.details.host // ""')/pipelines/$AP"
