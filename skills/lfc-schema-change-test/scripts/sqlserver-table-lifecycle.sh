@@ -44,6 +44,11 @@ CDF=$(q "SHOW TBLPROPERTIES $T.ctdel ('delta.enableChangeDataFeed')" 2>&1 | cut 
 observe cdf-property "delta.enableChangeDataFeed on a destination table: ${CDF:-not set}"
 R=$(q "SELECT _change_type, COUNT(*) FROM table_changes('\`$CATALOG\`.$S.ctdel', 0) GROUP BY 1 ORDER BY 1" 2>&1 | tr '\t\n' ': ' | cut -c1-200)
 observe cdf-table-changes "table_changes() on ctdel after the first load: ${R:-no rows}"
+# version 0 (the pipeline's create) has no change data (DELTA_MISSING_CHANGE_DATA, 2026-10-21): read from the first
+# version after change data feed was turned on, as DESCRIBE HISTORY shows
+CDF_FROM=$(q "SELECT MIN(version) FROM (DESCRIBE HISTORY $T.ctdel) WHERE version > 0" 2>&1)
+R=$(q "SELECT _change_type, COUNT(*) FROM table_changes('\`$CATALOG\`.$S.ctdel', ${CDF_FROM:-1}) GROUP BY 1 ORDER BY 1" 2>&1 | tr '\t\n' ': ' | cut -c1-200)
+observe cdf-table-changes-from-v${CDF_FROM:-1} "table_changes() on ctdel from version ${CDF_FROM:-1}: ${R:-no rows}; history: $(q "SELECT CONCAT_WS(' ', COLLECT_LIST(CONCAT(version, ':', operation))) FROM (SELECT version, operation FROM (DESCRIBE HISTORY $T.ctdel) ORDER BY version)" 2>&1 | cut -c1-200)"
 
 # --- #6: DELETE every row, then INSERT them again --------------------------------------------------------------------
 src >/dev/null <<'EOF'
