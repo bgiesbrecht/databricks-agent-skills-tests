@@ -36,7 +36,15 @@ Size it for what runs at once: SQL Server and Oracle take 4 GB each (`--memory 1
 
 You don't need Podman Desktop for any of this. If it's installed, remove it first: it starts its own `podman machine` VM next to Lima, whose disk keeps growing (**podman-desktop-remove**).
 
-Without `template:podman-rootful` the VM has no Podman and no socket. Don't assume an existing VM has it: `forgedb-lima-rosetta2-podman`, an Ubuntu 25.10 VM, had none, and no Rosetta registered (2026-10-21). [`scripts/ensure-lima-podman.sh <instance>`](scripts/ensure-lima-podman.sh) makes any Lima VM ready: it starts the instance (or creates it with the command above, `--create`), installs Podman with `apt-get` or `dnf` if it's missing, and checks rootful Podman and Rosetta. It prints one line per step (`PASS`, `FIXED`, `FAIL`, `WARN`). Scripts then run containers with `limactl shell <instance> -- sudo podman ...`.
+Without `template:podman-rootful` the VM has no Podman and no socket. Don't assume an existing VM has it: `forgedb-lima-rosetta2-podman`, an Ubuntu 25.10 VM, had none, and no Rosetta registered (2026-10-21). [`scripts/ensure-lima-podman.sh <instance>`](scripts/ensure-lima-podman.sh) makes any Lima VM ready: it starts the instance (or creates it with the command above, `--create`), installs Podman with `apt-get` or `dnf` if it's missing, and checks rootful Podman and Rosetta. It prints one line per step (`PASS`, `FIXED`, `FAIL`, `WARN`). Scripts then run containers as the login user, with plain `podman`.
+
+**Rootless, so scripts need no `sudo`.** None of the test containers need root: their ports are above 1024 and none is privileged. [`scripts/ensure-podman-rootless.sh --on "<prefix>"`](scripts/ensure-podman-rootless.sh) prepares any Linux host once, on a cloud VM (`--on "ssh <user>@<vm>"`) or in Lima (`--on "limactl shell <instance> --"`). It's the only place `sudo` is used:
+- **Subordinate user and group IDs** for the user (`/etc/subuid`, `/etc/subgid`), which rootless containers map users to. Ubuntu cloud images and Lima have them.
+- **Linger** (`loginctl enable-linger`). Without it, systemd stops a rootless user's containers when the user's last session ends, and a script that drives the host over many short `ssh` or `limactl` sessions loses them. The Azure test VM had it off.
+- **`~/.cache` owned by the user.** Earlier rootful runs had left 5 root-owned files there.
+- **Checks:** a rootless container runs, and container names resolve on a Podman network.
+
+Files that a container writes into a mounted directory belong to the container's mapped user, so remove them with `podman unshare rm -rf <dir>`, not `sudo`. Rootless and rootful containers live in separate stores: `podman ps` doesn't show containers started with `sudo podman`, so remove old rootful ones with `sudo podman`.
 
 Verify:
 

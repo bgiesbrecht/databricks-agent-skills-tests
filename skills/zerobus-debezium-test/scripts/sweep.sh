@@ -24,11 +24,11 @@ act() { # act <what> <command...>: print, and run it with --apply
   if [ $APPLY = yes ]; then "$@" >/dev/null 2>&1 && echo "removed  $what" || echo "FAILED   $what"; else echo "would remove  $what"; fi; }
 epoch() { echo "$1" | grep -o -E '[0-9]{10}' | tail -1; }
 
-for c in $(host "sudo podman ps -a --format '{{.Names}}'" 2>/dev/null | grep -E "^$PREFIX-(crdb|yb|debezium)-[0-9]{10}\$"); do
-  old "$(epoch "$c")" && act "container $c" host "sudo podman rm -f --ignore $c"; done
-for x in $(host "sudo podman network ls --format '{{.Name}}'" 2>/dev/null | grep -E '^(crdb|yb)-dbz-[0-9]{10}$'); do
-  old "$(epoch "$x")" && act "network $x" host "sudo podman network rm $x"; done
-for d in $(host "ls -d /tmp/dbz-* 2>/dev/null"); do e=$(epoch "$d"); [ -n "$e" ] && old "$e" && act "host dir $d" host "sudo rm -rf $d"; done
+for c in $(host "podman ps -a --format '{{.Names}}'" 2>/dev/null | grep -E "^$PREFIX-(crdb|yb|debezium)-[0-9]{10}\$"); do
+  old "$(epoch "$c")" && act "container $c" host "podman rm -f --ignore $c"; done
+for x in $(host "podman network ls --format '{{.Name}}'" 2>/dev/null | grep -E '^(crdb|yb)-dbz-[0-9]{10}$'); do
+  old "$(epoch "$x")" && act "network $x" host "podman network rm $x"; done
+for d in $(host "ls -d /tmp/dbz-* 2>/dev/null"); do e=$(epoch "$d"); [ -n "$e" ] && old "$e" && act "host dir $d" host "podman unshare rm -rf $d"; done
 
 for p in $(dbx pipelines list-pipelines -o json | yq -r ".[] | select(.name | test(\"^$PREFIX-(crdb|yb)-dbz-silver-[0-9]{10}\$\")) | .name + \"|\" + .pipeline_id"); do
   old "$(epoch "${p%%|*}")" && act "pipeline ${p%%|*}" dbx pipelines delete "${p##*|}"; done
