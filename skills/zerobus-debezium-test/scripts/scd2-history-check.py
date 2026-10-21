@@ -3,7 +3,7 @@
 
 usage: scd2-history-check.py <schema.tsv> <table> <snapshot.tsv> <changefeed.tsv> <history.tsv>
 
-  schema.tsv     table, ordinal, column, Databricks type, 1 when in the primary key (from the UC connection)
+  schema.tsv     table, ordinal, column, Databricks type, 1 when in the primary key, and any later fields (ignored)
   snapshot.tsv   the table as of T, with a header row (cockroach sql --format=tsv)
   changefeed.tsv CockroachDB's changefeed from T WITH updated: table, key and value, the last two as \\x hex JSON
   history.tsv    the silver history table's columns in schema order, ordered by the key and __START_AT
@@ -31,7 +31,8 @@ def main():
     schema_f, table, snap_f, feed_f, hist_f = sys.argv[1:6]
     cols, keys = [], []
     for line in open(schema_f):
-        t, _, col, _, pk = line.rstrip("\n").split("\t")
+        f = line.rstrip("\n").split("\t")   # table, ordinal, column, type, key flag, then possibly more (a default)
+        t, col, pk = f[0], f[2], f[4]
         if t == table:
             cols.append(col)
             if pk == "1":
