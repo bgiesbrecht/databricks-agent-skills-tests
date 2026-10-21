@@ -128,6 +128,24 @@ gcloud compute instances create "$VM_NAME" \
   --create-disk name="${VM_NAME}-data",device-name=data,size=128GB,type=pd-ssd   # /dev/disk/by-id/google-data
 ```
 
+## Links to what you created
+
+Every cloud resource created, or suggested for review, gets a clickable link, from the scripts and in replies. After the VM is up, and whenever someone asks what's running:
+
+```bash
+bash skills/lfc-source-cloud-vm/scripts/cloud-links.sh <vm-public-ip> [--resource-id <storage account id>]
+```
+
+It finds the IP with whichever cloud CLI is logged in, and prints one `LINK <what>: <url>` line per resource:
+
+| Cloud | Resources | Link form |
+|---|---|---|
+| Azure | VM, NIC, network security group (on the NIC or its subnet), public IP, OS and data disks; any other resource with `--resource-id` (the master snapshot's storage account) | `https://portal.azure.com/#@<tenant>/resource<resource id>` |
+| AWS | instance, security groups, EBS volumes (`AWS_REGION` or `--region`) | `https://<region>.console.aws.amazon.com/ec2/home?region=<region>#InstanceDetails:instanceId=<id>` (`#SecurityGroup:groupId=`, `#VolumeDetails:volumeId=`) |
+| GCP | instance, disks, VPC firewall rules | `https://console.cloud.google.com/compute/instancesDetail/zones/<zone>/instances/<name>?project=<project>` |
+
+On Azure it searches `--subscription`, `AZURE_SUBSCRIPTION_ID`, the subscriptions of any `--resource-id`, then the CLI's current one. It ignores a default resource group set in `az config`. The test VM was in another subscription than the CLI's current one, and a default group (`az config set defaults.group=...`) scoped every list to that group: both hid the VM until the script searched by subscription with the default cleared. Tested on Azure (2026-10-21); the AWS and GCP parts haven't run against a VM yet.
+
 ## Install the database
 
 ### Native packages

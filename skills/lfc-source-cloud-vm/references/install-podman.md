@@ -4,6 +4,10 @@
 
 **Do this first, before installing Podman.** Format the data disk as XFS and mount it at `/var/lib/containers`, using the block in [disk-setup.md](disk-setup.md). It finds the disk by its stable path, not `/dev/sdb` (on Azure that's usually the temporary disk), and checks the result. Don't continue unless it prints `OK: /var/lib/containers is XFS`.
 
+## One rootful store, and Podman without `sudo`
+
+The containers run rootful, so images and volumes are on the XFS disk (`/var/lib/containers`), in one store for every engine and test on the VM. To run them without typing `sudo` (and without a password prompt where `sudo` asks for one), give your user the root Podman socket once with **lfc-source-podman**'s `scripts/ensure-podman-socket.sh --on "ssh <user>@<vm>"`. From then on, `podman --remote --url unix:///run/podman/podman.sock <command>` does what `sudo podman <command>` does, against the same store. The `sudo podman` commands below still work. Don't also use rootless `podman` on this VM: it's a second store on the OS disk, and keeps every image twice (**lfc-source-podman**, "One store, rootful"). The `podman` group is root-equivalent; see the security note there.
+
 ## Install Podman
 
 ```bash

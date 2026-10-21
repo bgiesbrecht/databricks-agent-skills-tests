@@ -1,6 +1,6 @@
 # What's unique, and how it compares
 
-Four things here aren't product automation. Each section says what the repo does, where other tools have something like it, and what's different. Back to the [README](../README.md).
+Five things here aren't product automation. Each section says what the repo does, where other tools have something like it, and what's different. Back to the [README](../README.md).
 
 How this was checked (2026-10): the closest tools' own pages for Database Lab Engine, Neon and SDV; the rest from what was known about them before then, not rechecked. Tools we don't know about may do more.
 
@@ -67,3 +67,27 @@ SQL planners for Postgres, MySQL, SQL Server and Oracle, and a Python planner (t
 | **This repo** | **yes, on a fresh source each time** | **yes, every update's runtime and settings** | **the customer's question, end to end in a real workspace** |
 
 **What's different here:** each answer is checked by rerunning it, on the exact runtime it ran on. It catches behavior that differs from the docs, and when a release changes it.
+
+## Scripts, not instructions, made better by every failure
+
+**What it does.** A skill does its work by running the bash and Python scripts in its own `scripts/` folder, not by an agent improvising commands from prose. The skill's text says when to run which script and what its output means. So anyone can repeat a test without the AI, by running the same scripts in the same order.
+
+When a run fails on a case the scripts didn't handle, the fix goes into the script, with the evidence in the skill, and the next run handles it. On the Zerobus tests, in two days:
+- a database export that wrote decimals as text under a decimal type;
+- a DDL import that couldn't parse a typed default;
+- a cleanup that stopped at a missing container;
+- a macOS TCP check that hung;
+- a schema re-dump that failed silently;
+- an IP change that broke every claim mid-run.
+
+Each became a script change, and each is now handled.
+
+A repeatable runner then runs the committed scripts, from a clean checkout, and records which commit passed. It refuses to run with uncommitted changes, and writes the passing runs into the results table itself. Its first run caught a regression that hand runs had missed. [run-all.sh](../skills/zerobus-debezium-test/scripts/run-all.sh), [the results](lakeflow-connect-zerobus.md#successful-runs).
+
+| | Repeatable without the AI | Gets better from failures | A ✅ means |
+|---|---|---|---|
+| Instructions an agent follows (prompts, runbooks) | only by redoing what the agent did | only if someone edits the text | the agent got it right that time |
+| Scripts kept outside the skill | yes | if someone maintains them | the script ran, on some version |
+| **This repo** | **yes: the skill's own scripts** | **yes: every unhandled case becomes a script change** | **these scripts, at this commit, passed every claim** |
+
+**What's different here:** the scripts are the skill, so what was tested is what anyone runs. The agent's job is to run them, and to improve them when they fail.
