@@ -52,6 +52,11 @@ lfc_init() {
 sql() {
   yq -n -o json '.warehouse_id = strenv(WAREHOUSE) | .wait_timeout = "50s" | .statement = strenv(Q)' > "$W/st.json"
   dbx api post /api/2.0/sql/statements --json @"$W/st.json" > "$W/st.out"
+  # a statement still running after the 50 s wait (a count over hundreds of tables): poll it, up to 15 minutes
+  local id st n=0; st=$(yq '.status.state' "$W/st.out"); id=$(yq '.statement_id' "$W/st.out")
+  while { [ "$st" = PENDING ] || [ "$st" = RUNNING ]; } && [ $n -lt 90 ]; do
+    sleep 10; n=$((n + 1)); dbx api get "/api/2.0/sql/statements/$id" > "$W/st.out"; st=$(yq '.status.state' "$W/st.out")
+  done
   [ "$(yq '.status.state' "$W/st.out")" = SUCCEEDED ] || { yq '.status.state + ": " + (.status.error.message // "")' "$W/st.out" | cut -c1-300 >&2; return 1; }
   yq -r '.result.data_array[]? | @tsv' "$W/st.out"
 }
@@ -266,10 +271,14 @@ cleanup() {
       [ "${left//[[:space:]]/}" = 0 ] && break; sleep 30
     done
     [ "${left//[[:space:]]/}" = 0 ] || { echo "source database $DB or slot $SLOT not dropped:"; tail -3 "$W/drop.out"; }
+  elif [ "${SRC_CREATED:-0}" = 1 ] && [ "${KEEP_SOURCE:-0}" = 1 ]; then
+    echo "KEEP_SOURCE=1: source database $DB kept"
   elif [ "${SRC_CREATED:-0}" = 1 ]; then
     for _ in 1 2 3; do   # a pipeline that was just deleted can still hold a session for a while
-      printf 'USE %s;\nEXEC sys.sp_cdc_disable_db;\nGO\nUSE master;\nALTER DATABASE %s SET SINGLE_USER WITH ROLLBACK IMMEDIATE;\nDROP DATABASE %s;\n' \
-        "$DB" "$DB" "$DB" | $SRC_SQL master > "$W/drop.out" 2>&1
+      # CDC off in its own call: with sqlcmd -b an error there (no CDC on the database) would skip the DROP
+      echo "EXEC sys.sp_cdc_disable_db;" | $SRC_SQL "$DB" > "$W/drop.out" 2>&1
+      printf "IF DB_ID(N'%s') IS NOT NULL BEGIN ALTER DATABASE [%s] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [%s]; END\n" \
+        "$DB" "$DB" "$DB" | $SRC_SQL master >> "$W/drop.out" 2>&1
       left=$(printf "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.databases WHERE name = '%s';\n" "$DB" | $SRC_SQL master)
       [ "${left//[[:space:]]/}" = 0 ] && break; sleep 30
     done

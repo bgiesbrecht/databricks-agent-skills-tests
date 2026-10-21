@@ -8,6 +8,9 @@
 #   OBJECTS=schema  one `schema` object per source schema, each into its own destination schema <S>_<model>_NNNN
 #                   (a schema object can't rename tables, and every copy has the same table names)
 #   OBJECTS=table   one `table` object per table, all into the destination schema <S>, named <table>_NNNN
+#   The source database is kept for the next run (KEEP_SOURCE=0 drops it): SOURCE_DB, default
+#   <prefix>_scale_<model>_x<copies>_sf<sf>. A run reuses it when every table is there and tracked, else restores it from
+#   the backup the first build wrote (/var/opt/mssql/backup/<db>.bak in the container), else builds it.
 #   Needs and options: as sqlserver-add-column.sh (PROFILE CONNECTION CATALOG SRC_SQL CONN_USER; SRC_ENV, MODE, KEEP, OUT),
 #   and uv (for the statschema scripts).
 #
@@ -19,6 +22,9 @@ COPIES=${COPIES:-10}; SF=${SF:-0.01}; MODEL=${MODEL:-tpcc}; OBJECTS=${OBJECTS:-s
 SK=${SK:-$LIB/../..}   # the skills folder (set SK when running a copy of this script)
 lfc_init scale
 copy() { printf '%s_%04d' "$MODEL" "$1"; }
+DB=${SOURCE_DB:-${PREFIX}_scale_${MODEL}_x${COPIES}_sf${SF//./p}}; export KEEP_SOURCE=${KEEP_SOURCE:-1}
+BAK=/var/opt/mssql/backup/$DB.bak
+echo "source database $DB (kept after the run: $( [ "$KEEP_SOURCE" = 1 ] && echo yes || echo no))"
 
 # --- the model's DDL, once ---------------------------------------------------------------------------------------------
 uv run "$SK/lfc-source-statschema/scripts/shape.py" "$SK/lfc-source-statschema/schemas/$MODEL.yaml" --sf "$SF" > "$W/model.yaml" 2>"$W/shape.err" \
@@ -29,7 +35,29 @@ TB=$(grep -o -E '^CREATE TABLE \[[a-z_0-9]+\]' "$W/model.sql" | sed -E 's/.*\[(.
 NT=$(echo "$TB" | wc -l | tr -d ' '); RE=$(echo "$TB" | paste -sd'|' -)
 echo "$MODEL at SF $SF: $NT tables per copy, $COPIES copies = $((NT * COPIES)) tables"
 
-# --- source: one schema per copy, filled inside SQL Server --------------------------------------------------------------
+# --- source: reuse the kept database, or restore its backup, or build it ----------------------------------------------
+tracked() { printf "SET NOCOUNT ON; IF DB_ID('%s') IS NULL SELECT -1 ELSE SELECT (SELECT COUNT(*) FROM [%s].sys.change_tracking_tables) + (SELECT COUNT(*) FROM [%s].sys.tables WHERE is_tracked_by_cdc = 1);\n" "$DB" "$DB" "$DB" | $SRC_SQL master | tr -d '[:space:]'; }
+HAVE=$(tracked)
+if [ "$HAVE" = -1 ] && echo "SET NOCOUNT ON; RESTORE HEADERONLY FROM DISK = '$BAK';" | $SRC_SQL master >/dev/null 2>&1; then
+  echo "restoring $DB from $BAK"
+  echo "RESTORE DATABASE [$DB] FROM DISK = '$BAK' WITH KEEP_CDC;" | $SRC_SQL master > "$W/restore.out" 2>&1 || { echo "restore failed: $(grep -m1 Msg "$W/restore.out")"; exit 2; }
+  echo "EXEC sys.sp_cdc_add_job @job_type = 'capture'; EXEC sys.sp_cdc_add_job @job_type = 'cleanup';" | src >/dev/null 2>&1
+  HAVE=$(tracked)
+fi
+# tracked() counts every tracked table; the model's own come to NT * COPIES (the utility objects track their DDL audit table too)
+if [ "${HAVE:--1}" -ge $((NT * COPIES)) ] 2>/dev/null; then
+  echo "reusing $DB: $HAVE tracked tables"
+  echo "CREATE USER $CONN_USER FOR LOGIN $CONN_USER;" | src >/dev/null 2>&1
+  SCHEMAS=$(for i in $(seq 1 "$COPIES"); do copy "$i"; done | paste -sd, -)
+  echo "EXEC dbo.lakeflowFixPermissions @User = '$CONN_USER', @Tables = 'SCHEMAS:$SCHEMAS';" | src >/dev/null
+  REUSED=1
+else
+  [ "$HAVE" != -1 ] && { echo "$DB is incomplete ($HAVE tracked): dropping it to build again"
+    printf 'USE %s;\nEXEC sys.sp_cdc_disable_db;\nGO\nUSE master;\nALTER DATABASE %s SET SINGLE_USER WITH ROLLBACK IMMEDIATE;\nDROP DATABASE %s;\n' "$DB" "$DB" "$DB" | $SRC_SQL master >/dev/null 2>&1; }
+  REUSED=0
+fi
+if [ "$REUSED" = 0 ]; then
+# one schema per copy, filled inside SQL Server --------------------------------------------------------------
 echo "SELECT 1;" | src_db
 build() {   # build <i>: the copy's schema, its tables (names qualified, tags keyed by the schema), its rows
   local s; s=$(copy "$1")
@@ -43,9 +71,11 @@ export -f build copy src; export W RE MODEL DB SRC_SQL SK
 T0=$(date +%s)
 seq 1 "$COPIES" | xargs -P "$FILLS" -I{} bash -c 'build {}' || { echo "source build failed"; exit 2; }
 echo "source built in $(( $(date +%s) - T0 ))s"
+fi
 srcrows() { printf "SET NOCOUNT ON; SELECT SCHEMA_NAME(t.schema_id) + '.' + t.name, SUM(p.rows) FROM sys.tables t JOIN sys.partitions p ON p.object_id = t.object_id AND p.index_id < 2 WHERE SCHEMA_NAME(t.schema_id) LIKE '%s[_]%%' GROUP BY t.schema_id, t.name ORDER BY 1;\n" "$MODEL" | src | tr -s ' \t' '\t'; }
 srcrows > "$W/src.tsv"; [ "$(wc -l < "$W/src.tsv" | tr -d ' ')" = $((NT * COPIES)) ] || { echo "source has $(wc -l < "$W/src.tsv") tables, expected $((NT * COPIES))"; exit 2; }
 
+if [ "$REUSED" = 0 ]; then
 # change tracking on every keyed table (by schema), CDC on the keyless ones (change tracking needs a primary key)
 src_util
 for i in $(seq 1 "$COPIES"); do echo "$(copy "$i")"; done | paste -sd, - > "$W/schemas.txt"
@@ -57,6 +87,9 @@ echo "EXEC dbo.lakeflowFixPermissions @User = '$CONN_USER', @Tables = 'SCHEMAS:$
 TRACKED=$(printf "SET NOCOUNT ON; SELECT (SELECT COUNT(*) FROM sys.change_tracking_tables c JOIN sys.tables t ON t.object_id = c.object_id WHERE SCHEMA_NAME(t.schema_id) LIKE '%s[_]%%') + (SELECT COUNT(*) FROM sys.tables t WHERE is_tracked_by_cdc = 1 AND SCHEMA_NAME(t.schema_id) LIKE '%s[_]%%');\n" "$MODEL" "$MODEL" | src | tr -d '[:space:]')
 [ "$TRACKED" = $((NT * COPIES)) ] || { echo "tracked $TRACKED of $((NT * COPIES)) tables; CT: $(grep -m1 -i error "$W/ct.out")"; exit 2; }
 echo "tracking: $(( NT * COPIES - $(wc -l < "$W/keyless.txt") )) change tracking, $(wc -l < "$W/keyless.txt") CDC"
+  echo "BACKUP DATABASE [$DB] TO DISK = '$BAK' WITH INIT, COMPRESSION;" | $SRC_SQL master > "$W/backup.out" 2>&1 \
+    && echo "backup: $BAK" || echo "backup failed: $(grep -m1 Msg "$W/backup.out")"
+fi
 
 # --- the pipeline -------------------------------------------------------------------------------------------------------
 DEST=()   # destination schemas besides $S, deleted at cleanup
