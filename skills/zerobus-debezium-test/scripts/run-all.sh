@@ -15,6 +15,7 @@
 #    cleaning up after itself. SOURCES defaults to "crdb yb" on a VM, "crdb" on the laptop (its schema dump, through
 #    the volume, is CockroachDB only so far). MODEL (default shop) and SF go to every run: the source's schema, a
 #    canonical schema.yaml (models/<MODEL>.yaml, or lfc-source-statschema's schemas/<MODEL>.yaml, e.g. tpcb).
+#    NSRC, BRONZE (shared, fanout, per-table), BRONZE_SHARDS and ON_DRIFT go to every run too (debezium-zerobus.sh).
 # 4. The results in RESULTS (default ~/.lfc-test/results/zerobus-<UTC time>): check.txt, <source>.md (the run's result
 #    table), <source>.log, summary.md. When everything passed and RECORD=1 (the default), one row per source goes into
 #    docs/lakeflow-connect-zerobus.md, "Successful runs": commit that change with the run. Exit 0 only when all passed.
@@ -68,7 +69,7 @@ route() { case $1 in yb) echo "Kafka Connect → Zerobus Kafka endpoint";; *) ec
 version() { case $1 in crdb) echo "CockroachDB $(grep -m1 '^- Source:' "$RESULTS/$1.md" | grep -o -E 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)";;
   yb) echo "YugabyteDB $(grep -m1 '^- Source:' "$RESULTS/$1.md" | grep -o -E 'YB-[0-9.]+' | head -1 | cut -c4- | sed 's/\.$//')";; *) echo "$1";; esac; }
 { echo "# Zerobus CDC test, $(date -u +%F)"; echo
-  echo "- Model: \`${MODEL:-shop}\`${SF:+ at SF $SF}"
+  echo "- Model: \`${MODEL:-shop}\`${SF:+ at SF $SF}; sources per host: ${NSRC:-1}; bronze: ${BRONZE:-shared}${BRONZE_SHARDS:+ ($BRONZE_SHARDS shards)}; drift: ${ON_DRIFT:-record}"
   echo "- Commit: \`$COMMIT\`${DIRTY:+ (with uncommitted changes)} of the tests repo; profile \`$PROFILE\`, catalog \`$CATALOG\`, ${LIMA:+Lima \`$LIMA\`}${VM_IP:+VM \`$VM_IP\`}"
   echo "- Workspace check: $([ $CHECK = 0 ] && echo PASS || echo FAIL) ($(grep -c '^PASS' "$RESULTS/check.txt") passed, $(grep -c '^FAIL' "$RESULTS/check.txt") failed)"; echo
   echo "| Source | Claims passed | Claims failed | Run | Exit |"; echo "|---|---|---|---|---|"
