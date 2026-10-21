@@ -6,8 +6,9 @@
 #
 # 1. Pre-flight: the skill folders it uses have no uncommitted changes (ALLOW_DIRTY=1 to run anyway, marked in the
 #    summary). On a VM: SSH answers (a changed laptop IP blocks it at the VM's firewall, and every source query would
-#    then come back empty), and lfc-source-podman's ensure-podman-rootless.sh there. On the laptop: ensure-lima-podman.sh
-#    (the VM running, then the same rootless setup). Containers run as the login user with plain `podman`, no sudo.
+#    then come back empty), and lfc-source-podman's ensure-podman-socket.sh there. On the laptop: ensure-lima-podman.sh
+#    (the VM running, then the same). Containers run rootful through the root Podman socket, with no sudo, in the one
+#    store the databases use too.
 #    SWEEP=1 first removes what earlier runs left behind (sweep.sh --apply; runs younger than 2 hours are kept).
 # 2. zerobus-workspace-setup/scripts/check.sh: the Zerobus previews, and TCP to the endpoint from where the producer runs.
 # 3. debezium-zerobus.sh for every source in SOURCES, in parallel, each on its own port (crdb 30026, yb 30031), each
@@ -38,7 +39,7 @@ else
   ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10 "$VM_USER@$VM_IP" true 2>/dev/null \
     || { echo "no SSH to $VM_IP: is this laptop's IP ($(curl -s -m 5 https://api.ipify.org)) still allowed by the VM's firewall?"; exit 2; }
   FROM="ssh -i $SSH_KEY -o BatchMode=yes $VM_USER@$VM_IP"; WHERE_HOST="Cloud VM"
-  bash skills/lfc-source-podman/scripts/ensure-podman-rootless.sh --on "$FROM" | tee "$RESULTS/host.txt" || { echo "the VM isn't ready for rootless Podman"; exit 2; }
+  bash skills/lfc-source-podman/scripts/ensure-podman-socket.sh --on "$FROM" | tee "$RESULTS/host.txt" || { echo "the VM isn't ready: rootful Podman through the socket"; exit 2; }
 fi
 [ "${SWEEP:-0}" = 1 ] && bash skills/zerobus-debezium-test/scripts/sweep.sh --apply | tee "$RESULTS/sweep.txt"
 echo "commit $COMMIT${DIRTY:+ with uncommitted changes}; results in $RESULTS"

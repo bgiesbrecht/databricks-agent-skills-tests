@@ -12,6 +12,8 @@ set -uo pipefail
 export PATH=/opt/homebrew/bin:$PATH
 : "${PROFILE:?}" "${CATALOG:?}"; APPLY=no; [ "${1:-}" = --apply ] && APPLY=yes
 MIN_AGE=${MIN_AGE:-7200}; KEEP_RUNS=" ${KEEP_RUNS:-} "; NOW=$(date +%s)
+PODMAN=${PODMAN:-podman --remote --url unix:///run/podman/podman.sock}   # as debezium-zerobus.sh
+rmc() { echo "$PODMAN run --rm -v $(dirname "$1"):/p docker.io/library/alpine:3 rm -rf /p/$(basename "$1")"; }
 dbx() { databricks "$@" --profile "$PROFILE"; }
 if [ -n "${LIMA:-}" ]; then host() { limactl shell "$LIMA" -- bash -c "$*"; }
 elif [ -n "${VM_IP:-}" ]; then host() { ssh -i "${SSH_KEY:-$HOME/.ssh/lfc_test_rsa}" -o BatchMode=yes -o ConnectTimeout=10 "${VM_USER:-azureuser}@$VM_IP" "$@"; }
@@ -24,11 +26,11 @@ act() { # act <what> <command...>: print, and run it with --apply
   if [ $APPLY = yes ]; then "$@" >/dev/null 2>&1 && echo "removed  $what" || echo "FAILED   $what"; else echo "would remove  $what"; fi; }
 epoch() { echo "$1" | grep -o -E '[0-9]{10}' | tail -1; }
 
-for c in $(host "podman ps -a --format '{{.Names}}'" 2>/dev/null | grep -E "^$PREFIX-(crdb|yb|debezium)-[0-9]{10}\$"); do
-  old "$(epoch "$c")" && act "container $c" host "podman rm -f --ignore $c"; done
-for x in $(host "podman network ls --format '{{.Name}}'" 2>/dev/null | grep -E '^(crdb|yb)-dbz-[0-9]{10}$'); do
-  old "$(epoch "$x")" && act "network $x" host "podman network rm $x"; done
-for d in $(host "ls -d /tmp/dbz-* 2>/dev/null"); do e=$(epoch "$d"); [ -n "$e" ] && old "$e" && act "host dir $d" host "podman unshare rm -rf $d"; done
+for c in $(host "$PODMAN ps -a --format '{{.Names}}'" 2>/dev/null | grep -E "^$PREFIX-(crdb|yb|debezium)-[0-9]{10}\$"); do
+  old "$(epoch "$c")" && act "container $c" host "$PODMAN rm -f --ignore $c"; done
+for x in $(host "$PODMAN network ls --format '{{.Name}}'" 2>/dev/null | grep -E '^(crdb|yb)-dbz-[0-9]{10}$'); do
+  old "$(epoch "$x")" && act "network $x" host "$PODMAN network rm $x"; done
+for d in $(host "ls -d /tmp/dbz-* 2>/dev/null"); do e=$(epoch "$d"); [ -n "$e" ] && old "$e" && act "host dir $d" host "$(rmc $d)"; done
 
 for p in $(dbx pipelines list-pipelines -o json | yq -r ".[] | select(.name | test(\"^$PREFIX-(crdb|yb)-dbz-silver-[0-9]{10}\$\")) | .name + \"|\" + .pipeline_id"); do
   old "$(epoch "${p%%|*}")" && act "pipeline ${p%%|*}" dbx pipelines delete "${p##*|}"; done

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ensure-podman-socket.sh [--on "<command prefix>"]
+# ensure-podman-socket.sh [--on "<command prefix>"] [--mac-connection <name>]
 #   Rootful Podman without sudo: give the login user the root Podman socket through a `podman` group, the way the
 #   `docker` group works. After it, `podman --remote --url unix:///run/podman/podman.sock ...` runs rootful containers
 #   (storage in /var/lib/containers, --privileged, raised ulimits) as the login user, with no sudo and so no password.
@@ -8,8 +8,12 @@
 #   Steps (PASS / FIXED / FAIL): the podman group with the user in it; the socket unit's group and mode
 #   (/etc/systemd/system/podman.socket.d/group.conf); /run/podman readable by the group at boot (tmpfiles.d);
 #   podman.socket active; then, in a new session, the socket answers and a rootful container runs as uid 0.
+#   --mac-connection <name> (with --on "limactl shell <instance> --"): also register `podman -c <name>` on the Mac, over
+#   Lima's ssh, to that root socket, so the Mac's podman uses the VM's one rootful store (a VM made without Lima's
+#   podman template forwards no socket to the Mac).
 set -uo pipefail
-ON=; [ "${1:-}" = --on ] && ON=$2
+ON=; MACCONN=
+while [ $# -gt 0 ]; do case $1 in --on) ON=$2; shift 2;; --mac-connection) MACCONN=$2; shift 2;; *) echo "unknown $1"; exit 2;; esac; done
 fails=0; SOCK=unix:///run/podman/podman.sock
 row() { printf "%-5s %-44s %s\n" "$1" "$2" "$3"; [ "$1" = FAIL ] && fails=$((fails + 1)); return 0; }
 h() { case "$ON" in "") bash -c "$1";; ssh\ *) $ON "bash -c $(printf '%q' "$1")";; *) $ON bash -c "$1";; esac; }   # see ensure-podman-rootless.sh
@@ -37,4 +41,13 @@ else h 'sudo systemctl enable podman.socket >/dev/null 2>&1; sudo systemctl rest
 r=$(h "podman --remote --url $SOCK run --rm docker.io/library/alpine:3 id -u" 2>/dev/null | tail -1)
 [ "$r" = 0 ] && row PASS "rootful container without sudo" "uid 0 in the container" \
   || row FAIL "rootful container without sudo" "no answer from $SOCK (a session opened before the group was added doesn't have it: run again)"
+if [ -n "$MACCONN" ]; then
+  case "$ON" in "limactl shell "*) I=$(echo "$ON" | awk '{print $3}'); CFG=$HOME/.lima/$I/ssh.config
+    PORT=$(awk '$1 == "Port" {print $2}' "$CFG"); USR=$(awk '$1 == "User" {print $2}' "$CFG"); KEY=$(awk '$1 == "IdentityFile" {print $2}' "$CFG" | tr -d '"' | head -1)
+    podman system connection rm "$MACCONN" >/dev/null 2>&1
+    podman system connection add "$MACCONN" --identity "$KEY" "ssh://$USR@127.0.0.1:$PORT/run/podman/podman.sock" \
+      && [ "$(podman -c "$MACCONN" info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" = false ] \
+      && row PASS "Mac connection $MACCONN" "podman -c $MACCONN: rootful, the VM's store" || row FAIL "Mac connection $MACCONN" "podman system connection add or info failed";;
+  *) row FAIL "Mac connection $MACCONN" 'only with --on "limactl shell <instance> --"';; esac
+fi
 exit $((fails > 0))

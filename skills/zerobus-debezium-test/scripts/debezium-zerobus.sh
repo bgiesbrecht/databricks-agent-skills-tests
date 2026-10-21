@@ -43,6 +43,11 @@ CONNECT_IMAGE=${CONNECT_IMAGE:-docker.io/apache/kafka:3.7.2}
 DEST_PREFIX=$SOURCE.$SRC_SCHEMA   # the topic prefix and the schema: the change log's destination is <DEST_PREFIX>.<table>
 DBZ_IMAGE=${DBZ_IMAGE:-quay.io/debezium/server:3.7.0.Final}
 WAIT=${WAIT:-180}; PHASE=${PHASE:-3}; CHECK=${CHECK:-$PWD/scripts/scd2-history-check.py}; SRC_PORT=${SRC_PORT:-${CRDB_PORT:-30026}}
+# PODMAN: rootful, through the root Podman socket, so no sudo (lfc-source-podman ensure-podman-socket.sh sets it up).
+# One store for the databases and the test, so no image is kept twice. PODMAN=podman runs rootless instead.
+PODMAN=${PODMAN:-podman --remote --url unix:///run/podman/podman.sock}
+# rmc <dir>: the command that removes a host directory whose files containers wrote (as root, or a container user)
+rmc() { echo "$PODMAN run --rm -v $(dirname "$1"):/p docker.io/library/alpine:3 rm -rf /p/$(basename "$1")"; }
 dbx() { databricks "$@" --profile "$PROFILE"; }
 if [ -n "${LIMA:-}" ]; then   # the laptop: Podman in a Lima VM; nothing on the laptop is reachable from Databricks
   vm() { limactl shell "$LIMA" -- bash -c "$*"; }; HOSTDESC="Lima $LIMA"
@@ -82,19 +87,19 @@ sql() {
 q() { export Q=$1; sql; }
 # src: SQL from stdin on the source, tab-separated with a header row
 case $SOURCE in
-  crdb) src() { vm "podman exec -i $SRCC cockroach sql --insecure --format=tsv"; };;
-  yb)   src() { vm "podman exec -i $SRCC bin/ysqlsh -h yugabytedb -U yugabyte -d shop -q -A -z -P footer=off -v ON_ERROR_STOP=1 | tr '\\000' '\\t'"; };;
+  crdb) src() { vm "$PODMAN exec -i $SRCC cockroach sql --insecure --format=tsv"; };;
+  yb)   src() { vm "$PODMAN exec -i $SRCC bin/ysqlsh -h yugabytedb -U yugabyte -d shop -q -A -z -P footer=off -v ON_ERROR_STOP=1 | tr '\\000' '\\t'"; };;
 esac
 
 cleanup() {
   [ "${KEEP:-0}" = 1 ] && { echo "KEEP=1: left $CATALOG.$S, SP ${SP_NAME:-}, VM containers and $RD"; rm -rf "$W"; return; }
-  vm "podman rm -f --ignore $DBZ $SRCC >/dev/null 2>&1; podman network rm $NET >/dev/null 2>&1; podman unshare rm -rf $RD" || true
+  vm "$PODMAN rm -f --ignore $DBZ $SRCC >/dev/null 2>&1; $PODMAN network rm $NET >/dev/null 2>&1; $(rmc $RD)" || true
   [ -n "${SP_ID:-}" ] && dbx service-principals delete "$SP_ID" >/dev/null 2>&1
   [ -n "${PIPELINE_ID:-}" ] && dbx pipelines delete "$PIPELINE_ID" >/dev/null 2>&1
   [ -n "${CONN:-}" ] && dbx connections delete "$CONN" >/dev/null 2>&1
   [ -n "${WSDIR:-}" ] && dbx workspace delete "$WSDIR" --recursive >/dev/null 2>&1
   dbx schemas delete "$CATALOG.$S" --force >/dev/null 2>&1
-  left=$(vm "podman ps -a --format '{{.Names}}' | grep -c -E '^($DBZ|$SRCC)\$'" 2>/dev/null)
+  left=$(vm "$PODMAN ps -a --format '{{.Names}}' | grep -c -E '^($DBZ|$SRCC)\$'" 2>/dev/null)
   echo "cleanup: containers left ${left:-?}; SP ${SP_ID:+deleted}; pipeline ${PIPELINE_ID:+deleted}; connection ${CONN:+deleted}; schema dropped"
   rm -rf "$W"
 }
@@ -107,7 +112,7 @@ CREATE TABLE shop.orders (id INT PRIMARY KEY, customer_id INT NOT NULL, amount D
 INSERT INTO shop.customers SELECT g, 'customer_' || g::TEXT, 'bronze' FROM generate_series(1, 5) g;
 INSERT INTO shop.orders SELECT g, 1 + g % 5, g * 10.5, 'placed' FROM generate_series(1, 5) g;"
 if [ "$SOURCE" = crdb ]; then
-  vm "podman network create $NET >/dev/null && podman run -d --name $SRCC --network $NET --network-alias cockroachdb \
+  vm "$PODMAN network create $NET >/dev/null && $PODMAN run -d --name $SRCC --network $NET --network-alias cockroachdb \
     $([ "$SCHEMA_VIA" = connection ] && echo "-p $SRC_PORT:26257") $SRC_IMAGE start-single-node --insecure --advertise-addr=cockroachdb >/dev/null" || { echo "CockroachDB start failed"; exit 2; }
   for _ in $(seq 1 30); do echo 'SELECT 1;' | src >/dev/null 2>&1 && break; sleep 2; done
   printf 'SET CLUSTER SETTING kv.rangefeed.enabled = true;\nCREATE DATABASE shop;\n%s\n' "$SETUP_SQL" | src >/dev/null || { echo "CockroachDB setup failed"; exit 2; }
@@ -117,10 +122,10 @@ if [ "$SOURCE" = crdb ]; then
   T_NS=${T_HLC%%.*}   # the wall time in nanoseconds: silver's sequence for the snapshot rows
   snap_select() { echo "SELECT $2 FROM shop.$1 AS OF SYSTEM TIME '$T_HLC';"; }   # snap_select <table> <columns>: the rows at T
 else
-  vm "podman network create $NET >/dev/null && podman run -d --name $SRCC --network $NET --network-alias yugabytedb \
+  vm "$PODMAN network create $NET >/dev/null && $PODMAN run -d --name $SRCC --network $NET --network-alias yugabytedb \
     $([ "$SCHEMA_VIA" = connection ] && echo "-p $SRC_PORT:5433") $SRC_IMAGE bin/yugabyted start --background=false --advertise_address=yugabytedb >/dev/null" || { echo "YugabyteDB start failed"; exit 2; }
-  for _ in $(seq 1 60); do vm "podman exec $SRCC bin/ysqlsh -h yugabytedb -U yugabyte -c 'SELECT 1'" >/dev/null 2>&1 && break; sleep 3; done
-  vm "podman exec $SRCC bin/ysqlsh -h yugabytedb -U yugabyte -c 'CREATE DATABASE shop'" >/dev/null || { echo "YugabyteDB setup failed"; exit 2; }
+  for _ in $(seq 1 60); do vm "$PODMAN exec $SRCC bin/ysqlsh -h yugabytedb -U yugabyte -c 'SELECT 1'" >/dev/null 2>&1 && break; sleep 3; done
+  vm "$PODMAN exec $SRCC bin/ysqlsh -h yugabytedb -U yugabyte -c 'CREATE DATABASE shop'" >/dev/null || { echo "YugabyteDB setup failed"; exit 2; }
   # the truth for the history check: an audit trigger writes every change, in commit order, to a table not published
   { echo "CREATE SCHEMA shop;"; echo "$SETUP_SQL"; cat <<'SQL'; } | src >/dev/null || { echo "YugabyteDB setup failed"; exit 2; }
 CREATE TABLE shop.audit (seq BIGSERIAL PRIMARY KEY, tbl TEXT NOT NULL, op TEXT NOT NULL, row_data JSONB);
@@ -157,11 +162,11 @@ if [ "$PHASE" -ge 2 ]; then
     else
       mkdir -p "$W/snap/$t"
       printf 'SET yb_read_time TO %s;\nCOPY (SELECT * FROM shop.%s) TO STDOUT WITH (FORMAT csv, HEADER);\n' "$T_US" "$t" \
-        | vm "podman exec -i $SRCC bin/ysqlsh -h yugabytedb -U yugabyte -d shop -q -v ON_ERROR_STOP=1" > "$W/snap/$t/$t.csv" 2>/dev/null \
+        | vm "$PODMAN exec -i $SRCC bin/ysqlsh -h yugabytedb -U yugabyte -d shop -q -v ON_ERROR_STOP=1" > "$W/snap/$t/$t.csv" 2>/dev/null \
         || { echo "COPY of $t failed"; exit 2; }
     fi
   done
-  [ "$SOURCE" = crdb ] && { vm "podman exec $SRCC tar -C /cockroach/cockroach-data/extern/snap -cf - ." | tar -xf - -C "$W/snap" \
+  [ "$SOURCE" = crdb ] && { vm "$PODMAN exec $SRCC tar -C /cockroach/cockroach-data/extern/snap -cf - ." | tar -xf - -C "$W/snap" \
     || { echo "snapshot copy failed"; exit 2; }; }
   SNAP_FMT=$([ "$SOURCE" = crdb ] && echo parquet || echo csv)
 fi
@@ -171,7 +176,7 @@ fi
 # so the key order and the casts go.
 dump_schema() {
   [ "$SOURCE" = crdb ] || { echo "SCHEMA_VIA=volume: only SOURCE=crdb dumps DDL so far"; return 1; }
-  vm "podman exec $SRCC cockroach sql --insecure -d shop --format=raw -e 'SHOW CREATE ALL TABLES'" | grep -v '^#' \
+  vm "$PODMAN exec $SRCC cockroach sql --insecure -d shop --format=raw -e 'SHOW CREATE ALL TABLES'" | grep -v '^#' \
     | sed -E 's/ (ASC|DESC)([,)])/\2/g; s/:::[A-Za-z0-9_]+(\[\])?//g' | (cd "$STATSCHEMA/.." && uv run -q scripts/ddl-to-schema.py --dialect postgres) > "$W/schema.yaml" 2>"$W/schema.err" || return 1
   yq -r '.tables[] | .name as $t | .columns | to_entries[] | [$t, .key + 1, .value.name,
     (.value.type as $y | {"integer": "INT", "long": "BIGINT", "float": "FLOAT", "double": "DOUBLE", "boolean": "BOOLEAN", "date": "DATE",
@@ -283,7 +288,7 @@ EOF
 cat "$W/secret.line" >> "$W/application.properties"; rm -f "$W/secret.line" "$W/secret.json"
 vm "umask 077; mkdir -p $RD/data && cat > $RD/application.properties" < "$W/application.properties"; rm -f "$W/application.properties"
 # :U gives the mounted files to the container user (Debezium runs as a non-root user), so the secret stays 0600
-vm "podman run -d --name $DBZ --network $NET -v $RD/application.properties:/debezium/config/application.properties:ro,U \
+vm "$PODMAN run -d --name $DBZ --network $NET -v $RD/application.properties:/debezium/config/application.properties:ro,U \
   -v $RD/data:/debezium/data:U $DBZ_IMAGE >/dev/null" || { echo "Debezium start failed"; exit 2; }
 else
 # --- Kafka Connect, standalone, into Zerobus's Kafka-compatible endpoint (no broker) ------------------------------------
@@ -295,12 +300,13 @@ else
 HERE=$(cd "$(dirname "$CHECK")" && pwd)
 vm "umask 077; mkdir -p $RD/data $RD/cfg; C=\$HOME/.cache/dbz-zerobus; mkdir -p \$C/plugins/yb \$C/plugins/stringify \$C/cp \$C/src
   [ -s \$C/plugins/yb/yb.jar ] || curl -s -L -o \$C/plugins/yb/yb.jar '$YB_CONNECTOR_URL'
-  [ -s \$C/cp/zerobus-sink.jar ] || podman run --rm --entrypoint sh $DBZ_IMAGE -c 'cat /debezium/lib/debezium-server-databricks-zerobus-*.jar' > \$C/cp/zerobus-sink.jar" \
+  [ -s \$C/cp/zerobus-sink.jar ] || $PODMAN run --rm --entrypoint sh $DBZ_IMAGE -c 'cat /debezium/lib/debezium-server-databricks-zerobus-*.jar' > \$C/cp/zerobus-sink.jar" \
   || { echo "Kafka Connect jars failed"; exit 2; }
-vm "cat > \$HOME/.cache/dbz-zerobus/src/StringifyField.java" < "$HERE/kafka-connect/StringifyField.java"
+# the source only when it changed, so the jar is rebuilt only then
+vm "S=\$HOME/.cache/dbz-zerobus/src/StringifyField.java; cat > \$S.new; cmp -s \$S.new \$S && rm \$S.new || mv \$S.new \$S" < "$HERE/kafka-connect/StringifyField.java"
 vm "C=\$HOME/.cache/dbz-zerobus; [ -s \$C/plugins/stringify/lfc-stringify-field.jar ] && [ \$C/plugins/stringify/lfc-stringify-field.jar -nt \$C/src/StringifyField.java ] && exit 0
-  podman run --rm -v \$C:/c:Z $CONNECT_IMAGE sh -c 'mkdir -p /c/k && cp /opt/kafka/libs/connect-api-*.jar /opt/kafka/libs/connect-json-*.jar /opt/kafka/libs/kafka-clients-*.jar /c/k/' \
-  && podman run --rm -v \$C:/c:Z docker.io/library/eclipse-temurin:17-jdk sh -c 'cd /c && rm -rf build && javac -d build -cp \"/c/k/*\" src/StringifyField.java && jar cf plugins/stringify/lfc-stringify-field.jar -C build .'" >/dev/null \
+  $PODMAN run --rm -u 0 -v \$C:/c:Z $CONNECT_IMAGE sh -c 'mkdir -p /c/k && cp /opt/kafka/libs/connect-api-*.jar /opt/kafka/libs/connect-json-*.jar /opt/kafka/libs/kafka-clients-*.jar /c/k/' \
+  && $PODMAN run --rm -u 0 -v \$C:/c:Z docker.io/library/eclipse-temurin:17-jdk sh -c 'cd /c && rm -rf build && javac -d build -cp \"/c/k/*\" src/StringifyField.java && jar cf plugins/stringify/lfc-stringify-field.jar -C build .'" >/dev/null \
   || { echo "StringifyField build failed"; exit 2; }
 TOPIC=$CATALOG.$S.cdc_log; BOOT=${ZB#https://}:9092
 export JAAS_SECRET=$(yq -r '.secret' "$W/secret.json"); rm -f "$W/secret.json"
@@ -356,7 +362,7 @@ transforms.route.regex=.*
 transforms.route.replacement=$TOPIC
 EOF
 for f in worker connector; do vm "umask 077; cat > $RD/cfg/$f.properties" < "$W/$f.properties"; done; rm -f "$W/worker.properties" "$W/connector.properties"
-vm "C=\$HOME/.cache/dbz-zerobus; podman run -d --name $DBZ --network $NET -v $RD/cfg:/cfg:ro,U -v $RD/data:/data:U -v \$C/plugins:/plugins:ro,Z \
+vm "C=\$HOME/.cache/dbz-zerobus; $PODMAN run -d --name $DBZ --network $NET -v $RD/cfg:/cfg:ro,U -v $RD/data:/data:U -v \$C/plugins:/plugins:ro,Z \
   -v \$C/cp:/extra:ro,Z -e CLASSPATH=/extra/zerobus-sink.jar --entrypoint /opt/kafka/bin/connect-standalone.sh $CONNECT_IMAGE \
   /cfg/worker.properties /cfg/connector.properties >/dev/null" || { echo "Kafka Connect start failed"; exit 2; }
 fi
@@ -593,7 +599,7 @@ UPDATE shop.customers SET tier = 'gold' WHERE id = 4;
 INSERT INTO shop.orders VALUES (7, 8, 12.34, 'placed');
 SQL
     t0=$SECONDS; until [ "$(q "SELECT COUNT(*) FROM $LOGQ" 2>/dev/null)" -ge $((N0 + 4)) ] 2>/dev/null || [ $((SECONDS - t0)) -ge "$WAIT" ]; do sleep 2; done
-    vm "podman kill $DBZ >/dev/null && podman start $DBZ >/dev/null" || claim retry-restart FAIL "Debezium restart failed"
+    vm "$PODMAN kill $DBZ >/dev/null && $PODMAN start $DBZ >/dev/null" || claim retry-restart FAIL "Debezium restart failed"
     sleep 40
     echo "UPDATE shop.orders SET status = 'shipped' WHERE id = 7;" | src >/dev/null
     t0=$SECONDS; until [ "$(q "SELECT COUNT(*) FROM $LOGQ WHERE operation = 'update' AND destination LIKE '%.orders' AND key:id::INT = 7" 2>/dev/null)" -ge 1 ] 2>/dev/null || [ $((SECONDS - t0)) -ge "$WAIT" ]; do sleep 5; done
@@ -607,7 +613,7 @@ SQL
     gold 3
     # the source's own history: its changefeed from T, with each row's commit time (`updated`)
     if [ "$SOURCE" = crdb ]; then
-      vm "timeout 20 podman exec $SRCC cockroach sql --insecure --format=tsv -e \"EXPERIMENTAL CHANGEFEED FOR shop.customers, shop.orders WITH updated, cursor = '$T_HLC'\"" > "$W/feed.tsv" 2>/dev/null
+      vm "timeout 20 $PODMAN exec $SRCC cockroach sql --insecure --format=tsv -e \"EXPERIMENTAL CHANGEFEED FOR shop.customers, shop.orders WITH updated, cursor = '$T_HLC'\"" > "$W/feed.tsv" 2>/dev/null
     else   # the audit table, in the changefeed's form: table, key, \x hex of {"after": row, "updated": commit order}
       echo "SELECT tbl, '', '\\x' || encode(convert_to(jsonb_build_object('after', row_data, 'updated', seq::TEXT)::TEXT, 'UTF8'), 'hex') FROM shop.audit ORDER BY seq;" | src > "$W/feed.tsv"
     fi
@@ -663,11 +669,11 @@ fi
 {
   echo "# debezium-zerobus run $E ($SRC_NAME)"; echo
   echo "- Date (UTC): $(date -u +%F)"
-  echo "- Source: $SRC_NAME $SRC_VERSION, image $SRC_IMAGE ($(vm "podman inspect -f '{{.ImageDigest}}' $SRCC"))"
+  echo "- Source: $SRC_NAME $SRC_VERSION, image $SRC_IMAGE ($(vm "$PODMAN inspect -f '{{.ImageDigest}}' $SRCC"))"
   if [ "$SINK" = kafka ]; then
-    echo "- Producer: Kafka Connect standalone, $CONNECT_IMAGE ($(vm "podman inspect -f '{{.ImageDigest}}' $DBZ")), no broker; Yugabyte connector $(basename "$YB_CONNECTOR_URL" .jar | sed 's/-jar-with-dependencies//'), pgoutput on a logical replication slot; StringifyField; into Zerobus's Kafka-compatible endpoint (one change-log table, VARIANT value)"
+    echo "- Producer: Kafka Connect standalone, $CONNECT_IMAGE ($(vm "$PODMAN inspect -f '{{.ImageDigest}}' $DBZ")), no broker; Yugabyte connector $(basename "$YB_CONNECTOR_URL" .jar | sed 's/-jar-with-dependencies//'), pgoutput on a logical replication slot; StringifyField; into Zerobus's Kafka-compatible endpoint (one change-log table, VARIANT value)"
   else
-    echo "- Debezium: $DBZ_IMAGE ($(vm "podman inspect -f '{{.ImageDigest}}' $DBZ")), $([ "$SOURCE" = crdb ] && echo 'CockroachDB connector, sinkless changefeed' || echo 'PostgreSQL connector, pgoutput on a YugabyteDB logical replication slot'), Zerobus sink (envelope into one change-log table, VARIANT fields, idempotency source)"
+    echo "- Debezium: $DBZ_IMAGE ($(vm "$PODMAN inspect -f '{{.ImageDigest}}' $DBZ")), $([ "$SOURCE" = crdb ] && echo 'CockroachDB connector, sinkless changefeed' || echo 'PostgreSQL connector, pgoutput on a YugabyteDB logical replication slot'), Zerobus sink (envelope into one change-log table, VARIANT fields, idempotency source)"
   fi
   echo "- Host: $(vm '. /etc/os-release; echo $PRETTY_NAME'), $(vm 'podman --version')"
   echo "- Destination: Zerobus in $CLOUD $REGION, one append-only change-log Delta table, liquid-clustered by destination (the source table)"
