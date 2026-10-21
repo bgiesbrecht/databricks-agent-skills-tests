@@ -35,6 +35,11 @@ case $SOURCE in
         DROP_FIELDS=${DROP_FIELDS-before,transaction,ts_ms,ts_us};;
   *) echo "SOURCE: crdb or yb"; exit 2;;
 esac
+# SINK=zerobus: Debezium Server's Zerobus sink (gRPC). SINK=kafka: Kafka Connect, standalone (offsets in a file, no
+# broker), with the producer pointed at Zerobus's Kafka-compatible endpoint; for connectors that only run on Kafka Connect
+SINK=${SINK:-$([ "$SOURCE" = yb ] && echo kafka || echo zerobus)}
+YB_CONNECTOR_URL=${YB_CONNECTOR_URL:-https://github.com/yugabyte/debezium/releases/download/dz.2.5.2.yb.2026.1.2.0.1/yugabytedb-source-connector-dz.2.5.2.yb.2026.1.2.0.1-jar-with-dependencies.jar}
+CONNECT_IMAGE=${CONNECT_IMAGE:-docker.io/apache/kafka:3.7.2}
 DEST_PREFIX=$SOURCE.$SRC_SCHEMA   # the topic prefix and the schema: the change log's destination is <DEST_PREFIX>.<table>
 DBZ_IMAGE=${DBZ_IMAGE:-quay.io/debezium/server:3.7.0.Final}
 WAIT=${WAIT:-180}; PHASE=${PHASE:-3}; CHECK=${CHECK:-$PWD/scripts/scd2-history-check.py}; SRC_PORT=${SRC_PORT:-${CRDB_PORT:-30026}}
@@ -83,7 +88,7 @@ esac
 
 cleanup() {
   [ "${KEEP:-0}" = 1 ] && { echo "KEEP=1: left $CATALOG.$S, SP ${SP_NAME:-}, VM containers and $RD"; rm -rf "$W"; return; }
-  vm "sudo podman rm -f $DBZ $SRCC >/dev/null 2>&1; sudo podman network rm $NET >/dev/null 2>&1; sudo rm -rf $RD" || true
+  vm "sudo podman rm -f --ignore $DBZ $SRCC >/dev/null 2>&1; sudo podman network rm $NET >/dev/null 2>&1; sudo rm -rf $RD" || true
   [ -n "${SP_ID:-}" ] && dbx service-principals delete "$SP_ID" >/dev/null 2>&1
   [ -n "${PIPELINE_ID:-}" ] && dbx pipelines delete "$PIPELINE_ID" >/dev/null 2>&1
   [ -n "${CONN:-}" ] && dbx connections delete "$CONN" >/dev/null 2>&1
@@ -124,6 +129,8 @@ CREATE FUNCTION shop.audit_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
   RETURN NULL; END $$;
 CREATE TRIGGER customers_audit AFTER INSERT OR UPDATE OR DELETE ON shop.customers FOR EACH ROW EXECUTE FUNCTION shop.audit_fn();
 CREATE TRIGGER orders_audit AFTER INSERT OR UPDATE OR DELETE ON shop.orders FOR EACH ROW EXECUTE FUNCTION shop.audit_fn();
+ALTER TABLE shop.customers REPLICA IDENTITY DEFAULT;
+ALTER TABLE shop.orders REPLICA IDENTITY DEFAULT;
 CREATE PUBLICATION dbz_pub FOR TABLE shop.customers, shop.orders;
 SELECT 1 FROM pg_create_logical_replication_slot('dbz_slot', 'pgoutput');
 SQL
@@ -177,9 +184,24 @@ dump_schema() {
 # --- destination: bronze tables, a service principal with a secret, grants -------------------------------------------
 dbx schemas create "$S" "$CATALOG" >/dev/null || exit 2
 LOG=$T.cdc_log
+# NORM: the change log in one shape for both sinks: destination, operation (create/update/delete/read), idempotency_key,
+# key, value, source_position, headers, _seq (orders each key's changes) and _event_ns (for the deduplication watermark).
+# Kafka Connect's records carry only the event (the Kafka API ingests the value alone): the operation comes from op, the
+# key from after or before, and the sequence from the slot's LSN, which follows commit order; the snapshot is sequence 0.
+if [ "$SINK" = kafka ]; then
+  NORM="SELECT destination, CASE value:op::STRING WHEN 'c' THEN 'create' WHEN 'u' THEN 'update' WHEN 'd' THEN 'delete' WHEN 'r' THEN 'read' END AS operation,
+    value:source:lsn::STRING AS idempotency_key, CASE value:op::STRING WHEN 'd' THEN value:before ELSE value:after END AS key, value, value:source AS source_position,
+    CAST(NULL AS VARIANT) AS headers, value:source:lsn::BIGINT AS _seq, value:ts_ms::BIGINT * 1000000 AS _event_ns"
+  SNAP_SEQ=0
+  q "CREATE TABLE $LOG (destination STRING NOT NULL, value VARIANT) CLUSTER BY (destination)
+    COMMENT 'Append-only change log: one Debezium event per source change, all source tables (Kafka Connect through the Zerobus Kafka API)'" >/dev/null || exit 2
+else
+  NORM="SELECT *, value:ts_ns::BIGINT AS _seq, value:ts_ns::BIGINT AS _event_ns"; SNAP_SEQ=$T_NS
 q "CREATE TABLE $LOG (target_table STRING NOT NULL, destination STRING NOT NULL, partition INT, operation STRING NOT NULL,
   idempotency_key STRING, key VARIANT, value VARIANT, source_position VARIANT, headers VARIANT) CLUSTER BY (destination)
   COMMENT 'Append-only change log: one Debezium envelope per source change, all source tables'" >/dev/null || exit 2
+fi
+LOGQ="($NORM FROM $LOG)"
 if [ -n "${SP_CLIENT_ID:-}" ]; then   # a service principal someone else created: its application ID and a file with its secret
   [ -r "${SP_SECRET_FILE:-}" ] || { echo "SP_CLIENT_ID needs SP_SECRET_FILE, a file with the OAuth secret"; exit 2; }
   SP_APP=$SP_CLIENT_ID; SP_NAME="existing $SP_CLIENT_ID"; SECRET=$(cat "$SP_SECRET_FILE") yq -n -o json '.secret = strenv(SECRET)' > "$W/secret.json"
@@ -196,6 +218,7 @@ done
 
 # --- Debezium Server: the source's connector, envelopes into one change-log table ---------------------------------------
 export SP_APP ZB HOST CATALOG S
+if [ "$SINK" = zerobus ]; then
 yq -r '"debezium.sink.zerobus.client.secret=" + .secret' "$W/secret.json" > "$W/secret.line"
 cat > "$W/application.properties" <<EOF
 $( if [ "$SOURCE" = crdb ]; then cat <<CRDB
@@ -262,16 +285,91 @@ vm "umask 077; mkdir -p $RD/data && cat > $RD/application.properties" < "$W/appl
 # :U gives the mounted files to the container user (Debezium runs as a non-root user), so the secret stays 0600
 vm "sudo podman run -d --name $DBZ --network $NET -v $RD/application.properties:/debezium/config/application.properties:ro,U \
   -v $RD/data:/debezium/data:U $DBZ_IMAGE >/dev/null" || { echo "Debezium start failed"; exit 2; }
+else
+# --- Kafka Connect, standalone, into Zerobus's Kafka-compatible endpoint (no broker) ------------------------------------
+# The producer needs SASL OAUTHBEARER with a token minted for the table: the login callback handler in Debezium's Zerobus
+# sink jar does that (JAAS options clientId, clientSecret, workspaceUrl, workspaceId, tables). The Kafka API ingests the
+# record value only, so the transforms put everything into it: the event as "value" (StringifyField makes it JSON text,
+# which is how Zerobus takes a VARIANT), the source topic as "destination", and every topic routed to the one table.
+# Jars are cached on the host in ~/.cache/dbz-zerobus.
+HERE=$(cd "$(dirname "$CHECK")" && pwd)
+vm "umask 077; mkdir -p $RD/data $RD/cfg; C=\$HOME/.cache/dbz-zerobus; mkdir -p \$C/plugins/yb \$C/plugins/stringify \$C/cp \$C/src
+  [ -s \$C/plugins/yb/yb.jar ] || curl -s -L -o \$C/plugins/yb/yb.jar '$YB_CONNECTOR_URL'
+  [ -s \$C/cp/zerobus-sink.jar ] || sudo podman run --rm --entrypoint sh $DBZ_IMAGE -c 'cat /debezium/lib/debezium-server-databricks-zerobus-*.jar' > \$C/cp/zerobus-sink.jar" \
+  || { echo "Kafka Connect jars failed"; exit 2; }
+vm "cat > \$HOME/.cache/dbz-zerobus/src/StringifyField.java" < "$HERE/kafka-connect/StringifyField.java"
+vm "C=\$HOME/.cache/dbz-zerobus; [ -s \$C/plugins/stringify/lfc-stringify-field.jar ] && [ \$C/plugins/stringify/lfc-stringify-field.jar -nt \$C/src/StringifyField.java ] && exit 0
+  sudo podman run --rm -v \$C:/c:Z $CONNECT_IMAGE sh -c 'mkdir -p /c/k && cp /opt/kafka/libs/connect-api-*.jar /opt/kafka/libs/connect-json-*.jar /opt/kafka/libs/kafka-clients-*.jar /c/k/' \
+  && sudo podman run --rm -v \$C:/c:Z docker.io/library/eclipse-temurin:17-jdk sh -c 'cd /c && rm -rf build && javac -d build -cp \"/c/k/*\" src/StringifyField.java && jar cf plugins/stringify/lfc-stringify-field.jar -C build .'" >/dev/null \
+  || { echo "StringifyField build failed"; exit 2; }
+TOPIC=$CATALOG.$S.cdc_log; BOOT=${ZB#https://}:9092
+export JAAS_SECRET=$(yq -r '.secret' "$W/secret.json"); rm -f "$W/secret.json"
+{ for pre in "" producer. admin.; do cat <<EOF
+${pre}bootstrap.servers=$BOOT
+${pre}security.protocol=SASL_SSL
+${pre}sasl.mechanism=OAUTHBEARER
+${pre}sasl.login.callback.handler.class=io.debezium.server.databricks.zerobus.ZerobusOAuthBearerLoginCallbackHandler
+${pre}sasl.jaas.config=org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required clientId="$SP_APP" clientSecret="$JAAS_SECRET" workspaceUrl="$HOST" workspaceId="$WS_ID" tables="$TOPIC";
+EOF
+done; cat <<EOF
+producer.acks=all
+producer.compression.type=none
+producer.enable.idempotence=false
+producer.linger.ms=20
+key.converter=org.apache.kafka.connect.json.JsonConverter
+value.converter=org.apache.kafka.connect.json.JsonConverter
+key.converter.schemas.enable=false
+value.converter.schemas.enable=false
+offset.storage.file.filename=/data/offsets.dat
+offset.flush.interval.ms=1000
+plugin.path=/plugins
+topic.creation.enable=false
+EOF
+} > "$W/worker.properties"; unset JAAS_SECRET
+cat > "$W/connector.properties" <<EOF
+name=yb-zerobus
+connector.class=io.debezium.connector.postgresql.YugabyteDBConnector
+tasks.max=1
+database.hostname=yugabytedb
+database.port=5433
+database.user=yugabyte
+database.password=yugabyte
+database.dbname=shop
+topic.prefix=yb
+plugin.name=pgoutput
+slot.name=dbz_slot
+publication.name=dbz_pub
+publication.autocreate.mode=disabled
+snapshot.mode=never
+table.include.list=shop.customers,shop.orders
+decimal.handling.mode=string
+tombstones.on.delete=false
+transforms=hoist,dest,json,route
+transforms.hoist.type=org.apache.kafka.connect.transforms.HoistField\$Value
+transforms.hoist.field=value
+transforms.dest.type=org.apache.kafka.connect.transforms.InsertField\$Value
+transforms.dest.topic.field=destination
+transforms.json.type=lfc.connect.StringifyField
+transforms.json.fields=value
+transforms.route.type=org.apache.kafka.connect.transforms.RegexRouter
+transforms.route.regex=.*
+transforms.route.replacement=$TOPIC
+EOF
+for f in worker connector; do vm "umask 077; cat > $RD/cfg/$f.properties" < "$W/$f.properties"; done; rm -f "$W/worker.properties" "$W/connector.properties"
+vm "C=\$HOME/.cache/dbz-zerobus; sudo podman run -d --name $DBZ --network $NET -v $RD/cfg:/cfg:ro,U -v $RD/data:/data:U -v \$C/plugins:/plugins:ro,Z \
+  -v \$C/cp:/extra:ro,Z -e CLASSPATH=/extra/zerobus-sink.jar --entrypoint /opt/kafka/bin/connect-standalone.sh $CONNECT_IMAGE \
+  /cfg/worker.properties /cfg/connector.properties >/dev/null" || { echo "Kafka Connect start failed"; exit 2; }
+fi
 
 # --- checks -----------------------------------------------------------------------------------------------------------
 # counts <table>: change-log rows for that source table per operation, as "create=.. read=.. update=.. delete=.."
-counts() { q "SELECT operation, COUNT(*) FROM $LOG WHERE destination LIKE '%.$1' GROUP BY operation ORDER BY operation" 2>/dev/null | awk -F'\t' '{printf "%s=%s ", $1, $2}'; }
+counts() { q "SELECT operation, COUNT(*) FROM $LOGQ WHERE destination LIKE '%.$1' GROUP BY operation ORDER BY operation" 2>/dev/null | awk -F'\t' '{printf "%s=%s ", $1, $2}'; }
 await() { # await <table> <operation> <n>: seconds until the log has n rows for that table and operation, or empty on timeout
   local t0=$SECONDS; while [ $((SECONDS - t0)) -lt "$WAIT" ]; do
-    [ "$(q "SELECT COUNT(*) FROM $LOG WHERE destination LIKE '%.$1' AND operation = '$2'" 2>/dev/null)" -ge "$3" ] 2>/dev/null && { echo $((SECONDS - t0)); return; }
+    [ "$(q "SELECT COUNT(*) FROM $LOGQ WHERE destination LIKE '%.$1' AND operation = '$2'" 2>/dev/null)" -ge "$3" ] 2>/dev/null && { echo $((SECONDS - t0)); return; }
     sleep 5; done; }
 sleep 30   # let the change feed start
-R=$(q "SELECT COUNT(*) FROM $LOG WHERE operation = 'read'" 2>/dev/null)
+R=$(q "SELECT COUNT(*) FROM $LOGQ WHERE operation = 'read'" 2>/dev/null)
 [ "$R" = 0 ] && claim no-snapshot-events PASS "no read events: the snapshot stays out of the log (feed starts at T=$T_HLC)" \
   || claim no-snapshot-events FAIL "read events in the log: ${R:-query failed}"
 
@@ -289,14 +387,14 @@ c=$(await customers create 2); u=$(await customers update 1); d=$(await customer
 c=$(await orders create 1); u=$(await orders update 2); d=$(await orders delete 1)
 [ -n "$c" ] && [ -n "$u" ] && [ -n "$d" ] && claim orders-changes PASS "1 insert, 2 updates, 1 delete arrive as create/update/delete events (latest within ${d}s)" \
   || claim orders-changes FAIL "orders: $(counts orders)"
-R=$(q "SELECT key:id::INT, value:after IS NULL OR value:after::STRING = 'null', value:ts_ns::STRING FROM $LOG WHERE destination LIKE '%.customers' AND operation = 'delete'" 2>&1 | tr '\t\n' ' ')
+R=$(q "SELECT key:id::INT, value:after IS NULL OR value:after::STRING = 'null', value:ts_ns::STRING FROM $LOGQ WHERE destination LIKE '%.customers' AND operation = 'delete'" 2>&1 | tr '\t\n' ' ')
 observe delete-event "customers delete (key.id, after is null, ts_ns): $R"
-R=$(q "SELECT value:after:tier::STRING, value:before IS NULL FROM $LOG WHERE destination LIKE '%.customers' AND operation = 'update'" 2>&1 | tr '\t\n' ' ')
+R=$(q "SELECT value:after:tier::STRING, value:before IS NULL FROM $LOGQ WHERE destination LIKE '%.customers' AND operation = 'update'" 2>&1 | tr '\t\n' ' ')
 observe update-event "customers update (after.tier, before is null with include.diff=false): $R"
-observe commit-time "events, distinct source.ts_hlc, distinct source.ts_ns, distinct ts_ns, distinct source.lsn, distinct source.ts_ms: $(q "SELECT COUNT(*), COUNT(DISTINCT value:source:ts_hlc::STRING), COUNT(DISTINCT value:source:ts_ns::STRING), COUNT(DISTINCT value:ts_ns::STRING), COUNT(DISTINCT value:source:lsn::STRING), COUNT(DISTINCT value:source:ts_ms::STRING) FROM $LOG" 2>&1 | tr '\t' ' ')"
-observe variant-paths "value top-level keys: $(q "SELECT CONCAT_WS(',', SORT_ARRAY(MAP_KEYS(FROM_JSON(TO_JSON(value), 'MAP<STRING,STRING>')))) FROM $LOG LIMIT 1" 2>&1 | cut -c1-200)"
-observe event-bytes "per event, average bytes (op: total value after source key position headers): $(q "SELECT operation, ROUND(AVG(LENGTH(TO_JSON(value)) + LENGTH(TO_JSON(key)) + LENGTH(COALESCE(TO_JSON(source_position),'')) + LENGTH(COALESCE(TO_JSON(headers),'')) + LENGTH(idempotency_key))), ROUND(AVG(LENGTH(TO_JSON(value)))), ROUND(AVG(LENGTH(TO_JSON(value:after)))), ROUND(AVG(LENGTH(TO_JSON(value:source)))), ROUND(AVG(LENGTH(TO_JSON(key)))), ROUND(AVG(LENGTH(COALESCE(TO_JSON(source_position),'')))), ROUND(AVG(LENGTH(COALESCE(TO_JSON(headers),'')))) FROM $LOG GROUP BY operation ORDER BY 1" 2>&1 | tr '\t\n' ' ;')"
-observe event-sample "one update event value: $(q "SELECT TO_JSON(value) FROM $LOG WHERE operation = 'update' LIMIT 1" 2>&1 | cut -c1-400)"
+observe commit-time "events, distinct source.ts_hlc, distinct source.ts_ns, distinct ts_ns, distinct source.lsn, distinct source.ts_ms: $(q "SELECT COUNT(*), COUNT(DISTINCT value:source:ts_hlc::STRING), COUNT(DISTINCT value:source:ts_ns::STRING), COUNT(DISTINCT value:ts_ns::STRING), COUNT(DISTINCT value:source:lsn::STRING), COUNT(DISTINCT value:source:ts_ms::STRING) FROM $LOGQ" 2>&1 | tr '\t' ' ')"
+observe variant-paths "value top-level keys: $(q "SELECT CONCAT_WS(',', SORT_ARRAY(MAP_KEYS(FROM_JSON(TO_JSON(value), 'MAP<STRING,STRING>')))) FROM $LOGQ LIMIT 1" 2>&1 | cut -c1-200)"
+observe event-bytes "per event, average bytes (op: total value after source key position headers): $(q "SELECT operation, ROUND(AVG(LENGTH(TO_JSON(value)) + LENGTH(TO_JSON(key)) + LENGTH(COALESCE(TO_JSON(source_position),'')) + LENGTH(COALESCE(TO_JSON(headers),'')) + LENGTH(idempotency_key))), ROUND(AVG(LENGTH(TO_JSON(value)))), ROUND(AVG(LENGTH(TO_JSON(value:after)))), ROUND(AVG(LENGTH(TO_JSON(value:source)))), ROUND(AVG(LENGTH(TO_JSON(key)))), ROUND(AVG(LENGTH(COALESCE(TO_JSON(source_position),'')))), ROUND(AVG(LENGTH(COALESCE(TO_JSON(headers),'')))) FROM $LOGQ GROUP BY operation ORDER BY 1" 2>&1 | tr '\t\n' ' ;')"
+observe event-sample "one update event value: $(q "SELECT TO_JSON(value) FROM $LOGQ WHERE operation = 'update' LIMIT 1" 2>&1 | cut -c1-400)"
 observe change-log "rows by operation, customers: $(counts customers); orders: $(counts orders); clustering: $(q "DESCRIBE DETAIL $LOG" 2>/dev/null | head -1 | grep -o 'destination' | head -1)"
 
 # --- phase 2: snapshot in a Volume, schema through a UC connection, silver ---------------------------------------------
@@ -329,10 +427,12 @@ if [ "$PHASE" -ge 2 ]; then
          WHEN 'numeric' THEN CONCAT('DECIMAL(', numeric_precision, ',', numeric_scale, ')') WHEN 'boolean' THEN 'BOOLEAN'
          WHEN 'double precision' THEN 'DOUBLE' WHEN 'real' THEN 'FLOAT' WHEN 'date' THEN 'DATE'
          WHEN 'timestamp without time zone' THEN 'TIMESTAMP_NTZ' WHEN 'timestamp with time zone' THEN 'TIMESTAMP'
-         ELSE 'STRING' END, in_pk
+         ELSE 'STRING' END, in_pk,
+       COALESCE(CASE WHEN LEFT(column_default, 1) = CHR(39) OR column_default RLIKE '^-?[0-9.]+(:::?[A-Za-z ]+)?\$'
+                     THEN REGEXP_REPLACE(column_default, ':::?[A-Za-z ]+\$', '') END, '')
      FROM remote_query('$CONN', database => 'shop', query => \"
        SELECT c.table_name, c.ordinal_position, c.column_name, c.data_type, c.numeric_precision, c.numeric_scale,
-              CASE WHEN k.column_name IS NULL THEN 0 ELSE 1 END AS in_pk
+              CASE WHEN k.column_name IS NULL THEN 0 ELSE 1 END AS in_pk, c.column_default
        FROM information_schema.columns c
        LEFT JOIN information_schema.table_constraints tc
          ON tc.table_schema = c.table_schema AND tc.table_name = c.table_name AND tc.constraint_type = 'PRIMARY KEY'
@@ -349,26 +449,31 @@ if [ "$PHASE" -ge 2 ]; then
   # silver: per table, the snapshot rows sequenced by T and the change-log rows sequenced by ts_ns, into one AUTO CDC table.
   # A column added after T isn't in the snapshot, so its snapshot rows get NULL there.
   SNAP_OPTS=$([ "$SNAP_FMT" = csv ] && echo "format => 'csv', header => true" || echo "format => 'parquet'")
-  [ "$SCHEMA_VIA" = volume ] || gen_silver() { awk -F'\t' -v vol="$VOL" -v lg="$LOG" -v tns="$T_NS" -v dp="$DEST_PREFIX" -v so="$SNAP_OPTS" '
+  [ "$SCHEMA_VIA" = volume ] || gen_silver() { awk -F'\t' -v vol="$VOL" -v lg="$LOG" -v tns="$SNAP_SEQ" -v dp="$DEST_PREFIX" -v so="$SNAP_OPTS" '
     FNR==NR { insnap[$1 "." $3]=1; next }
     { t=$1; col=$3; ty=$4; cols[t]=cols[t] (cols[t]?", ":"") col; if ($5==1) keys[t]=keys[t] (keys[t]?", ":"") col
-      snap[t]=snap[t] (snap[t]?", ":"") "CAST(" ((t "." col) in insnap ? col : "NULL") " AS " ty ") AS " col
-      chg[t]=chg[t] (chg[t]?", ":"") ($5==1 ? "key:" : "value:after:") col "::" ty " AS " col }
+      # a column added after T is not in the snapshot, nor in changes made before it was added. A PostgreSQL-protocol
+      # source does not resend old rows when a column is added, so those rows hold the column default: use it when the
+      # field is missing (SQL NULL from the path), not when it is a JSON null
+      dflt=($6 != "" ? $6 : "NULL")
+      snap[t]=snap[t] (snap[t]?", ":"") "CAST(" ((t "." col) in insnap ? col : dflt) " AS " ty ") AS " col
+      chg[t]=chg[t] (chg[t]?", ":"") ($5==1 ? "key:" col "::" ty : ($6 != "" ? "CASE WHEN value:after IS NOT NULL AND NOT is_variant_null(value:after) AND value:after:" col " IS NULL THEN CAST(" $6 " AS " ty ") ELSE value:after:" col "::" ty " END" : "value:after:" col "::" ty)) " AS " col }
     END { for (t in cols) {
       printf "CREATE TEMPORARY VIEW %s_snapshot AS SELECT %s, CAST(%s AS BIGINT) AS _seq, \047read\047 AS _op\n  FROM STREAM read_files(\047%s/%s\047, %s);\n\n", t, snap[t], tns, vol, t, so
-      printf "CREATE TEMPORARY VIEW %s_changes AS SELECT %s, value:ts_ns::BIGINT AS _seq, operation AS _op\n  FROM STREAM(%s) WHERE destination = \047" dp ".%s\047;\n\n", t, chg[t], lg, t
+      printf "CREATE TEMPORARY VIEW %s_changes AS SELECT %s, _seq, operation AS _op\n  FROM STREAM(cdc_log_norm) WHERE destination = \047" dp ".%s\047;\n\n", t, chg[t], t
       printf "CREATE OR REFRESH STREAMING TABLE %s CLUSTER BY (%s)\n  COMMENT \047Current rows of the source table: the snapshot as of T, then the change log\047;\n\n", t, keys[t]
       printf "CREATE FLOW %s_from_snapshot AS AUTO CDC INTO %s FROM STREAM(%s_snapshot)\n  KEYS (%s) SEQUENCE BY _seq COLUMNS * EXCEPT (_seq, _op) STORED AS SCD TYPE 1;\n\n", t, t, t, keys[t]
       printf "CREATE FLOW %s_from_changes AS AUTO CDC INTO %s FROM STREAM(%s_changes)\n  KEYS (%s) APPLY AS DELETE WHEN _op = \047delete\047 SEQUENCE BY _seq COLUMNS * EXCEPT (_seq, _op) STORED AS SCD TYPE 1;\n\n", t, t, t, keys[t]
       # SCD type 2 from the same snapshot, and from the change log without replays (cdc_log_dedup, in dedupe.py)
-      printf "CREATE TEMPORARY VIEW %s_changes_dedup AS SELECT %s, value:ts_ns::BIGINT AS _seq, operation AS _op\n  FROM STREAM(cdc_log_dedup) WHERE destination = \047" dp ".%s\047;\n\n", t, chg[t], t
+      printf "CREATE TEMPORARY VIEW %s_changes_dedup AS SELECT %s, _seq, operation AS _op\n  FROM STREAM(cdc_log_dedup) WHERE destination = \047" dp ".%s\047;\n\n", t, chg[t], t
       hist(t "_history", t "_changes_dedup", "Every version of each source row (SCD type 2), replays removed")
       if (t == "customers") hist(t "_history_nodedup", t "_changes", "Every version (SCD type 2) from the change log as it is, replays included: shows what a restart does") } }
     function hist(h, src, comment) {
       printf "CREATE OR REFRESH STREAMING TABLE %s CLUSTER BY (%s)\n  COMMENT \047%s\047;\n\n", h, keys[t], comment
       printf "CREATE FLOW %s_from_snapshot AS AUTO CDC INTO %s FROM STREAM(%s_snapshot)\n  KEYS (%s) SEQUENCE BY _seq COLUMNS * EXCEPT (_seq, _op) STORED AS SCD TYPE 2;\n\n", h, h, t, keys[t]
       printf "CREATE FLOW %s_from_changes AS AUTO CDC INTO %s FROM STREAM(%s)\n  KEYS (%s) APPLY AS DELETE WHEN _op = \047delete\047 SEQUENCE BY _seq COLUMNS * EXCEPT (_seq, _op) STORED AS SCD TYPE 2;\n\n", h, h, src, keys[t] }
-  ' "$W/schema0.tsv" "$W/schema.tsv" > "$W/silver.sql"; }
+  ' "$W/schema0.tsv" "$W/schema.tsv" > "$W/silver.body"
+    { printf 'CREATE TEMPORARY VIEW cdc_log_norm AS %s\n  FROM STREAM(cdc_log);\n\n' "$NORM"; cat "$W/silver.body"; } > "$W/silver.sql"; }
   gen_silver
   # gold: one materialized view for a reader that wants each customer's orders by tier; GOLD_Q is also run on the source
   GOLD_Q="SELECT c.id AS customer_id, c.name, c.tier, COUNT(o.id) AS orders, CAST(COALESCE(SUM(o.amount), 0) AS DECIMAL(12,2)) AS amount
@@ -384,8 +489,8 @@ from pyspark.sql import functions as F
 
 @dp.temporary_view(name="cdc_log_dedup")
 def cdc_log_dedup():
-    return (spark.readStream.table("cdc_log")
-            .withColumn("_event_time", F.timestamp_micros(F.expr("value:ts_ns::BIGINT DIV 1000")))
+    return (spark.readStream.table("cdc_log_norm")
+            .withColumn("_event_time", F.timestamp_micros(F.expr("_event_ns DIV 1000")))
             .withColumn("_after", F.expr("TO_JSON(value:after)"))
             .withWatermark("_event_time", "10 minutes")
             .dropDuplicatesWithinWatermark(["destination", "idempotency_key", "operation", "_after"])
@@ -396,12 +501,12 @@ PY
   [ "$PHASE" -ge 3 ] && LIBS="$LIBS gold.sql"
   dbx workspace mkdirs "$WSDIR" || exit 2
   for f in $LIBS; do dbx workspace import "$WSDIR/$f" --file "$W/$f" --format RAW >/dev/null || { echo "$f upload failed"; exit 2; }; done
-  export VOL T_NS DEST_PREFIX SNAP_FMT WSDIR CATALOG S PIPE_NAME=$PREFIX-$SOURCE-dbz-silver-$E LIBS
+  export VOL SINK DEST_PREFIX SNAP_FMT; export T_NS=$SNAP_SEQ; export WSDIR CATALOG S PIPE_NAME=$PREFIX-$SOURCE-dbz-silver-$E LIBS
   yq -n -o json '.name = strenv(PIPE_NAME) | .catalog = strenv(CATALOG) | .schema = strenv(S) | .serverless = true |
     .continuous = false | .development = true | .channel = "CURRENT" |
     .libraries = [strenv(LIBS) | split(" ") | .[] | {"file": {"path": strenv(WSDIR) + "/" + .}}] |
     .configuration = {"cdc.volume": strenv(VOL), "cdc.t_ns": strenv(T_NS), "cdc.dest_prefix": strenv(DEST_PREFIX),
-      "cdc.snapshot_format": strenv(SNAP_FMT), "cdc.nodedup_table": "customers"}' > "$W/pipe.json"
+      "cdc.snapshot_format": strenv(SNAP_FMT), "cdc.nodedup_table": "customers", "cdc.bronze": strenv(SINK)}' > "$W/pipe.json"
   PIPELINE_ID=$(dbx pipelines create --json @"$W/pipe.json" -o json | yq '.pipeline_id') || { echo "pipeline create failed"; exit 2; }
 
   run_silver() { # one pipeline update (extra args go to start-update); prints its final state
@@ -463,7 +568,7 @@ PY
   [ "$PHASE" -ge 3 ] && observe gold-refresh-1 "update 1: $(refresh)"
 
   # round 2: two updates of one key, a delete and reinsert of one key, a reinsert of a key deleted in round 1
-  N0=$(q "SELECT COUNT(*) FROM $LOG")
+  N0=$(q "SELECT COUNT(*) FROM $LOGQ")
   src >/dev/null <<'SQL'
 UPDATE shop.customers SET tier = 'platinum' WHERE id = 1;
 UPDATE shop.customers SET tier = 'diamond' WHERE id = 1;
@@ -472,7 +577,7 @@ INSERT INTO shop.customers VALUES (3, 'customer_3b', 'silver');
 INSERT INTO shop.customers VALUES (2, 'customer_2b', 'bronze');
 UPDATE shop.orders SET amount = amount + 1 WHERE id = 2;
 SQL
-  t0=$SECONDS; until [ "$(q "SELECT COUNT(*) FROM $LOG" 2>/dev/null)" -ge $((N0 + 6)) ] 2>/dev/null || [ $((SECONDS - t0)) -ge "$WAIT" ]; do sleep 5; done
+  t0=$SECONDS; until [ "$(q "SELECT COUNT(*) FROM $LOGQ" 2>/dev/null)" -ge $((N0 + 6)) ] 2>/dev/null || [ $((SECONDS - t0)) -ge "$WAIT" ]; do sleep 5; done
   st=$(run_silver); [ "$st" = COMPLETED ] || claim silver-update-2 FAIL "pipeline update: $st"
   for t in $TABLES; do same "$t" 2; done
   gold 2
@@ -480,22 +585,22 @@ SQL
   [ "$PHASE" -ge 3 ] && observe clustering "clustering columns: $(for t in $TABLES customer_orders; do printf '%s %s; ' "$t" "$(q "DESCRIBE TABLE EXTENDED $T.$t" 2>/dev/null | grep -o -E 'clusteringColumns=\[\[[^]]*\]\]' | head -1)"; done)"
   if [ "$PHASE" -ge 3 ]; then
     # round 3, retries: changes, then Debezium killed (SIGKILL, no offset flush) and started again, then one more change
-    N0=$(q "SELECT COUNT(*) FROM $LOG")
+    N0=$(q "SELECT COUNT(*) FROM $LOGQ")
     src >/dev/null <<'SQL'
 INSERT INTO shop.customers VALUES (8, 'customer_8', 'gold');
 UPDATE shop.customers SET tier = 'silver' WHERE id = 4;
 UPDATE shop.customers SET tier = 'gold' WHERE id = 4;
 INSERT INTO shop.orders VALUES (7, 8, 12.34, 'placed');
 SQL
-    t0=$SECONDS; until [ "$(q "SELECT COUNT(*) FROM $LOG" 2>/dev/null)" -ge $((N0 + 4)) ] 2>/dev/null || [ $((SECONDS - t0)) -ge "$WAIT" ]; do sleep 2; done
+    t0=$SECONDS; until [ "$(q "SELECT COUNT(*) FROM $LOGQ" 2>/dev/null)" -ge $((N0 + 4)) ] 2>/dev/null || [ $((SECONDS - t0)) -ge "$WAIT" ]; do sleep 2; done
     vm "sudo podman kill $DBZ >/dev/null && sudo podman start $DBZ >/dev/null" || claim retry-restart FAIL "Debezium restart failed"
     sleep 40
     echo "UPDATE shop.orders SET status = 'shipped' WHERE id = 7;" | src >/dev/null
-    t0=$SECONDS; until [ "$(q "SELECT COUNT(*) FROM $LOG WHERE operation = 'update' AND destination LIKE '%.orders' AND key:id::INT = 7" 2>/dev/null)" -ge 1 ] 2>/dev/null || [ $((SECONDS - t0)) -ge "$WAIT" ]; do sleep 5; done
+    t0=$SECONDS; until [ "$(q "SELECT COUNT(*) FROM $LOGQ WHERE operation = 'update' AND destination LIKE '%.orders' AND key:id::INT = 7" 2>/dev/null)" -ge 1 ] 2>/dev/null || [ $((SECONDS - t0)) -ge "$WAIT" ]; do sleep 5; done
     sleep 10
-    R=$(q "SELECT COUNT(*) - $N0, COUNT(*) - COUNT(DISTINCT idempotency_key), (SELECT COUNT(*) FROM (SELECT 1 FROM $LOG GROUP BY destination, TO_JSON(key), TO_JSON(value:after), operation HAVING COUNT(*) > 1)) FROM $LOG" 2>&1 | tr '\t' ' ')
+    R=$(q "SELECT COUNT(*) - $N0, COUNT(*) - COUNT(DISTINCT idempotency_key), (SELECT COUNT(*) FROM (SELECT 1 FROM $LOGQ GROUP BY destination, TO_JSON(key), TO_JSON(value:after), operation HAVING COUNT(*) > 1)) FROM $LOGQ" 2>&1 | tr '\t' ' ')
     observe retry-bronze "after the kill and restart, rows added since round 3 began (5 changes), rows sharing an idempotency key, change contents seen more than once: $R"
-    [ "$(q "SELECT COUNT(*) FROM $LOG WHERE operation = 'update' AND destination LIKE '%.orders' AND key:id::INT = 7")" -ge 1 ] \
+    [ "$(q "SELECT COUNT(*) FROM $LOGQ WHERE operation = 'update' AND destination LIKE '%.orders' AND key:id::INT = 7")" -ge 1 ] \
       && claim retry-stream-resumes PASS "a change after the restart reached bronze" || claim retry-stream-resumes FAIL "no event for the change after the restart"
     st=$(run_silver); [ "$st" = COMPLETED ] || claim silver-update-3 FAIL "pipeline update: $st"
     for t in $TABLES; do same "$t" 3; done
@@ -513,12 +618,12 @@ SQL
     echo "ALTER TABLE shop.customers ADD COLUMN email TEXT NOT NULL DEFAULT 'none';" | src >/dev/null
     sleep 15
     echo "UPDATE shop.customers SET email = 'c6@example.com' WHERE id = 6;" | src >/dev/null
-    t0=$SECONDS; until [ "$(q "SELECT COUNT(*) FROM $LOG WHERE value:after:email::STRING = 'c6@example.com'" 2>/dev/null)" -ge 1 ] 2>/dev/null || [ $((SECONDS - t0)) -ge "$WAIT" ]; do sleep 5; done
-    R=$(q "SELECT COUNT(*), COUNT_IF(value:after:email::STRING = 'none') FROM $LOG WHERE destination LIKE '%.customers' AND value:after:email IS NOT NULL" 2>&1 | tr '\t' ' ')
-    [ "$(q "SELECT COUNT(*) FROM $LOG WHERE value:after:email::STRING = 'c6@example.com'")" -ge 1 ] \
+    t0=$SECONDS; until [ "$(q "SELECT COUNT(*) FROM $LOGQ WHERE value:after:email::STRING = 'c6@example.com'" 2>/dev/null)" -ge 1 ] 2>/dev/null || [ $((SECONDS - t0)) -ge "$WAIT" ]; do sleep 5; done
+    R=$(q "SELECT COUNT(*), COUNT_IF(value:after:email::STRING = 'none') FROM $LOGQ WHERE destination LIKE '%.customers' AND value:after:email IS NOT NULL" 2>&1 | tr '\t' ' ')
+    [ "$(q "SELECT COUNT(*) FROM $LOGQ WHERE value:after:email::STRING = 'c6@example.com'")" -ge 1 ] \
       && claim schema-new-column-bronze PASS "the added column reaches bronze with no Databricks DDL (customers events with email, with email = none from the backfill): $R" \
       || claim schema-new-column-bronze FAIL "no event with the new column: $R"
-    observe schema-backfill-events "customers events by operation since the ALTER: $(q "SELECT operation, COUNT(*) FROM $LOG WHERE destination LIKE '%.customers' AND value:after:email IS NOT NULL GROUP BY 1" 2>&1 | tr '\t\n' '= ')"
+    observe schema-backfill-events "customers events by operation since the ALTER: $(q "SELECT operation, COUNT(*) FROM $LOGQ WHERE destination LIKE '%.customers' AND value:after:email IS NOT NULL GROUP BY 1" 2>&1 | tr '\t\n' '= ')"
     # silver as it is, without the column: the old columns still match
     st=$(run_silver); observe schema-silver-before-regenerate "update with the old flow: $st; silver customers columns: $(q "SELECT CONCAT_WS(',', COLLECT_LIST(column_name)) FROM \`$CATALOG\`.information_schema.columns WHERE table_schema = '$S' AND table_name = 'customers'" 2>&1)"
     # regenerate: the schema again through the connection, the flow from it, then a refresh of that table and a plain update
@@ -540,8 +645,8 @@ ALTER TABLE shop.orders ALTER COLUMN amount TYPE DECIMAL(12,2);
 SQL
     sleep 15
     echo "UPDATE shop.orders SET amount = 1234567890.12 WHERE id = 1;" | src >/dev/null
-    t0=$SECONDS; until [ "$(q "SELECT COUNT(*) FROM $LOG WHERE value:after:amount::STRING = '1234567890.12'" 2>/dev/null)" -ge 1 ] 2>/dev/null || [ $((SECONDS - t0)) -ge "$WAIT" ]; do sleep 5; done
-    observe schema-change-bronze "all orders events, by operation and whether they have status (a backfill would add updates without it): $(q "SELECT CONCAT(operation, ' status=', value:after:status IS NOT NULL), COUNT(*) FROM $LOG WHERE destination LIKE '%.orders' GROUP BY 1" 2>&1 | tr '\t\n' '= '); the new value: $(q "SELECT COUNT(*) FROM $LOG WHERE value:after:amount::STRING = '1234567890.12'" 2>&1)"
+    t0=$SECONDS; until [ "$(q "SELECT COUNT(*) FROM $LOGQ WHERE value:after:amount::STRING = '1234567890.12'" 2>/dev/null)" -ge 1 ] 2>/dev/null || [ $((SECONDS - t0)) -ge "$WAIT" ]; do sleep 5; done
+    observe schema-change-bronze "all orders events, by operation and whether they have status (a backfill would add updates without it): $(q "SELECT CONCAT(operation, ' status=', value:after:status IS NOT NULL), COUNT(*) FROM $LOGQ WHERE destination LIKE '%.orders' GROUP BY 1" 2>&1 | tr '\t\n' '= '); the new value: $(q "SELECT COUNT(*) FROM $LOGQ WHERE value:after:amount::STRING = '1234567890.12'" 2>&1)"
     st=$(run_silver 2>/dev/null); observe schema-change-old-flow "update with the old flow (status still selected, amount still DECIMAL(10,2)): $st; $(q "SELECT REGEXP_EXTRACT(error.exceptions[0].message, '\\[(INVALID_[A-Z_]+|[A-Z_]+CAST[A-Z_]*)\\][^\\n]*', 0) FROM event_log('$PIPELINE_ID') WHERE event_type = 'flow_progress' AND origin.flow_name LIKE '%.orders_from_changes' AND error IS NOT NULL ORDER BY timestamp DESC LIMIT 1" 2>&1 | cut -c1-300)"
     fetch_schema || claim schema-refetch FAIL "the schema didn't come through again: $(head -c 300 "$W/schema.err" 2>/dev/null)"; gen_silver
     [ "$SCHEMA_VIA" = volume ] || dbx workspace import "$WSDIR/silver.sql" --file "$W/silver.sql" --format RAW --overwrite >/dev/null

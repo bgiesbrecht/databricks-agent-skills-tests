@@ -22,6 +22,7 @@ T_NS = int(spark.conf.get("cdc.t_ns"))
 DEST = spark.conf.get("cdc.dest_prefix")
 FMT = spark.conf.get("cdc.snapshot_format", "parquet")
 NODEDUP = spark.conf.get("cdc.nodedup_table", "")
+BRONZE = spark.conf.get("cdc.bronze", "zerobus")   # zerobus: Debezium Server's sink; kafka: Kafka Connect, Kafka API
 
 
 def spark_type(c):
@@ -41,11 +42,28 @@ def load(name):
 SCHEMA, AT_T = load("schema.yaml"), load("schema-at-T.yaml")
 
 
+@dp.temporary_view(name="cdc_log_norm")
+def cdc_log_norm():
+    """The change log in one shape for both sinks: destination, operation, idempotency_key, key, value, _seq, _event_ns.
+    Kafka Connect's records carry only the event: the operation comes from op, the key from after or before, and the
+    sequence from the slot's LSN (commit order)."""
+    log = spark.readStream.table("cdc_log")
+    if BRONZE == "kafka":
+        return log.select(
+            "destination",
+            F.expr("CASE value:op::STRING WHEN 'c' THEN 'create' WHEN 'u' THEN 'update' WHEN 'd' THEN 'delete' "
+                   "WHEN 'r' THEN 'read' END").alias("operation"),
+            F.expr("value:source:lsn::STRING").alias("idempotency_key"),
+            F.expr("CASE value:op::STRING WHEN 'd' THEN value:before ELSE value:after END").alias("key"), "value",
+            F.expr("value:source:lsn::BIGINT").alias("_seq"), F.expr("value:ts_ms::BIGINT * 1000000").alias("_event_ns"))
+    return log.withColumn("_seq", F.expr("value:ts_ns::BIGINT")).withColumn("_event_ns", F.expr("value:ts_ns::BIGINT"))
+
+
 @dp.temporary_view(name="cdc_log_dedup")
 def cdc_log_dedup():
     # a replay has the same key and the same row image as the original; the key alone may be shared by two changes
-    return (spark.readStream.table("cdc_log")
-            .withColumn("_event_time", F.timestamp_micros(F.expr("value:ts_ns::BIGINT DIV 1000")))
+    return (spark.readStream.table("cdc_log_norm")
+            .withColumn("_event_time", F.timestamp_micros(F.expr("_event_ns DIV 1000")))
             .withColumn("_after", F.expr("TO_JSON(value:after)"))
             .withWatermark("_event_time", "10 minutes")
             .dropDuplicatesWithinWatermark(["destination", "idempotency_key", "operation", "_after"])
@@ -70,9 +88,9 @@ def define(table, cols):
 
     def changes(source):
         return (spark.readStream.table(source).where(F.col("destination") == f"{DEST}.{table}")
-                .select(*chg_cols, F.expr("value:ts_ns::BIGINT").alias("_seq"), F.col("operation").alias("_op")))
+                .select(*chg_cols, F.col("_seq"), F.col("operation").alias("_op")))
 
-    dp.temporary_view(name=f"{table}_changes")(lambda: changes("cdc_log"))
+    dp.temporary_view(name=f"{table}_changes")(lambda: changes("cdc_log_norm"))
     dp.temporary_view(name=f"{table}_changes_dedup")(lambda: changes("cdc_log_dedup"))
 
     targets = [(table, 1, f"{table}_changes"), (f"{table}_history", 2, f"{table}_changes_dedup")]
