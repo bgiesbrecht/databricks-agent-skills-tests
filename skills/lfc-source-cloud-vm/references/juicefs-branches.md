@@ -44,15 +44,15 @@ podman run -d --name jfs-redis --restart=always -p 127.0.0.1:6379:6379 -v $J/red
 
 Redis keeps the metadata in memory and appends every change to `$J/redis` (about 130 KB of metadata for 6.6 GB of Postgres data). SQLite also works, but writes were 25% slower.
 
-**Access (Azure Blob).** A container in the storage account, for example `juicefs`, and a container SAS (`racwdl`), written from your laptop into a root-only file on the VM and never printed. The connection string must be quoted, since it contains `;` and `&`:
+**Access (Azure Blob).** A container in the storage account, for example `juicefs`, and a container SAS (`racwdl`), held in a shell variable on your laptop and piped straight into a root-only file on the VM, so it's never printed or written on the laptop. The connection string must be quoted, since it contains `;` and `&`:
 
 ```bash
-umask 077
-az storage container generate-sas --account-name <account> -n juicefs --auth-mode key \
-  --permissions racwdl --expiry "$(date -u -v+2d '+%Y-%m-%dT%H:%MZ')" --https-only -o tsv > jfs-sas.token
+SAS=$(az storage container generate-sas --account-name <account> -n juicefs --auth-mode key \
+  --permissions racwdl --expiry "$(date -u -v+2d '+%Y-%m-%dT%H:%MZ')" --https-only -o tsv)
 printf "AZURE_STORAGE_CONNECTION_STRING='BlobEndpoint=https://%s.blob.core.windows.net;SharedAccessSignature=%s'\n" \
-  <account> "$(cat jfs-sas.token)" \
+  <account> "$SAS" \
   | ssh -i ~/.ssh/lfc_test_rsa azureuser@<VM_IP> 'sudo install -d -m 700 /etc/juicefs; sudo sh -c "umask 077; cat > /etc/juicefs/azure.env"'
+unset SAS
 ```
 
 (Linux `date`: `-d '+2 days'`.) When the SAS expires the mount stops reading blocks it hasn't cached; write a new file and remount.

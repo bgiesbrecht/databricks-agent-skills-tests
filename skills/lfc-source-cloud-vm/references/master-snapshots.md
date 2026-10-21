@@ -30,19 +30,17 @@ Tested end to end with Azure Blob from an Azure VM (Ubuntu 24.04, XFS data disk)
 A storage account (`--kind StorageV2 --access-tier Hot --allow-blob-public-access false`) and a container, for example `masters`, tagged `purpose=lfc-test`.
 
 - **Preferred:** give the VM a managed identity with **Storage Blob Data Reader** (pull only) or **Contributor** (save) on the container, and set `RCLONE_CONFIG_AZ_ENV_AUTH=true` instead of a SAS. Assigning roles needs Owner or User Access Administrator; if you don't have it, ask someone who does.
-- **Otherwise:** a container SAS with a short expiry, generated into a private file and never printed:
+- **Otherwise:** a container SAS with a short expiry. It's held in a shell variable and piped straight into a root-only file on the VM, so it's never printed or written on the laptop:
 
 ```bash
-umask 077
-az storage container generate-sas --account-name <account> -n masters --auth-mode key \
-  --permissions racwdl --expiry "$(date -u -d '+8 hours' '+%Y-%m-%dT%H:%MZ')" --https-only -o json \
-  | yq -p json -o json -r '.' > sas.token
+SAS=$(az storage container generate-sas --account-name <account> -n masters --auth-mode key \
+  --permissions racwdl --expiry "$(date -u -d '+8 hours' '+%Y-%m-%dT%H:%MZ')" --https-only -o tsv)
 { echo "RCLONE_CONFIG_AZ_TYPE=azureblob"
   echo "RCLONE_CONFIG_AZ_ACCOUNT=<account>"
-  echo "RCLONE_CONFIG_AZ_SAS_URL=https://<account>.blob.core.windows.net/masters?$(cat sas.token)"
-  echo "RCLONE_AZUREBLOB_DIRECTORY_MARKERS=true"; } > rclone.env
-ssh -i ~/.ssh/lfc_test_rsa azureuser@<VM_IP> "sudo sh -c 'umask 077; cat > /var/tmp/lfc-rclone.env'" < rclone.env
-rm rclone.env sas.token
+  echo "RCLONE_CONFIG_AZ_SAS_URL=https://<account>.blob.core.windows.net/masters?$SAS"
+  echo "RCLONE_AZUREBLOB_DIRECTORY_MARKERS=true"; } \
+  | ssh -i ~/.ssh/lfc_test_rsa azureuser@<VM_IP> "sudo sh -c 'umask 077; cat > /var/tmp/lfc-rclone.env'"
+unset SAS
 ```
 
 (macOS `date`: `-v+8H` instead of `-d '+8 hours'`. Use `--permissions rl` for a pull-only token.) For S3 or GCS, set `RCLONE_S3_DIRECTORY_MARKERS=true` or `RCLONE_GCS_DIRECTORY_MARKERS=true` instead.
