@@ -38,13 +38,21 @@ You don't need Podman Desktop for any of this. If it's installed, remove it firs
 
 Without `template:podman-rootful` the VM has no Podman and no socket. Don't assume an existing VM has it: `forgedb-lima-rosetta2-podman`, an Ubuntu 25.10 VM, had none, and no Rosetta registered (2026-10-21). [`scripts/ensure-lima-podman.sh <instance>`](scripts/ensure-lima-podman.sh) makes any Lima VM ready: it starts the instance (or creates it with the command above, `--create`), installs Podman with `apt-get` or `dnf` if it's missing, and checks rootful Podman and Rosetta. It prints one line per step (`PASS`, `FIXED`, `FAIL`, `WARN`). Scripts then run containers as the login user, with plain `podman`.
 
-**Rootless, so scripts need no `sudo`.** None of the test containers need root: their ports are above 1024 and none is privileged. [`scripts/ensure-podman-rootless.sh --on "<prefix>"`](scripts/ensure-podman-rootless.sh) prepares any Linux host once, on a cloud VM (`--on "ssh <user>@<vm>"`) or in Lima (`--on "limactl shell <instance> --"`). It's the only place `sudo` is used:
-- **Subordinate user and group IDs** for the user (`/etc/subuid`, `/etc/subgid`), which rootless containers map users to. Ubuntu cloud images and Lima have them.
-- **Linger** (`loginctl enable-linger`). Without it, systemd stops a rootless user's containers when the user's last session ends, and a script that drives the host over many short `ssh` or `limactl` sessions loses them. The Azure test VM had it off.
-- **`~/.cache` owned by the user.** Earlier rootful runs had left 5 root-owned files there.
-- **Checks:** a rootless container runs, and container names resolve on a Podman network.
+**Rootful for databases, rootless where a test allows it, and `sudo` only in setup.** Checked on the Azure test VM (Ubuntu 24.04) and the Lima VM (Ubuntu 25.10), 2026-10-21:
 
-Files that a container writes into a mounted directory belong to the container's mapped user, so remove them with `podman unshare rm -rf <dir>`, not `sudo`. Rootless and rootful containers live in separate stores: `podman ps` doesn't show containers started with `sudo podman`, so remove old rootful ones with `sudo podman`.
+| Mode | Use it for | Command in scripts | Setup, once (the only `sudo`) |
+|---|---|---|---|
+| **Rootful** | Database sources that need storage on the XFS data disk (`/var/lib/containers`, **lfc-source-cloud-vm**) for reflink clones and JuiceFS branches of a master; Db2's `--privileged`; Oracle's raised `memlock` and `--shm-size`. Rootless can do none of these | `podman --remote --url unix:///run/podman/podman.sock ...` | [`scripts/ensure-podman-socket.sh --on "<prefix>"`](scripts/ensure-podman-socket.sh): a `podman` group with the user in it, owning the root Podman socket (mode 0660), like the `docker` group |
+| **Rootless** | Tests whose containers need none of that. The Zerobus test qualifies: CockroachDB, YugabyteDB, Debezium and Kafka Connect, on ports above 1024, nothing privileged, no master snapshot | `podman ...` | [`scripts/ensure-podman-rootless.sh --on "<prefix>"`](scripts/ensure-podman-rootless.sh): subordinate IDs, linger, `~/.cache` owned by the user |
+
+`<prefix>` is `ssh <user>@<vm>` or `limactl shell <instance> --`. Both scripts print one line per step (`PASS`, `FIXED`, `FAIL`), change only what's missing, and end with a check: a rootful container that runs as uid 0 without `sudo`, or a rootless one with container names resolving on a network.
+
+- **No password prompts.** `sudo` needed no password on either host (the cloud image's and Lima's default). It does on the Mac, so no script runs `sudo` on the Mac. On a Linux host where `sudo` asks for a password, the two setup scripts ask once, and nothing else does.
+- **The `podman` group is root-equivalent,** as the `docker` group is: anyone in it controls the host through the socket. Add only users who already have `sudo`.
+- **Linger matters for rootless.** Without it, systemd stops a rootless user's containers when the user's last session ends. A script that drives the host over many short `ssh` or `limactl` sessions loses its containers. The Azure VM had it off.
+- **New group membership needs a new login.** `limactl shell` reuses one persistent SSH connection, so its sessions don't get a new group. `ensure-podman-socket.sh` closes that connection once, when it adds the group, which interrupts any `limactl` command running at that moment.
+- **Files containers write.** In rootless mode they belong to the container's mapped user: remove them with `podman unshare rm -rf <dir>`. In rootful mode they belong to root: remove them from a container (`podman --remote ... run --rm -v <dir>:/d alpine rm -rf /d/...`), not with `sudo`.
+- **Separate stores.** Rootless and rootful containers don't see each other: `podman ps` doesn't show rootful containers, and `podman --remote ... ps` doesn't show rootless ones.
 
 Verify:
 
