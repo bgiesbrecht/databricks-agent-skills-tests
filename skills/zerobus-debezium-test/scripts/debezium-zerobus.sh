@@ -195,7 +195,8 @@ if [ "$SOURCE" = crdb ]; then
   t=$(echo 'SELECT cluster_logical_timestamp();' | src | tail -1)
   for i in $(seq 1 "$NSRC"); do THLC[$i]=$t; TNS[$i]=${t%%.*}; done   # the wall time in nanoseconds: silver's sequence
   # snap_select <table>: its rows at T in the current source, rendered as model-sql.py renders them (header row first)
-  snap_select() { local s; s=$(msel "$1" --side source --prefix "$SRC_DB"); echo "${s/ ORDER BY / AS OF SYSTEM TIME '$T_HLC' ORDER BY }"; }
+  # (the clause in a variable: bash 5.2 doesn't expand $T_HLC inside quotes in a ${s/.../...} replacement)
+  snap_select() { local s a=" AS OF SYSTEM TIME '$T_HLC' ORDER BY "; s=$(msel "$1" --side source --prefix "$SRC_DB"); echo "${s/ ORDER BY /$a}"; }
 else
   vm "$PODMAN network create $NET >/dev/null && $PODMAN run -d --name $SRCC --network $NET --network-alias yugabytedb \
     $([ "$SCHEMA_VIA" = connection ] && echo "-p $SRC_PORT:5433") $SRC_IMAGE bin/yugabyted start --background=false --advertise_address=yugabytedb >/dev/null" || { echo "YugabyteDB start failed"; exit 2; }
@@ -661,7 +662,7 @@ if [ "$PHASE" -ge 2 ]; then
   make_fanout() { # make_fanout <target> <checkpoint> [tables]: fanout.py as a serverless job (one read of cdc_log, written
     # per table, per shard, or for the tables given only), run before each silver update; sets JOB_ID
     export JOB_NAME=$PREFIX-$SOURCE-$MODEL-dbz-fanout-$E FPY=$WSDIR/fanout.py FSRC="$T.cdc_log" FTGT=$1 FCP=$2 FTB=${3:-}
-    yq -n -o json '.name = strenv(JOB_NAME) | .environments = [{"environment_key": "default", "spec": {"client": "2"}}] |
+    yq -n -o json '.name = strenv(JOB_NAME) | .environments = [{"environment_key": "default", "spec": {"environment_version": "4"}}] |
       .tasks = [{"task_key": "fanout", "environment_key": "default", "spark_python_task": {"python_file": strenv(FPY),
         "parameters": ["--source", strenv(FSRC), "--target", strenv(FTGT), "--shards", strenv(SHARDS), "--checkpoint", strenv(FCP), "--once"]
           + (strenv(FTB) | select(. != "") | ["--tables", .]) // []}}]' > "$W/job.json"

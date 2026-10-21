@@ -294,7 +294,8 @@ def drift(table, cols, pk, norm, mine, src):
         dp.create_streaming_table(name=DRIFT, comment="Schema drift seen in the change log, one row per table, source, "
                                   "kind (type, missing, new) and column: what an evolution (the table's new schema, "
                                   "then its full refresh) resolves")
-    dp.create_auto_cdc_flow(name=f"{DRIFT}_{table}", target=DRIFT, source=f"{table}_drift",
+    # named after the bronze table it reads: a table moved to its own bronze gets a new drift flow (a new checkpoint)
+    dp.create_auto_cdc_flow(name=f"{DRIFT}_{table}_{bronze_of(table)}", target=DRIFT, source=f"{table}_drift",
                             keys=["tbl", "_source", "kind", "col"], sequence_by="_seq", stored_as_scd_type=1)
 
 
