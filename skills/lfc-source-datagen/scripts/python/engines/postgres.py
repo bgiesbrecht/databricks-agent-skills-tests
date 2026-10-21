@@ -13,11 +13,14 @@ class Engine:
         cur.execute("SELECT word FROM pg_get_keywords() WHERE catcode <> 'U'")
         self.kw = {r[0] for r in cur.fetchall()}
         cur.execute("SELECT oid, typtype, typbasetype, typtypmod, typcategory, typelem, oid::regtype::text FROM pg_type")
-        self.types = {r[0]: r[1:] for r in cur.fetchall()}
+        # CockroachDB's regtype names are the short ones (int8, varchar, timestamp): PostgreSQL's long names, which the rest uses
+        self.types = {r[0]: r[1:6] + (LONG.get(r[6], r[6]),) for r in cur.fetchall()}
+        # the key's columns in key order, by array_position: no unnest(pk.conkey), whose implicit LATERAL CockroachDB refuses
         cur.execute("""
           SELECT r.relname, coalesce(obj_description(r.oid, 'pg_class'), ''),
-                 (SELECT array_agg(a.attname ORDER BY k.i) FROM pg_constraint pk, unnest(pk.conkey) WITH ORDINALITY k(n, i)
-                  JOIN pg_attribute a ON a.attrelid = r.oid AND a.attnum = k.n WHERE pk.conrelid = r.oid AND pk.contype = 'p'),
+                 (SELECT array_agg(a.attname ORDER BY array_position(pk.conkey, a.attnum)) FROM pg_constraint pk
+                  JOIN pg_attribute a ON a.attrelid = r.oid AND a.attnum = ANY (pk.conkey)
+                  WHERE pk.conrelid = r.oid AND pk.contype = 'p'),
                  (SELECT array_agg(DISTINCT p.relname) FROM pg_constraint f JOIN pg_class p ON p.oid = f.confrelid
                   WHERE f.conrelid = r.oid AND f.contype = 'f')
           FROM pg_class r JOIN pg_namespace s ON s.oid = r.relnamespace
@@ -120,6 +123,10 @@ class Engine:
 
     def prepare(self, cur, o): pass
 
+
+LONG = {"int2": "smallint", "int4": "integer", "int8": "bigint", "float4": "real", "float8": "double precision", "bool": "boolean",
+        "bpchar": "character", "varchar": "character varying", "timestamp": "timestamp without time zone",
+        "timestamptz": "timestamp with time zone", "time": "time without time zone", "timetz": "time with time zone"}
 
 CAST = {                                # the rest of lfc_cast: n into a valid value of the type
     "smallint": "(x.n % 32767)::smallint", "integer": "(x.n % 2147483647)::int", "bigint": "x.n", "oid": "(x.n % 4294967296)::oid",
