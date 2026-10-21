@@ -36,7 +36,7 @@ Size it for what runs at once: SQL Server and Oracle take 4 GB each (`--memory 1
 
 You don't need Podman Desktop for any of this. If it's installed, remove it first: it starts its own `podman machine` VM next to Lima, whose disk keeps growing (**podman-desktop-remove**).
 
-Without `template:podman-rootful` the VM has no Podman and no socket. An existing VM created this way under another name (for example `forgedb-lima-rosetta2-podman`) works the same: use its name.
+Without `template:podman-rootful` the VM has no Podman and no socket. Don't assume an existing VM has it: `forgedb-lima-rosetta2-podman`, an Ubuntu 25.10 VM, had none, and no Rosetta registered (2026-10-21). [`scripts/ensure-lima-podman.sh <instance>`](scripts/ensure-lima-podman.sh) makes any Lima VM ready: it starts the instance (or creates it with the command above, `--create`), installs Podman with `apt-get` or `dnf` if it's missing, and checks rootful Podman and Rosetta. It prints one line per step (`PASS`, `FIXED`, `FAIL`, `WARN`). Scripts then run containers with `limactl shell <instance> -- sudo podman ...`.
 
 Verify:
 

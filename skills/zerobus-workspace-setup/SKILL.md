@@ -12,6 +12,7 @@ The Zerobus counterpart of **lfc-workspace-setup**. Before a producer (Debezium 
 |---|---|---|
 | [`scripts/check.sh`](scripts/check.sh) | One line per requirement, `PASS` / `FAIL` / `WARN`, with the fix for each `FAIL` | No |
 | [`scripts/enable.sh`](scripts/enable.sh) | Lists the Zerobus settings, or turns on the ones named | Only with `--apply` (workspace admin) |
+| [`scripts/sp.sh`](scripts/sp.sh) | For whoever can create service principals, to hand one to a tester who can't: creates it (or reuses one with that name), writes an OAuth secret into a 0600 file (never printed), and, with `--table`, grants it there | Only with `--apply` (workspace admin) |
 | [`scripts/grant.sh`](scripts/grant.sh) | Grants a service principal `USE CATALOG`, `USE SCHEMA`, and `SELECT` and `MODIFY`, each directly on its securable | Only with `--apply` (the table's owner, or `MANAGE`) |
 
 ```bash
@@ -43,7 +44,7 @@ Zerobus writes only to an existing **managed Delta** table (or a streaming table
 
 ## 3. The service principal
 
-Zerobus authenticates only with a service principal's OAuth secret (Debezium's sink and Kafka Connect's login callback take `client.id` / `clientId` and the secret). If you can't create one, someone who can creates it once and gives you the application ID and a secret. Then:
+Zerobus authenticates only with a service principal's OAuth secret (Debezium's sink and Kafka Connect's login callback take `client.id` / `clientId` and the secret). If you can't create one, someone who can runs `sp.sh <profile> --name <name> --secret-file <file> --apply` once and gives you the application ID and the file. Then:
 
 - **Grant directly on each securable**: `USE CATALOG` on the catalog, `USE SCHEMA` on the schema, `SELECT` and `MODIFY` on the table. The token is table-scoped (`authorization_details`), and inherited grants may not satisfy it (error 4024). `grant.sh` checks what's there and adds only what's missing.
 - **Mint a token as the producer will.** With `--secret-file`, `check.sh` requests a table-scoped token from `<workspace>/oidc/v1/token` (`client_credentials`, `resource=api://databricks/workspaces/<id>/zerobusDirectWriteApi`, `authorization_details` for the catalog, schema and table). A minted token proves the secret and the grants; it doesn't prove the endpoint previews (step 1).
