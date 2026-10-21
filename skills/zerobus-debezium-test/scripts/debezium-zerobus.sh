@@ -111,6 +111,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# the published port, for the UC connection: SRC_PORT, or the next free one up to 30063 (the shared firewall group opens
+# 30000-30063), so a run kept with KEEP=1 doesn't block the next
+if [ "$SCHEMA_VIA" = connection ]; then
+  p=$SRC_PORT; while [ "$p" -le 30063 ] && vm "ss -ltnH 'sport = :$p' | grep -q ." 2>/dev/null; do p=$((p + 1)); done
+  [ "$p" -le 30063 ] || { echo "no free port from $SRC_PORT to 30063 on $HOSTDESC"; exit 2; }
+  [ "$p" != "$SRC_PORT" ] && echo "port $SRC_PORT is in use (a kept run?): using $p"; SRC_PORT=$p
+fi
+
 # --- source: a small schema ----------------------------------------------------------------------------------------
 TABLES="customers orders"
 SETUP_SQL="CREATE TABLE shop.customers (id INT PRIMARY KEY, name TEXT NOT NULL, tier TEXT NOT NULL);

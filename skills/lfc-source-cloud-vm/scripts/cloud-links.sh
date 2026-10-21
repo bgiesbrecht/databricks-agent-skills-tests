@@ -7,7 +7,7 @@
 #     GCP:   the instance, its disks, and the VPC firewall rules
 #   --resource-id adds the portal link for any other Azure resource, for example the storage account of a master
 #   snapshot (bk.env SA_ID). Azure is searched in --subscription, AZURE_SUBSCRIPTION_ID, the subscriptions of the
-#   --resource-id values, then the CLI's current one; a default resource group in `az config` is ignored (it would scope
+#   --resource-id values, the CLI's current one, then every enabled one; a default resource group in `az config` is ignored (it would scope
 #   every list to that group and hide the VM). Read-only. Exit 1 when no cloud had the IP.
 set -uo pipefail
 IP=${1:?vm public ip}; shift; REGION=${AWS_REGION:-}; EXTRA=(); SUBS=${AZURE_SUBSCRIPTION_ID:-}
@@ -28,6 +28,11 @@ if command -v az >/dev/null && az account show >/dev/null 2>&1; then
     pipid=$(echo "$pip" | yq -p json '.id // ""' 2>/dev/null); cfg=$(echo "$pip" | yq -p json '.cfg // ""' 2>/dev/null)
     [ -n "$pipid" ] && break
   done
+  # not there: every enabled subscription (19 for the test login, about 2 s each)
+  if [ -z "$pipid" ]; then for sub in $(az account list --query "[?state=='Enabled'].id" -o tsv); do
+    pip=$(az network public-ip list --subscription "$sub" --query "[?ipAddress=='$IP'] | [0].{id:id, cfg:ipConfiguration.id}" -o json 2>/dev/null)
+    pipid=$(echo "$pip" | yq -p json '.id // ""' 2>/dev/null); cfg=$(echo "$pip" | yq -p json '.cfg // ""' 2>/dev/null)
+    [ -n "$pipid" ] && break; done; fi
   if [ -n "$pipid" ]; then
     link "Azure public IP $IP" "$AZ$pipid"
     nic=${cfg%/ipConfigurations/*}
