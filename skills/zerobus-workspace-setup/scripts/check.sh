@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check.sh <profile> --table <catalog.schema.table> [--sp <application id>] [--secret-file F] [--interfaces grpc,kafka,mqtt]
+# check.sh <profile> [--table <catalog.schema.table>] [--sp <application id>] [--secret-file F] [--interfaces grpc,kafka,mqtt]
 #          [--from "<command prefix>"]
 #   Can a producer write to <table> through Zerobus in this workspace? Read-only. One line per requirement: PASS / FAIL /
 #   WARN, and for each FAIL the command that fixes it (enable.sh, grant.sh, or the CLI). Exit code 1 if anything FAILs.
@@ -12,7 +12,7 @@ set -uo pipefail
 P=$1; shift; TABLE=; SP=; SECRET_FILE=; IFACES=grpc; FROM=
 while [ $# -gt 0 ]; do case $1 in --table) TABLE=$2; shift 2;; --sp) SP=$2; shift 2;; --secret-file) SECRET_FILE=$2; shift 2;;
   --interfaces) IFACES=$2; shift 2;; --from) FROM=$2; shift 2;; *) echo "unknown $1"; exit 2;; esac; done
-[ -n "$TABLE" ] || { echo "--table <catalog.schema.table> is required"; exit 2; }
+[ -n "$TABLE" ] || [ -z "$SP" ] || { echo "--sp needs --table <catalog.schema.table>"; exit 2; }
 IFS=. read -r CAT SCH TBL <<< "$TABLE"
 fails=0
 row() { printf "%-5s %-52s %s\n" "$1" "$2" "$3"; [ "$1" = FAIL ] && fails=$((fails + 1)); [ -n "${4:-}" ] && printf "      fix: %s\n" "$4"; return 0; }
@@ -22,7 +22,7 @@ setting() { # the value of a workspace setting: set here (boolean_val) or inheri
     | yq -p json 'with(select(has("boolean_val")); .v = .boolean_val.value) | with(select(has("boolean_val") | not); .v = .effective_boolean_val.value) | .v'; }
 SCRIPTS=$(cd "$(dirname "$0")" && pwd)
 
-echo "== Zerobus into $TABLE in $P (interfaces: $IFACES${SP:+, as $SP})"
+echo "== Zerobus into ${TABLE:-(no table: previews and network only)} in $P (interfaces: $IFACES${SP:+, as $SP})"
 # --- workspace: Unity Catalog, the endpoint, the previews
 eval "$(databricks metastores current --profile "$P" -o json 2>/dev/null | yq -p json -o shell '{"WSID": .workspace_id, "MS": .metastore_id}')"
 eval "$(databricks metastores summary --profile "$P" -o json 2>/dev/null | yq -p json -o shell '{"REGION": .region, "CLOUD": .cloud}')"
@@ -37,8 +37,9 @@ v=$(setting zerobus_rescue_column_json); [ "$v" = true ] && row PASS "preview ze
   || row WARN "preview zerobus_rescue_column_json" "${v:-not found}: no rescue column for JSON records" "bash $SCRIPTS/enable.sh $P zerobus_rescue_column_json --apply, if records may not match the table"
 
 # --- the table: a managed Delta table; on Default Storage it needs the default-storage preview
-databricks tables get "$TABLE" --profile "$P" -o json > /tmp/zbcheck.$$ 2>/dev/null
-if [ -s /tmp/zbcheck.$$ ]; then
+[ -n "$TABLE" ] && databricks tables get "$TABLE" --profile "$P" -o json > /tmp/zbcheck.$$ 2>/dev/null
+if [ -z "$TABLE" ]; then :
+elif [ -s /tmp/zbcheck.$$ ]; then
   eval "$(yq -p json -o shell '{"TTYPE": .table_type, "TFMT": (.data_source_format // ""), "TLOC": (.storage_location // ""), "TOWNER": .owner}' /tmp/zbcheck.$$)"
   { [ "$TTYPE" = MANAGED ] || [ "$TTYPE" = STREAMING_TABLE ]; } && [ "${TFMT:-DELTA}" = DELTA ] && row PASS "table is managed Delta" "$TTYPE, owner $TOWNER" \
     || row FAIL "table is managed Delta" "$TTYPE $TFMT" "create it as a managed table (no LOCATION), or use another"
