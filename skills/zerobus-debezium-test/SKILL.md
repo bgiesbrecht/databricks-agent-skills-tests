@@ -113,7 +113,7 @@ In the test:
 | `FKS=0` | Leaves the foreign keys out: CockroachDB takes much longer to add a foreign key than to create a table |
 | `ROUNDS=0` | No changes. The run stops after the snapshot and silver's first update, then checks every silver table at once (columns and row counts against the source), times a second update with nothing new, and checks that each producer is streaming |
 | `PIPES=K` | K silver pipelines (or K MERGE jobs), each with the tables of `crc32(name) % K` |
-| `SILVER=merge` | Silver without a pipeline: `scripts/merge-silver.py` as a serverless job, with MERGE instead of AUTO CDC (`ROUNDS=0`, `BRONZE=shared` only so far) |
+| `SILVER=merge` | Silver without a pipeline: `scripts/merge-silver.py` as a serverless job, with MERGE instead of AUTO CDC (`BRONZE=shared` only so far) |
 | `DBZ_SHARDS=K` | K Debezium Servers per source, each with the tables of `crc32(name) % K` |
 
 `ROUNDS=0 PHASE=1` runs the producers only.
@@ -121,10 +121,13 @@ In the test:
 `merge-silver.py` reads the same volume as the pipeline: `_sources.yaml`, `_schema/` and `_snapshot.tsv`. One stream reads the change log, and each micro-batch MERGEs only the tables it has events for:
 - **Current rows** take each key's newest change, applied only when it's newer than the row.
 - **Deletes** leave a row in `_cdc_tombstones`, so a replayed older change can't bring the row back.
-- **History:** each new version closes the open one; a replayed version isn't inserted twice.
-- Tables have row tracking and deletion vectors on, so a materialized view over them can refresh incrementally.
+- **History:** each version ends at its key's next change (the next version or a delete), recomputed for the keys a batch touches, so a version that arrives late still lands in order.
+- **Producer replays:** after a restart, Debezium resends events under a new sequence. Each change carries a fingerprint of its event (`_idem`: idempotency key, operation, row image), and a replay of one already applied is dropped, as the pipeline's dedup view does.
+- **Schema drift** is recorded in `schema_drift`, as by the pipeline. A full refresh is `--refresh <tables>`: those tables are replaced with the schema in the volume, loaded from their snapshot, then from every event in their change log.
+- **A moved table** reads its own log (`--bronze-table t=cdc_log_t`), in a stream of its own.
+- **Gold** is the same materialized view, made and refreshed by SQL after each run. Tables have row tracking and deletion vectors on, so it refreshes incrementally (`GROUP_AGGREGATE` after round 2).
 
-Not handled yet: a version older than one already in the history, and schema drift.
+Through rounds 1 to 5 (`SILVER=merge` on `shop`), MERGE silver passes the same checks as the pipeline: changes, producer restart and history, the moved table, an added column, a dropped and a retyped one, and gold. There's no `_history_nodedup` table.
 
 Tested on the Azure VM with empty tables, 2026-10-22 (outcomes in `results/runs/2026-10-22-zerobus-scale.jsonl`):
 

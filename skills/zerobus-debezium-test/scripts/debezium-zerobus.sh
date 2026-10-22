@@ -30,8 +30,10 @@
 # ROUNDS=0: no changes at all; the run stops after the snapshot and silver's first update, and checks every silver
 #   table at once (columns and row counts against the source), in place of rounds 1 to 5. PIPES=K (ROUNDS=0 only so
 #   far) spreads silver over K pipelines, each building the tables with crc32(name) % K == its index (cdc.shard).
-# SILVER=merge (ROUNDS=0 and BRONZE=shared only so far): silver without a pipeline, merge-silver.py as K serverless
-#   jobs (PIPES=K), MERGE in place of AUTO CDC; nothing is declared per table, so start-up doesn't grow with them.
+# SILVER=merge (BRONZE=shared only so far): silver without a pipeline, merge-silver.py as K serverless jobs (PIPES=K),
+#   MERGE in place of AUTO CDC; nothing is declared per table, so start-up doesn't grow with them. Through rounds 1 to
+#   5 the same checks as a pipeline's: a full refresh is --refresh <tables>, the moved table --bronze-table, and gold
+#   a materialized view made and refreshed by SQL (CREATE OR REFRESH) after each run. No _history_nodedup table.
 # Needs: PROFILE (Databricks CLI profile), CATALOG (with its own storage), VM_IP; optional VM_USER (azureuser),
 #   SSH_KEY (~/.ssh/lfc_test_rsa), SRC_IMAGE, DBZ_IMAGE, SRC_PORT (published for the UC connection, default 30026),
 #   WAIT (seconds to wait for rows, default 180), OUT=<file.md>, DBZ_START_TIMEOUT_MS (how long Debezium Server waits for
@@ -61,8 +63,8 @@ NSRC=${NSRC:-1}; case $NSRC in *[!0-9]*|""|0) echo "NSRC: 1 or more"; exit 2;; e
 EMPTY=${EMPTY:-0}; FKS=${FKS:-1}; ROUNDS=${ROUNDS:-5}; PIPES=${PIPES:-1}
 case $ROUNDS in 0|5) ;; *) echo "ROUNDS: 0 (no changes) or 5"; exit 2;; esac
 [ "$PIPES" -gt 1 ] && [ "$ROUNDS" != 0 ] && { echo "PIPES>1: ROUNDS=0 only so far"; exit 2; }
-SILVER=${SILVER:-pipeline}; case $SILVER in pipeline) ;; merge) [ "$ROUNDS" = 0 ] && [ "${BRONZE:-shared}" = shared ] \
-  || { echo "SILVER=merge: ROUNDS=0 and BRONZE=shared only so far"; exit 2; };; *) echo "SILVER: pipeline or merge"; exit 2;; esac
+SILVER=${SILVER:-pipeline}; case $SILVER in pipeline) ;; merge) [ "${BRONZE:-shared}" = shared ] \
+  || { echo "SILVER=merge: BRONZE=shared only so far"; exit 2; };; *) echo "SILVER: pipeline or merge"; exit 2;; esac
 BRONZE=${BRONZE:-shared}; BRONZE_SHARDS=${BRONZE_SHARDS:-0}; ON_DRIFT=${ON_DRIFT:-record}
 case $BRONZE in shared|fanout|per-table) ;; *) echo "BRONZE: shared, fanout or per-table"; exit 2;; esac
 SRC_DB=${MODEL}1
@@ -146,6 +148,8 @@ echo "run $E: schema $CATALOG.$S, VM containers $SRCC and $DBZS; $NSRC source da
 sql() { # the statement in Q; waits for it, and reads every chunk of a large result (files of its own: runs in parallel)
   local f id st k n; f=$(mktemp "$W/st.XXXXXX")
   yq -n -o json '.warehouse_id = strenv(WAREHOUSE) | .wait_timeout = "50s" | .statement = strenv(Q)' > "$f.json"
+  # QIN=1: unqualified names resolve in the run's schema
+  [ -n "${QIN:-}" ] && CATALOG=$CATALOG S=$S yq -i -o json '.catalog = strenv(CATALOG) | .schema = strenv(S)' "$f.json"
   dbx api post /api/2.0/sql/statements --json @"$f.json" > "$f"
   id=$(yq '.statement_id' "$f"); st=$(yq '.status.state' "$f")
   while [ "$st" = PENDING ] || [ "$st" = RUNNING ]; do sleep 5; dbx api get "/api/2.0/sql/statements/$id" > "$f"; st=$(yq '.status.state' "$f"); done
@@ -735,16 +739,16 @@ if [ "$PHASE" -ge 2 ]; then
     .configuration = {"cdc.volume": strenv(VOL), "cdc.bronze": strenv(SINK), "cdc.bronze_table": strenv(BT),
       "cdc.bronze_shards": strenv(SHARDS), "cdc.nodedup_table": strenv(NODEDUP), "cdc.history_suffix": strenv(HS), "cdc.on_drift": strenv(ON_DRIFT)}' > "$W/pipe.json"
   # PIPES=K: K pipelines, the same files, each with cdc.shard = <k>/<K> (its own tables)
-  PIPELINE_IDS=(); MERGE_JOBS=()
+  PIPELINE_IDS=(); MERGE_JOBS=(); MERGE_PARAMS=(); MERGE_EXTRA=()
   for k in $(seq 0 $((PIPES - 1))); do
     if [ "$SILVER" = merge ]; then   # merge-silver.py as a serverless job, shard k of K
       export JN="$PIPE_NAME-merge$([ "$PIPES" -gt 1 ] && echo "-p$k")" MPY=$WSDIR/merge-silver.py MSH=$([ "$PIPES" -gt 1 ] && echo "$k/$PIPES") MCP="$VOL/_merge/p$k"
       yq -n -o json '.name = strenv(JN) | .environments = [{"environment_key": "default", "spec": {"environment_version": "4", "dependencies": ["pyyaml"]}}] |
         .tasks = [{"task_key": "silver", "environment_key": "default", "spark_python_task": {"python_file": strenv(MPY),
           "parameters": ["--volume", strenv(VOL), "--source", "`" + strenv(CATALOG) + "`." + strenv(S) + ".cdc_log", "--target", "`" + strenv(CATALOG) + "`." + strenv(S),
-            "--checkpoint", strenv(MCP), "--bronze", strenv(SINK), "--history-suffix", strenv(HS), "--once"] + (strenv(MSH) | select(. != "") | ["--shard", .]) // []}}]' > "$W/merge-$k.json"
+            "--checkpoint", strenv(MCP), "--bronze", strenv(SINK), "--history-suffix", strenv(HS), "--on-drift", strenv(ON_DRIFT), "--once"] + (strenv(MSH) | select(. != "") | ["--shard", .]) // []}}]' > "$W/merge-$k.json"
       j=$(dbx jobs create --json @"$W/merge-$k.json" -o json | yq '.job_id') && [ -n "$j" ] || { echo "merge job create failed"; exit 2; }
-      MERGE_JOBS+=("$j"); link "silver job $JN (merge-silver.py${MSH:+, shard $MSH})" "$HOST/jobs/$j"; continue
+      MERGE_JOBS+=("$j"); MERGE_PARAMS+=("$(yq -o json -I0 '.tasks[0].spark_python_task.parameters' "$W/merge-$k.json")"); link "silver job $JN (merge-silver.py${MSH:+, shard $MSH})" "$HOST/jobs/$j"; continue
     fi
     [ "$PIPES" -gt 1 ] && K="$k/$PIPES" PN="$PIPE_NAME-p$k" yq -p json -o json '.name = strenv(PN) | .configuration["cdc.shard"] = strenv(K)' "$W/pipe.json" > "$W/pipe-$k.json" \
       || cp "$W/pipe.json" "$W/pipe-$k.json"
@@ -768,9 +772,16 @@ if [ "$PHASE" -ge 2 ]; then
     [ -n "${JOB_ID:-}" ] || return 0
     dbx jobs run-now "$JOB_ID" -o json 2>"$W/fanout.err" | yq '.state.result_state // "FAILED"'; }
 
-  run_merge() { # SILVER=merge: every merge job once, at once; COMPLETED when all succeeded, seconds in $W/update_s
-    local r=() st=() k t0=$SECONDS done; : > "$W/update_s"
-    for k in "${!MERGE_JOBS[@]}"; do r[$k]=$(dbx jobs run-now "${MERGE_JOBS[$k]}" --no-wait -o json | yq '.run_id'); done
+  run_merge() { # SILVER=merge: every merge job once, at once, after the fan-out when there is one; COMPLETED when all
+    # succeeded (and gold, when there is one, was made or refreshed), seconds in $W/update_s. --json <a pipeline
+    # update's>: its full_refresh_selection becomes --refresh. Each run's parameters: the job's, MERGE_EXTRA, --refresh.
+    local r=() st=() k t0=$SECONDS done f ref=; : > "$W/update_s"
+    [ "${1:-}" = --json ] && ref=$(echo "$2" | yq -p json -r '(.full_refresh_selection // []) | join(",")')
+    f=$(run_fanout); [ -n "$f" ] && [ "$f" != SUCCESS ] && { echo "fan-out $f: $(tail -c 300 "$W/fanout.err")" >&2; echo "FANOUT_$f"; return; }
+    for k in "${!MERGE_JOBS[@]}"; do
+      J=${MERGE_JOBS[$k]} P=${MERGE_PARAMS[$k]} X="$(printf '%s\n' ${MERGE_EXTRA[@]+"${MERGE_EXTRA[@]}"} ${ref:+--refresh "$ref"})" \
+        yq -n -o json '.job_id = (strenv(J) | tonumber) | .python_params = (strenv(P) | from_json) + (strenv(X) | split("\n") | map(select(. != "")))' > "$W/run-$k.json"
+      r[$k]=$(dbx jobs run-now --json @"$W/run-$k.json" --no-wait -o json | yq '.run_id'); done
     while :; do done=1
       for k in "${!MERGE_JOBS[@]}"; do case ${st[$k]:-} in SUCCESS|FAILED|TIMEDOUT|CANCELED|INTERNAL_ERROR) continue;; esac
         st[$k]=$(dbx jobs get-run "${r[$k]}" -o json | yq '.state.result_state // .state.life_cycle_state')
@@ -782,11 +793,14 @@ if [ "$PHASE" -ge 2 ]; then
       [ -n "${OUT:-}" ] && cp "$W/merge-out.json" "${OUT%.md}-merge-p$k-$(date +%s).json"
       echo "job $k: ${st[$k]}: $(yq -r '.error // ""' "$W/merge-out.json" | grep -v '^\s*$' | tail -3 | tr '\n' ' ' | cut -c1-500) $(yq -r '.logs // ""' "$W/merge-out.json" | tail -3 | tr '\n' ' ' | cut -c1-300)" >&2
       echo "${st[$k]}$([ "$PIPES" -gt 1 ] && echo " (job $k)")"; return; done
+    # gold: the model's materialized view over the MERGE tables, made the first time and refreshed after (incrementally
+    # where it can: the tables keep row tracking and deletion vectors)
+    if [ -n "$GOLD" ]; then QIN=1 q "$(sed 's/;[[:space:]]*$//' "$W/gold.sql")" >/dev/null 2>"$W/gold.err" || { echo "gold: $(head -c 300 "$W/gold.err")" >&2; echo GOLD_FAILED; return; }; fi
     echo COMPLETED
   }
   run_silver() { # one update of every pipeline at once (extra args go to start-update), after the fan-out when there is
     # one; their final state: COMPLETED when all completed. Each pipeline's seconds in $W/update_s (k=seconds ...)
-    [ "$SILVER" = merge ] && { run_merge; return; }
+    [ "$SILVER" = merge ] && { run_merge "$@"; return; }
     local u=() st=() k f t0=$SECONDS done; f=$(run_fanout); [ -n "$f" ] && [ "$f" != SUCCESS ] && { echo "fan-out $f: $(tail -c 300 "$W/fanout.err")" >&2; echo "FANOUT_$f"; return; }
     for k in "${!PIPELINE_IDS[@]}"; do u[$k]=$(dbx pipelines start-update "${PIPELINE_IDS[$k]}" "$@" -o json | yq '.update_id'); done
     echo "${u[0]}" > "$W/update_id"; : > "$W/update_s"; printf '%s\n' "${u[@]}" > "$W/update_ids"
@@ -835,9 +849,9 @@ if [ "$PHASE" -ge 2 ]; then
     # __END_AT) and, per source, the source's rows at T (no changes since). Row counts in UNION ALL queries of 200
     # tables, 4 at a time.
     local want have i k n bad
-    # SILVER=merge keeps each row's sequence, _seq, in <t> (AUTO CDC keeps it hidden)
+    # SILVER=merge keeps each row's sequence, _seq, in <t> (AUTO CDC keeps it hidden), and its event's, _idem, in the history
     awk -F'\t' -v hs="$HS" -v m="$SILVER" '{c[$1] = c[$1] "," tolower($3); if ($5 == 1) key[$1]} END {for (t in c) {print t "\t" substr(c[t], 2) ",_source" (m == "merge" && (t in key) ? ",_seq" : "");
-      if (t in key) print t hs "\t" substr(c[t], 2) ",_source,__end_at,__start_at"}}' "$W/schema.tsv" \
+      if (t in key) print t hs "\t" substr(c[t], 2) ",_source,__end_at,__start_at" (m == "merge" ? ",_idem" : "")}}' "$W/schema.tsv" \
       | python3 -I -c 'import sys; [print(t.lower() + "\t" + ",".join(sorted(c.split(",")))) for t, c in (l.rstrip("\n").split("\t") for l in sys.stdin)]' | LC_ALL=C sort > "$W/want.tsv"
     q "SELECT table_name, CONCAT_WS(',', ARRAY_SORT(COLLECT_LIST(LOWER(column_name)))) FROM \`$CATALOG\`.information_schema.columns
        WHERE table_schema = '$S' GROUP BY 1" | LC_ALL=C sort > "$W/have-cols.tsv" || { claim silver-tables FAIL "information_schema.columns failed"; return; }
@@ -874,7 +888,12 @@ if [ "$PHASE" -ge 2 ]; then
     if [ "$a" = "$b" ]; then claim "gold-$1" PASS "$GOLD equals the query on the source(s): $(echo "$a" | grep -c .) rows"
     else claim "gold-$1" FAIL "source vs gold: $(differ "$a" "$b")"; fi
   }
-  refresh() { # how the last update refreshed the view: the chosen technique, from the pipeline's event log
+  refresh() { # how the last update refreshed the view: the chosen technique, from the pipeline's event log (SILVER=merge:
+    # the view's own, its last refresh)
+    [ "$SILVER" = merge ] && { q "SELECT CONCAT(details:planning_information:incrementalization_status::STRING, ' ', CONCAT_WS(',', TRANSFORM(FILTER(
+        FROM_JSON(details:planning_information:technique_information::STRING, 'ARRAY<STRUCT<maintenance_type STRING, is_chosen BOOLEAN>>'),
+        x -> x.is_chosen), x -> x.maintenance_type)))
+      FROM event_log(TABLE($T.$GOLD)) WHERE event_type = 'planning_information' ORDER BY timestamp DESC LIMIT 1" 2>&1 | tr '\n' ' '; return; }
     q "SELECT CONCAT(details:planning_information:incrementalization_status::STRING, ' ', CONCAT_WS(',', TRANSFORM(FILTER(
         FROM_JSON(details:planning_information:technique_information::STRING, 'ARRAY<STRUCT<maintenance_type STRING, is_chosen BOOLEAN>>'),
         x -> x.is_chosen), x -> x.maintenance_type)))
@@ -898,6 +917,7 @@ if [ "$PHASE" -ge 2 ]; then
       for k in "$@"; do case " $d" in *" $k "*) ;; *) miss="$miss $k";; esac; done
       [ -z "$miss" ] && claim "drift-recorded-$n" PASS "schema_drift has, for $tbl from ${DESTP[$i]}: $d" \
         || claim "drift-recorded-$n" FAIL "missing from schema_drift for $tbl from ${DESTP[$i]}:$miss (has: ${d:-nothing})"
+    elif [ "$SILVER" = merge ]; then observe "schema-change-old-flow-$n" "run with the old schema: $st; $(tr '\n' ' ' < "$W/err$n" | cut -c1-300)"
     else
       observe "schema-change-old-flow-$n" "update with the old flow: $st; $(q "SELECT REGEXP_EXTRACT(error.exceptions[0].message, '\\[(INVALID_[A-Z_]+|[A-Z_]+CAST[A-Z_]*)\\][^\\n]*', 0) FROM event_log('$PIPELINE_ID') WHERE event_type = 'flow_progress' AND origin.flow_name LIKE '%.${tbl}_from_changes' AND error IS NOT NULL ORDER BY timestamp DESC LIMIT 1" 2>&1 | cut -c1-300)"
     fi
@@ -966,7 +986,7 @@ if [ "$PHASE" -ge 2 ]; then
       fi
     done; use 1
     for t in $TABLES; do history "$t" "$t$HS" claim; same_hist "$t" 3; done
-    history "$NODEDUP" "$NODEDUP${HS}_nodedup" observe
+    [ "$SILVER" = pipeline ] && history "$NODEDUP" "$NODEDUP${HS}_nodedup" observe
 
     # a table moved out of the shared log while the others stay (BRONZE=shared, MOVE=1, the default there): the
     # fan-out for that table only, from the log's beginning, into cdc_log_<table>; silver's cdc.bronze_table.<table>
@@ -974,8 +994,9 @@ if [ "$PHASE" -ge 2 ]; then
     if [ "$BRONZE" = shared ] && [ "${MOVE:-1}" = 1 ]; then
       MV=${MOVE_TABLE:-$NODEDUP}
       make_fanout "$T.cdc_log_{table}" "$VOL/_fanout_move" "$MV" || claim "move-$MV" FAIL "fan-out job create failed"
-      MVKEY="cdc.bronze_table.$MV" yq -i -p json -o json '.configuration[strenv(MVKEY)] = "cdc_log_{table}"' "$W/pipe.json"
-      dbx pipelines update "$PIPELINE_ID" --json @"$W/pipe.json" >/dev/null 2>"$W/move.err" || claim "move-$MV" FAIL "pipeline update failed: $(head -c 300 "$W/move.err")"
+      if [ "$SILVER" = merge ]; then MERGE_EXTRA+=(--bronze-table "$MV=cdc_log_$MV")
+      else MVKEY="cdc.bronze_table.$MV" yq -i -p json -o json '.configuration[strenv(MVKEY)] = "cdc_log_{table}"' "$W/pipe.json"
+      dbx pipelines update "$PIPELINE_ID" --json @"$W/pipe.json" >/dev/null 2>"$W/move.err" || claim "move-$MV" FAIL "pipeline update failed: $(head -c 300 "$W/move.err")"; fi
       st=$(run_silver --json "{\"full_refresh_selection\": [$(refresh_tables "$MV")]}" 2>"$W/err-move")
       a=$(q "SELECT COUNT(*) FROM $LOGQ WHERE substring_index(destination, '.', -1) = '$MV'" 2>&1); b=$(q "SELECT COUNT(*) FROM $T.cdc_log_$MV" 2>&1)
       [ "$st" = COMPLETED ] && [ "$a" = "$b" ] && claim "move-$MV" PASS "$MV moved to its own bronze, cdc_log_$MV (fan-out --tables $MV, from the log's beginning: $b of $a events), and silver rebuilt from it by a full refresh of that table only" \
