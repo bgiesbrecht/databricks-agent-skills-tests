@@ -5,7 +5,7 @@
 # extractor's split plan and the rows in its snapshot file, both read from the pipeline's staging volume. Seen
 # 2026-10-20: pk_dt7 and p7_dist 9 of 10, the split's upper bound cut to 6 digits; intpk and p7_zero 10 of 10.
 # Needs PROFILE, CONNECTION, CATALOG, CONN_USER, SRC_SQL (as sqlserver-add-column.sh). Set QBC_FLAG=true|false to also set
-# pipelines.qbcSnapSplitBoundaryToColumnScale in the pipeline configuration.
+# pipelines.qbcSnapSplitBoundaryToColumnScale in the pipeline configuration; PIPELINE_CONF (a JSON object) adds more settings.
 set -uo pipefail
 export PATH=/opt/homebrew/bin:$PATH
 dbx() { databricks "$@" --profile "$PROFILE"; }
@@ -61,6 +61,8 @@ for flag in run; do
   S=${PREFIX}_splitb_$E; T="\`$CATALOG\`.$S"
   dbx schemas create "$S" "$CATALOG" >/dev/null
   CONF='{}'; [ -n "${QBC_FLAG:-}" ] && CONF="{\"pipelines.qbcSnapSplitBoundaryToColumnScale\":\"$QBC_FLAG\"}"
+  # PIPELINE_CONF='{"pipelines.<setting>":"true"}': more pipeline settings (an engineer's suggestion to try)
+  [ -n "${PIPELINE_CONF:-}" ] && CONF=$(echo "$CONF" | P="$PIPELINE_CONF" yq -o json -I0 '. * (strenv(P) | from_json)')
   AP=$(dbx pipelines create -o json --json "{\"name\":\"${PREFIX}_splitb_$E\",\"catalog\":\"$CATALOG\",\"schema\":\"$S\",\"serverless\":true,\"configuration\":$CONF,
     \"ingestion_definition\":{\"connection_name\":\"$CONNECTION\",\"connector_type\":\"CDC\",\"objects\":[$(for t in $TABLES; do obj $t; done | paste -sd, -)]}}" | yq '.pipeline_id')
   echo "flag $flag: pipeline $AP"

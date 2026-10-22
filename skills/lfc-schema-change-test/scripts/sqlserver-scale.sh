@@ -149,6 +149,9 @@ for round in $(seq 1 12); do
   [ "$M" = $((NT * COPIES)) ] && break
 done
 ELAPSED=$(( $(date +%s) - T0 ))
+metric tables $((NT * COPIES)); metric first_load_s "$ELAPSED"; metric first_load_updates "$round"
+metric s_per_table "$(awk "BEGIN { printf \"%.2f\", $ELAPSED / ($NT * $COPIES) }")"
+conf model "$MODEL"; conf sf "$SF"; conf copies "$COPIES"; conf objects "$OBJECTS"
 ALLERRS=$(echo $ALLERRS | tr ' ' '\n' | sort -u | grep -v '^$' | paste -sd' ' -)
 [ "$M" = $((NT * COPIES)) ] && claim first-load-complete PASS "$M tables at their source row counts after ${ELAPSED}s ($round update rounds); errors seen: ${ALLERRS:-none}" \
   || claim first-load-complete FAIL "$M of $((NT * COPIES)) tables match after ${ELAPSED}s; errors: ${ALLERRS:-none}"
@@ -170,6 +173,7 @@ for _ in 1 2 3 4; do
   [ "${A1:-0}" -gt "${A0:-0}" ] && [ "${Z1:-0}" -gt "${Z0:-0}" ] && break
 done
 observe change-latency "both changes in the destination after $(( $(date +%s) - TC ))s (or not, see below)"
+metric change_latency_s $(( $(date +%s) - TC ))
 [ "${A1:-0}" -gt "${A0:-0}" ] && [ "${Z1:-0}" -gt "${Z0:-0}" ] \
   && claim changes-arrive PASS "an update in the first and the last copy reached the destination (versions $A0 -> $A1, $Z0 -> $Z1)" \
   || claim changes-arrive FAIL "destination versions $A0 -> $A1 (first copy), $Z0 -> $Z1 (last copy); errors: ${ERRS:-none}"

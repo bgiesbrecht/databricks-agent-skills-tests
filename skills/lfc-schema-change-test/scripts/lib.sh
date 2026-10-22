@@ -294,6 +294,30 @@ cleanup() {
   rm -rf "$W"
 }
 
+# metric <name> <number>: a number this run measured (seconds, rows, tables, ...). record_run saves them with the run's
+# config, so cost, latency and throughput can be recalled and compared later (lfc-test-results recall.py, DuckDB).
+METRICS="{}"; RUN_CONF="{}"
+metric() { METRICS=$(echo "$METRICS" | K=$1 V=$2 yq -o json -I0 '.[strenv(K)] = (strenv(V) | tonumber)'); }
+conf() { RUN_CONF=$(echo "$RUN_CONF" | K=$1 V=$2 yq -o json -I0 '.[strenv(K)] = strenv(V)'); }
+# record_run <scenario>: one record per run into results/runs/<date>-lfc-schema-change.jsonl via lfc-test-results record.py
+# (it refuses anything that looks internal: the repo is public). RECORD=0 skips it.
+record_run() {
+  [ "${RECORD:-1}" = 1 ] || return 0
+  local rec=${LFC_RECORD:-$LIB/../../lfc-test-results/scripts/record.py} ver cloud region
+  [ -f "$rec" ] || { echo "record_run: $rec not found; not recorded" >&2; return 0; }
+  ver=$(if [ "$ENGINE" = postgres ]; then echo 'SHOW server_version;' | $SRC_SQL postgres | head -1 | cut -d' ' -f1
+        else printf "SET NOCOUNT ON; SELECT CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(32));\n" | $SRC_SQL master | head -1; fi | tr -d '[:space:]')
+  eval "$(dbx metastores summary -o json 2>/dev/null | yq -p json -o shell '(.global_metastore_id | split(":")) as $g | {"cloud": $g[0], "region": .region}')"
+  local res; res=$(printf '%s\n' "${RESULTS[@]}" | grep -c '| PASS |'); res="$res pass, $(printf '%s\n' "${RESULTS[@]}" | grep -c '| FAIL |') fail, $(printf '%s\n' "${RESULTS[@]}" | grep -c '| OBSERVED |') observed"
+  jq -n -c --arg date "$(date -u +%F)" --arg run "$(date -u +%F)-lfc-schema-change" --arg test "$( [ "$MODE" = integrated ] && echo icdc || echo scdc)" \
+    --arg engine "$ENGINE" --arg ver "$ver" --arg outcome "$( [ "$FAILED" = 0 ] && echo pass || echo fail)" --arg res "$1: $res" \
+    --arg cloud "${cloud:-}" --arg region "${region:-}" --argjson metrics "$METRICS" --argjson conf "$RUN_CONF" --arg scen "$1" --arg mode "$MODE" \
+    --arg claims "$(printf '%s\n' "${RESULTS[@]}" | sed -E 's/^\| `([^`]*)` \| ([A-Z]+) \|.*/\1=\2/' | paste -sd' ' -)" \
+    '{date:$date, run:$run, test:$test, subject:{engine:$engine, version:$ver}, outcome:$outcome, result:$res,
+      workspace:{cloud:$cloud, region:$region}, setup:({scenario:$scen, mode:$mode, tool:"lfc-schema-change-test"} + $conf),
+      metrics:$metrics, notes:$claims}' | uv run "$rec" >&2 && echo "recorded: $1 ($res)" || echo "record_run: not recorded (see above)" >&2
+}
+
 # result_md <title>: the runtime each pipeline ran on, the source, and the claim table; to stdout and $OUT
 result_md() {
   local rt=${LFC_RUNTIME:-$LIB/../../../bin/lfc-runtime.sh} runtime   # set LFC_RUNTIME when running a copy
@@ -314,4 +338,5 @@ result_md() {
     echo "|---|---|---|"
     printf '%s\n' "${RESULTS[@]}"
   } | tee "${OUT:-/dev/null}"
+  record_run "${SCENARIO:-$(basename "$0" .sh)}"
 }

@@ -20,6 +20,7 @@
 #   afr_truncate  the same, with auto_full_refresh_policy   (#12)
 #   collate       ADD COLUMN c TEXT COLLATE "C"             (#13)
 #   multi_a/b     ALTER TABLE a ...; ALTER TABLE b ... sent as one query string (#13)
+#   comment       ADD COLUMN c INT followed by a trailing SQL comment (#13: an old parse-failure cause)
 #
 #   Needs: PROFILE CONNECTION (a POSTGRESQL connection) CATALOG CONN_USER (a role with REPLICATION),
 #          SRC_SQL (SQL from stdin as a superuser, first arg the database: scripts/vm-psql.sh); SRC_ENV, MODE, KEEP, OUT
@@ -28,7 +29,7 @@ set -uo pipefail
 ENGINE=postgres
 . "$(dirname "$0")/lib.sh"
 lfc_init pgddl
-TABLES="add_null add_def afr_add_def add_text add_text_full dropcol ri_to_default ri_nothing narrow widen rename pk truncate afr_truncate collate multi_a multi_b"
+TABLES="add_null add_def afr_add_def add_text add_text_full dropcol ri_to_default ri_nothing narrow widen rename pk truncate afr_truncate collate multi_a multi_b comment"
 FP_TABLES=$TABLES
 
 { for t in $TABLES; do
@@ -64,6 +65,7 @@ ddl() {
     collate)         echo "ALTER TABLE lfcddemo.$1 ADD COLUMN c TEXT COLLATE \"C\";";;
     multi_a)         echo 'ALTER TABLE lfcddemo.multi_a ADD COLUMN c INT \; ALTER TABLE lfcddemo.multi_b ADD COLUMN c INT;';;   # \; : one query string
     multi_b)         ;;
+    comment)         echo "ALTER TABLE lfcddemo.$1 ADD COLUMN c INT; -- a trailing comment";;
   esac
 }
 for t in $TABLES; do
