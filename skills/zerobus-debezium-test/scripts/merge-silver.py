@@ -142,6 +142,9 @@ TRY = a.on_drift == "record"
 # that happens to repeat a row image (A -> B -> A). The pipeline's dedup view uses the same 10-minute watermark.
 REPLAY_NS = 10 * 60 * 10**9
 DRIFT = a.drift_table + (f"_s{a.shard.replace('/', '_of_')}" if a.shard else "")
+# the state tables (_cdc_tombstones, _cdc_appended, _cdc_loaded), one set per group and shard: jobs run at once, and
+# two writing one Delta table can conflict
+STATE = (f"_{a.placement_group}" if a.placement_group else "") + (f"_s{a.shard.replace('/', '_of_')}" if a.shard else "")
 SNAP = set()
 if os.path.exists(f"{VOL}/_snapshot.tsv"):
     with open(f"{VOL}/_snapshot.tsv") as f:
@@ -225,7 +228,7 @@ def changes(batch, table):
                     "_seq", F.col("operation").alias("_op"),
                     # a producer's replay (after a restart) is the same event under a new sequence: the same event key,
                     # operation and row image (what silver-from-schema.py's _dedup view drops)
-                    F.expr("sha2(concat_ws('|', idempotency_key, operation, to_json(value:after)), 256)").alias("_idem")))
+                    F.expr("sha2(concat_ws('|', destination, idempotency_key, operation, to_json(value:after)), 256)").alias("_idem")))
 
 
 def drift(batch, table):
@@ -263,7 +266,7 @@ def apply(table, rows):
         v = f"_a_{abs(hash(table))}"
         rows.where("_op IN ('read', 'create')").createOrReplaceTempView(v + "_in")
         spark.sql(f"""SELECT * FROM {v}_in r
-          WHERE NOT (r._idem IS NOT NULL AND EXISTS (SELECT 1 FROM {TGT}._cdc_appended x WHERE x.tbl = '{table}'
+          WHERE NOT (r._idem IS NOT NULL AND EXISTS (SELECT 1 FROM {TGT}._cdc_appended{STATE} x WHERE x.tbl = '{table}'
                      AND x.idem = r._idem AND abs(x._seq - r._seq) < {REPLAY_NS}))
           QUALIFY r._idem IS NULL OR r._seq - COALESCE(LAG(r._seq) OVER (PARTITION BY r._idem ORDER BY r._seq), r._seq - {REPLAY_NS}) >= {REPLAY_NS}""").createOrReplaceTempView(v)
         spark.table(v).drop("_seq", "_op", "_idem").write.mode("append").saveAsTable(f"{TGT}.{q(table)}")
@@ -278,7 +281,7 @@ def apply(table, rows):
     v = f"_r_{abs(hash(table))}"
     rows.createOrReplaceTempView(v + "_in")
     spark.sql(f"""SELECT * FROM {v}_in r
-      WHERE NOT (r._op = 'delete' AND EXISTS (SELECT 1 FROM {TGT}._cdc_tombstones x WHERE x.tbl = '{table}'
+      WHERE NOT (r._op = 'delete' AND EXISTS (SELECT 1 FROM {TGT}._cdc_tombstones{STATE} x WHERE x.tbl = '{table}'
                  AND x._source = r._source AND x.k = r._k AND x.idem = r._idem AND x._seq <> r._seq AND abs(x._seq - r._seq) < {REPLAY_NS}))
         AND NOT (r._op <> 'delete' AND EXISTS (SELECT 1 FROM {h} x WHERE {' AND '.join(f'x.{q(c)} = r.{q(c)}' for c in k)}
                  AND x._idem = r._idem AND x.__START_AT <> r._seq AND abs(x.__START_AT - r._seq) < {REPLAY_NS}))
@@ -288,7 +291,7 @@ def apply(table, rows):
     # change back to an earlier image (A -> B -> A within the window). Each key's newest change (at the same sequence, a
     # delete before the reinsert), applied when newer than the row; one no newer than the key's last delete doesn't
     # bring the row back
-    last = (f"(SELECT r.* FROM {v}_in r LEFT JOIN (SELECT _source, k, MAX(_seq) AS _seq FROM {TGT}._cdc_tombstones "
+    last = (f"(SELECT r.* FROM {v}_in r LEFT JOIN (SELECT _source, k, MAX(_seq) AS _seq FROM {TGT}._cdc_tombstones{STATE} "
             f"WHERE tbl = '{table}' GROUP BY 1, 2) x ON r._source = x._source AND r._k = x.k WHERE x._seq IS NULL OR r._seq > x._seq "
             f"QUALIFY ROW_NUMBER() OVER (PARTITION BY {', '.join('r.' + q(x) for x in k)} ORDER BY r._seq DESC, r._op = 'delete') = 1)")
     sets = ", ".join(f"t.{q(c)} = s.{q(c)}" for c in cols + ["_source", "_seq"])
@@ -302,20 +305,24 @@ def apply(table, rows):
     # or a tombstone), whichever comes first; at the same sequence a delete comes before the version
     hc = ", ".join(q(c) for c in cols + ["_source", "_idem"])
     spark.sql(f"""MERGE INTO {h} t
-      USING (SELECT * FROM {v} WHERE _op <> 'delete') s ON {on} AND t.__START_AT = s._seq
+      USING (SELECT * FROM {v} WHERE _op <> 'delete' QUALIFY ROW_NUMBER() OVER (PARTITION BY {pkeys}, _seq
+             ORDER BY CASE _op WHEN 'update' THEN 0 WHEN 'create' THEN 1 ELSE 2 END) = 1) s ON {on} AND t.__START_AT = s._seq
       WHEN NOT MATCHED THEN INSERT ({hc}, __START_AT, __END_AT) VALUES ({', '.join('s.' + q(c) for c in cols + ['_source', '_idem'])}, s._seq, NULL)""")
     touched = f"(SELECT DISTINCT {pkeys}{'' if '_source' in k else ', _source'}, _k FROM {v})"
     points = (f"SELECT {', '.join('h.' + q(x) for x in k)}, h.__START_AT AS p, 1 AS ver FROM {h} h LEFT SEMI JOIN {touched} s ON "
               f"{' AND '.join(f'h.{q(x)} <=> s.{q(x)}' for x in k)} "
               f"UNION ALL SELECT {pkeys}, _seq, 0 FROM {v} WHERE _op = 'delete' "
-              f"UNION ALL SELECT {', '.join('s.' + q(x) for x in k)}, x._seq, 0 FROM {TGT}._cdc_tombstones x JOIN {touched} s "
+              f"UNION ALL SELECT {', '.join('s.' + q(x) for x in k)}, x._seq, 0 FROM {TGT}._cdc_tombstones{STATE} x JOIN {touched} s "
               f"ON x.tbl = '{table}' AND x._source = s._source AND x.k = s._k")
     spark.sql(f"""MERGE INTO {h} t
       USING (SELECT * FROM (SELECT *, LEAD(p) OVER (PARTITION BY {pkeys} ORDER BY p, ver) AS e FROM ({points})) WHERE ver = 1) s
       ON {on} AND t.__START_AT = s.p
       WHEN MATCHED AND NOT (t.__END_AT <=> s.e) THEN UPDATE SET t.__END_AT = s.e""")
     # the view stays until the batch's state is written (the next batch replaces it)
-    return spark.sql(f"SELECT '{table}' AS tbl, _source, _k AS k, _seq, _idem AS idem FROM {v} WHERE _op = 'delete'")
+    # tombstones from every delete, before replay removal: the SCD type 1 check takes each key's latest, so a replayed
+    # delete only raises it, and a real second delete taken for a replay (the same key within REPLAY_NS, on a route with
+    # no idempotency key) still keeps an older change from bringing the row back
+    return spark.sql(f"SELECT DISTINCT '{table}' AS tbl, _source, _k AS k, _seq, _idem AS idem FROM {v}_in WHERE _op = 'delete'")
 
 
 def write_state(tombs, drifts, appended=()):
@@ -327,12 +334,12 @@ def write_state(tombs, drifts, appended=()):
             yield functools.reduce(lambda x, y: x.unionByName(y), dfs[i:i + 200])
     for u in chunks(tombs):
         u.createOrReplaceTempView("_tomb_new")
-        spark.sql(f"""MERGE INTO {TGT}._cdc_tombstones t USING (SELECT DISTINCT * FROM _tomb_new) s
+        spark.sql(f"""MERGE INTO {TGT}._cdc_tombstones{STATE} t USING (SELECT DISTINCT * FROM _tomb_new) s
           ON t.tbl = s.tbl AND t._source = s._source AND t.k = s.k AND t._seq = s._seq
           WHEN NOT MATCHED THEN INSERT (tbl, _source, k, _seq, idem) VALUES (s.tbl, s._source, s.k, s._seq, s.idem)""")
     for u in chunks(list(appended)):
         u.createOrReplaceTempView("_app_new")
-        spark.sql(f"""MERGE INTO {TGT}._cdc_appended t USING (SELECT DISTINCT * FROM _app_new) s
+        spark.sql(f"""MERGE INTO {TGT}._cdc_appended{STATE} t USING (SELECT DISTINCT * FROM _app_new) s
           ON t.tbl = s.tbl AND t.idem = s.idem AND t._seq = s._seq
           WHEN NOT MATCHED THEN INSERT (tbl, idem, _seq) VALUES (s.tbl, s.idem, s._seq)""")
     for u in chunks(drifts):
@@ -362,15 +369,15 @@ def each(fn, items):
 
 # --- start: the state tables, the silver tables (eager), the snapshot (once per table, recorded in _cdc_loaded) -----
 t0 = time.time()
-spark.sql(f"CREATE TABLE IF NOT EXISTS {TGT}._cdc_tombstones (tbl STRING, _source STRING, k STRING, _seq BIGINT, idem STRING) "
+spark.sql(f"CREATE TABLE IF NOT EXISTS {TGT}._cdc_tombstones{STATE} (tbl STRING, _source STRING, k STRING, _seq BIGINT, idem STRING) "
           "CLUSTER BY (tbl)")
-spark.sql(f"CREATE TABLE IF NOT EXISTS {TGT}._cdc_loaded (tbl STRING, at TIMESTAMP)")
-spark.sql(f"CREATE TABLE IF NOT EXISTS {TGT}._cdc_appended (tbl STRING, idem STRING, _seq BIGINT) CLUSTER BY (tbl)")
+spark.sql(f"CREATE TABLE IF NOT EXISTS {TGT}._cdc_loaded{STATE} (tbl STRING, at TIMESTAMP)")
+spark.sql(f"CREATE TABLE IF NOT EXISTS {TGT}._cdc_appended{STATE} (tbl STRING, idem STRING, _seq BIGINT) CLUSTER BY (tbl)")
 spark.sql(f"CREATE TABLE IF NOT EXISTS {TGT}.{DRIFT} (tbl STRING, _source STRING, kind STRING, col STRING, _seq BIGINT, "
           f"sample STRING) COMMENT 'Schema drift seen in the change log, one row per table, source, kind (type, missing, "
           f"new) and column: what an evolution (the table''s new schema, then --refresh of it) resolves'")
 existing = {r[0].lower() for r in spark.sql(f"SHOW TABLES IN {TGT}").select("tableName").collect()}
-loaded = {r[0] for r in spark.table(f"{TGT}._cdc_loaded").collect()}
+loaded = {r[0] for r in spark.table(f"{TGT}._cdc_loaded{STATE}").collect()}
 todo = [t for t in SCHEMA if t not in loaded or t in REFRESH]
 has_rows = {t for t, _, _ in SNAP}
 create = [t for t in todo if a.create == "eager" or t in has_rows or t in REFRESH]
@@ -399,8 +406,8 @@ def named(b, t):
 
 
 if REFRESH:   # their tables' tombstones go too: the replay below writes them again
-    spark.sql(f"DELETE FROM {TGT}._cdc_tombstones WHERE tbl IN ({', '.join(chr(39) + t + chr(39) for t in REFRESH)})")
-    spark.sql(f"DELETE FROM {TGT}._cdc_appended WHERE tbl IN ({', '.join(chr(39) + t + chr(39) for t in REFRESH)})")
+    spark.sql(f"DELETE FROM {TGT}._cdc_tombstones{STATE} WHERE tbl IN ({', '.join(chr(39) + t + chr(39) for t in REFRESH)})")
+    spark.sql(f"DELETE FROM {TGT}._cdc_appended{STATE} WHERE tbl IN ({', '.join(chr(39) + t + chr(39) for t in REFRESH)})")
 tombs, appends = [], []
 
 
@@ -422,7 +429,7 @@ write_state(tombs, [], appends)
 new = [t for t in todo if t not in loaded]
 if new:
     spark.createDataFrame([(t,) for t in new], "tbl STRING").withColumn("at", F.current_timestamp()) \
-        .write.mode("append").saveAsTable(f"{TGT}._cdc_loaded")
+        .write.mode("append").saveAsTable(f"{TGT}._cdc_loaded{STATE}")
 log(f"start: {len(create)} table(s) created and loaded in {time.time() - t0:.0f}s")
 
 

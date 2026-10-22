@@ -10,8 +10,8 @@ usage: scd2-history-check.py <schema.tsv> <table> <snapshot.tsv> <changefeed.tsv
                  __START_AT
 
 The expected versions of a key are its row at T, then the row after every insert or update, in commit order (the
-changefeed's `updated` HLC). A delete adds no version. Consecutive identical versions (an update that changed nothing) count once, on
-both sides. Prints one line, "<versions expected> <versions in silver>
+changefeed's `updated` HLC). A delete adds no version. Consecutive identical versions (an update that changed nothing) may be one in
+silver; silver may not have more versions than the source. Prints one line, "<versions expected> <versions in silver>
 <keys that differ>: <first differences>", and exits 0 when they're equal, 1 when not.
 """
 import datetime
@@ -90,13 +90,15 @@ def main():
         k = tuple(norm(row[c]) for c in keys)
         actual.setdefault(k, []).append(tuple(norm(row[c]) for c in others))
 
-    # an update to the values a row already has isn't a new version: silver can't tell it from a producer's replay
-    # (the same row image within the dedup window), so consecutive identical versions count once, on both sides
+    # an update to the values a row already has may be kept or dropped: silver can't tell it from a producer's replay
+    # (the same row image within the dedup window). So a key passes when its versions, with consecutive identical ones
+    # counted once, are the expected ones, and silver has no more versions than the source: a replay silver failed to
+    # drop is one more than the source, and fails
     def collapse(vs):
         return [v for i, v in enumerate(vs) if i == 0 or v != vs[i - 1]]
-    expected = {k: collapse(v) for k, v in expected.items()}
-    actual = {k: collapse(v) for k, v in actual.items()}
-    differ = sorted(k for k in set(expected) | set(actual) if expected.get(k) != actual.get(k))
+    ok = {k for k in set(expected) | set(actual)
+          if collapse(expected.get(k, [])) == collapse(actual.get(k, [])) and len(actual.get(k, [])) <= len(expected.get(k, []))}
+    differ = sorted(k for k in set(expected) | set(actual) if k not in ok)
     n_exp = sum(len(v) for v in expected.values())
     n_act = sum(len(v) for v in actual.values())
     detail = "; ".join(

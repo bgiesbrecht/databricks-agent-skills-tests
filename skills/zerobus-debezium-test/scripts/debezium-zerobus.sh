@@ -309,6 +309,8 @@ DS=${DBZ_SHARDS:-1}; [ "$DS" -gt 1 ] && { [ "$SOURCE" = crdb ] && [ "$SINK" = ze
 if [ -n "$PLACEMENT" ]; then   # the placement's servers: table -> server index; every group's servers in one numbering
   echo "$TABLES" | tr ' ' '\n' > "$W/tables.txt"
   python3 -I "$HERE/placement.py" "$PLACEMENT" "$W/tables.txt" > "$W/placement.tsv" || exit 2
+  [ "$(awk -F'\t' '$4 == "pipeline" {g[$2]} END {print length(g)}' "$W/placement.tsv")" -le 1 ] \
+    || { echo "PLACEMENT: one pipeline group so far (each pipeline would define schema_drift, and gold)"; exit 2; }
   cut -f1,5 "$W/placement.tsv" > "$W/dbz-shard.tsv"; DS=$(awk -F'\t' '$2 + 1 > n {n = $2 + 1} END {print n}' "$W/dbz-shard.tsv")
   [ "$DS" -gt 1 ] && { [ "$SOURCE" = crdb ] && [ "$SINK" = zerobus ] || { echo "PLACEMENT: several servers with CockroachDB and Debezium Server only"; exit 2; }; }
 else
@@ -446,6 +448,8 @@ yq -r '"debezium.sink.zerobus.client.secret=" + .secret' "$W/secret.json" > "$W/
 DBZS=
 for i in $(seq 1 "$NSRC"); do use "$i"
 for k in $(seq 0 $((DS - 1))); do PK=$([ "$DS" -gt 1 ] && echo "-s$k")   # DBZ_SHARDS: one Debezium Server per table shard
+# a server with no tables gets none: an empty table.include.list would capture every table
+[ "$DS" -gt 1 ] && [ -z "$(include "$k")" ] && { echo "producer ${DBZC[$i]}-s$k: no tables, not started"; continue; }
 cat > "$W/application.properties" <<EOF
 $( if [ "$SOURCE" = crdb ]; then cat <<CRDB
 debezium.source.connector.class=io.debezium.connector.cockroachdb.CockroachDBConnector
@@ -835,7 +839,9 @@ if [ "$PHASE" -ge 2 ]; then
     for g in $(cut -f2 "$W/placement.tsv" | awk '!s[$0]++'); do
       mode=$(awk -F'\t' -v g="$g" '$2 == g {print $4; exit}' "$W/placement.tsv"); n=$(awk -F'\t' -v g="$g" '$2 == g {print $7; exit}' "$W/placement.tsv")
       if [ "$mode" = pipeline ]; then
-        export PN="$PIPE_NAME-$g" G=$g; yq -p json -o json '.name = strenv(PN) | .configuration["cdc.placement_group"] = strenv(G)' "$W/pipe.json" > "$W/pipe-$g.json"
+        # no gold.sql in it: gold is made by SQL after both silvers (run_merge), so it reads both groups' tables
+        export PN="$PIPE_NAME-$g" G=$g; yq -p json -o json '.name = strenv(PN) | .configuration["cdc.placement_group"] = strenv(G)
+          | .libraries |= map(select(.file.path | test("/gold.sql$") | not))' "$W/pipe.json" > "$W/pipe-$g.json"
         p=$(dbx pipelines create --json @"$W/pipe-$g.json" -o json | yq '.pipeline_id') && [ -n "$p" ] || { echo "pipeline create failed"; exit 2; }
         PIPELINE_IDS+=("$p"); link "pipeline $PN (silver, group $g: $(awk -F'\t' -v g="$g" '$2 == g' "$W/placement.tsv" | wc -l | tr -d ' ') tables)" "$HOST/pipelines/$p"
       else for k in $(seq 0 $((n - 1))); do
@@ -904,7 +910,7 @@ if [ "$PHASE" -ge 2 ]; then
         b=${n%"${HS}_nodedup"}; b=${b%"$HS"}
         case $(place "$b" 4) in pipeline) pj="$pj${pj:+, }\"$n\"";; merge) mj="$mj${mj:+, }\"$n\"";; esac; done
       f=$(run_fanout); [ -n "$f" ] && [ "$f" != SUCCESS ] && { echo "fan-out $f: $(tail -c 300 "$W/fanout.err")" >&2; echo "FANOUT_$f"; return; }
-      s1=$(NOFANOUT=1 SILVER=pipeline run_silver ${pj:+--json "{\"full_refresh_selection\": [$pj]}"})
+      s1=COMPLETED; [ ${#PIPELINE_IDS[@]} -gt 0 ] && s1=$(NOFANOUT=1 SILVER=pipeline run_silver ${pj:+--json "{\"full_refresh_selection\": [$pj]}"})
       s2=$(NOFANOUT=1 run_merge ${mj:+--json "{\"full_refresh_selection\": [$mj]}"})
       [ "$s1" = COMPLETED ] && [ "$s2" = COMPLETED ] && echo COMPLETED || echo "pipeline $s1, merge $s2"; return
     fi

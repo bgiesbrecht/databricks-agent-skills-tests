@@ -157,7 +157,7 @@ Found on the way, and fixed:
 - its bronze: `own` (`cdc_log_<table>`, written by the fan-out from `cdc_log`) or `shared` (`cdc_log`);
 - its silver: `pipeline` (AUTO CDC, one pipeline for the group) or `merge` (`merge-silver.py` jobs).
 
-The run writes `_placement.tsv` (one row per table) to the volume; the pipeline (`cdc.placement_group`) and each MERGE job (`--placement-group`) read their tables from it. Each silver update runs the fan-out once, then the pipelines and the MERGE jobs; a full refresh goes to whichever builds the table. A MERGE group records drift in `schema_drift_<group>` (the pipeline owns `schema_drift`). With `ROUNDS=5`, `BRONZE=shared`; no table move.
+The run writes `_placement.tsv` (one row per table) to the volume; the pipeline (`cdc.placement_group`) and each MERGE job (`--placement-group`) read their tables from it. Each silver update runs the fan-out once, then the pipelines and the MERGE jobs; a full refresh goes to whichever builds the table. A MERGE group records drift in `schema_drift_<group>` (the pipeline owns `schema_drift`), and keeps its own state tables (`_cdc_tombstones_<group>`, ...). One pipeline group so far, and gold is made by SQL after both silvers, over both. A producer server the placement gives no tables isn't started. With `ROUNDS=5`, `BRONZE=shared`; no table move.
 
 ## Trade-offs
 
@@ -167,7 +167,8 @@ What silver gives up, and where, so a result can be read for what it is:
   - in the history (SCD type 2), a real update that sets a row to the same values within 10 minutes counts once; the history check counts consecutive identical versions once on both sides;
   - in a table without a key (append-only), two identical rows inserted within 10 minutes count as one;
   - current rows (SCD type 1) keep every change: a replay comes in order with a newer sequence and converges.
-  CockroachDB's connector on the Kafka route gives no idempotency key, so there replays are matched on the row image alone. Debezium Server's key isn't unique per change either ([Round 3](#round-3-debezium-killed-and-restarted)), so it's never used on its own.
+  - the history checks pass a key whose versions, with consecutive identical ones counted once, are the source's, as long as silver has no more versions than the source (a replay it failed to drop is one more);
+  CockroachDB's connector on the Kafka route gives no idempotency key, so there replays are matched on the row image alone: a key deleted, reinserted and deleted again within 10 minutes has its second delete taken for a replay in the history (the reinserted version stays open). Current rows and the tombstones keep every delete. Debezium Server's key isn't unique per change either ([Round 3](#round-3-debezium-killed-and-restarted)), so it's never used on its own.
 - **Sequence.** CockroachDB's connector drops the commit time, so silver orders by `ts_ns`, when Debezium processed the change. Each key's changes stay in order, and the snapshot (sequenced by T, the database's clock) compares correctly only while the two clocks agree.
 - **Timestamps as numbers.** A timestamp column without a declared precision is read as microseconds (6 digits, PostgreSQL's and CockroachDB's default). A producer that sends milliseconds for such a column (Debezium's `time.precision.mode=connect`) would be read wrong.
 - **Schema drift on record.** Until a table is evolved and refreshed, a value its column type can't hold is NULL, a dropped column gets its default, and a new column waits. A refresh rebuilds the table from its snapshot and every change since T, so the change log has to be kept back to T.
@@ -180,7 +181,7 @@ What silver gives up, and where, so a result can be read for what it is:
 - **Own bronze on the direct route.** Debezium Server's Zerobus sink writes one table, so a table's own bronze is copied from the shared log by the fan-out: one more hop, and its changes stored twice.
 - **Silver across schemas (`SPLIT`).** Readers and gold name each table's schema.
 - **The Kafka route.** Zerobus's Kafka API takes the record value only, so the event is wrapped (`HoistField`, `StringifyField`) and nothing is dropped from it (no `DROP_FIELDS`): larger events than the direct route's.
-- **Test data on CockroachDB.** The generator casts `POWER` and the uniform draws (`<int> + 0.5`) to double precision for the PostgreSQL dialect (CockroachDB doesn't mix float and decimal); on PostgreSQL a value at an exact `FLOOR` boundary may round to the other side than before.
+- **Test data on CockroachDB.** For the PostgreSQL dialect the generator casts `POWER`'s arguments, and any expression plus or minus a decimal constant, to double precision (CockroachDB doesn't mix float and decimal). On plain PostgreSQL that arithmetic was NUMERIC before, so a generated value can differ in its last digits, or round to the other side of an exact `FLOOR` boundary.
 
 ## Before running
 
