@@ -284,7 +284,8 @@ cleanup() {
     done
     [ "${left//[[:space:]]/}" = 0 ] || { echo "source database $DB not dropped:"; tail -3 "$W/drop.out"; }
   fi
-  echo "cleanup: pipelines and schemas deleted; source database left: ${left//[[:space:]]/}"
+  if [ "${KEEP_SOURCE:-0}" = 1 ]; then echo "cleanup: pipelines and schemas deleted; source database $DB kept"
+  else echo "cleanup: pipelines and schemas deleted; source database left: ${left//[[:space:]]/}"; fi
   rm -rf "$W"
 }
 

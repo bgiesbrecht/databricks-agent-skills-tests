@@ -4,7 +4,7 @@
 # schemas <model>_0001 .. <model>_NNNN, generated inside SQL Server by lfc-source-statschema (shape.py, ddl.py) and
 # lfc-source-datagen (fill.sh); change tracking on keyed tables and CDC on keyless ones; then one pipeline over all of it.
 #
-#   COPIES=10  SF=0.01  MODEL=tpcc  FILLS=4 (copies filled at once)
+#   COPIES=10  SF=0.01  MODEL=tpcc  FILLS=4 (copies filled at once; at 8 the VM's sshd started refusing connections)
 #   OBJECTS=schema  one `schema` object per source schema, each into its own destination schema <S>_<model>_NNNN
 #                   (a schema object can't rename tables, and every copy has the same table names)
 #   OBJECTS=table   one `table` object per table, all into the destination schema <S>, named <table>_NNNN
@@ -64,8 +64,15 @@ build() {   # build <i>: the copy's schema, its tables (names qualified, tags ke
   echo "CREATE SCHEMA $s;" | src >/dev/null
   sed -E "s/(CREATE TABLE|ALTER TABLE|REFERENCES) \[($RE)\]/\1 [$s].[\2]/g; s/SCHEMA_NAME\(\)/N'$s'/g" "$W/model.sql" | src > "$W/ddl-$s.out" 2>&1 \
     || { echo "DDL for $s failed: $(grep -m1 Msg "$W/ddl-$s.out")"; return 1; }
-  SQLCMD_FLAGS="-b -y 0" MSSQL="$SRC_SQL $DB" DIR="$SK/lfc-source-datagen/scripts/sqlserver" \
-    bash "$SK/lfc-source-datagen/scripts/fill.sh" ms "$s" > "$W/fill-$s.out" 2>&1 || { echo "fill of $s failed"; return 1; }
+  # fill.sh resumes where it stopped, so a fill cut short (sshd refusing connections when many copies fill at once:
+  # "Connection closed by ... port 22") is run again
+  local n
+  for n in 1 2 3; do
+    SQLCMD_FLAGS="-b -y 0" MSSQL="$SRC_SQL $DB" DIR="$SK/lfc-source-datagen/scripts/sqlserver" \
+      bash "$SK/lfc-source-datagen/scripts/fill.sh" ms "$s" > "$W/fill-$s.out" 2>&1 && return 0
+    echo "fill of $s stopped (try $n): $(grep -m1 -E 'Connection closed|Msg [0-9]' "$W/fill-$s.out")"; sleep $((n * 30))
+  done
+  echo "fill of $s failed"; return 1
 }
 export -f build copy src; export W RE MODEL DB SRC_SQL SK
 T0=$(date +%s)
