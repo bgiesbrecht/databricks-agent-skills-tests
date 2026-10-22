@@ -110,6 +110,15 @@ def rewrite(n, ints):                                           # one node of a 
             d = inner.args.get("default")
             return exp.Case(ifs=[exp.If(this=i.this, true=pick(i.args["true"])) for i in inner.args["ifs"]],
                             default=pick(d) if d is not None else n.args.get("default"))
+    if D == "postgres" and isinstance(n, (exp.Add, exp.Sub)) and isinstance(n.expression, exp.Literal) \
+            and not n.expression.is_string and "." in n.expression.this and not isinstance(n.this, exp.Literal):
+        # <int> + 0.5 (a unit draw) is DECIMAL on CockroachDB, which won't multiply a float by it (normal, zipf):
+        # make it double precision, as it is on PostgreSQL once a float joins in
+        return node(f"(CAST({sql(n.this)} AS DOUBLE PRECISION) {'+' if isinstance(n, exp.Add) else '-'} {sql(n.expression)})")
+    if D == "postgres" and isinstance(n, exp.Pow):   # CockroachDB has POWER(float, float) and (decimal, decimal), no mixed
+        # forms, and no float * decimal: the formulas around POWER (zipf) are double precision, so POWER is too. On
+        # PostgreSQL a POWER(int, numeric) was numeric before; as a double, a FLOOR at an exact boundary may round otherwise
+        return node(f"POWER(CAST({sql(n.this)} AS DOUBLE PRECISION), CAST({sql(n.expression)} AS DOUBLE PRECISION))")
     if D == "tsql":
         if isinstance(n, exp.Round) and n.args.get("decimals") is None: n.set("decimals", exp.Literal.number(0))  # 2 arguments
         if isinstance(n, exp.Pow):                             # POWER returns its base's type: an int base truncates
