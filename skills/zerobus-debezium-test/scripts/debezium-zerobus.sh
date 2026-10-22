@@ -70,6 +70,14 @@ SPLIT=${SPLIT:-0}; [ "$SPLIT" = 1 ] && { [ "${SILVER:-}" = merge ] && [ "$PIPES"
 SILVER=${SILVER:-pipeline}; case $SILVER in pipeline) ;; merge) [ "${BRONZE:-shared}" = shared ] \
   || { echo "SILVER=merge: BRONZE=shared only so far"; exit 2; };; *) echo "SILVER: pipeline or merge"; exit 2;; esac
 BRONZE=${BRONZE:-shared}; BRONZE_SHARDS=${BRONZE_SHARDS:-0}; ON_DRIFT=${ON_DRIFT:-record}
+# PLACEMENT=<placement.yaml> (composite topology): each table group's producers, bronze (own or shared) and silver
+# (pipeline or merge), from placement.py; the global BRONZE, SILVER, PIPES, SPLIT and DBZ_SHARDS give way to it.
+# Own bronze is written by the fan-out (fanout.py --tables) from cdc_log. With ROUNDS=5 so far; no table move (MOVE=0).
+PLACEMENT=${PLACEMENT:-}
+if [ -n "$PLACEMENT" ]; then [ -f "$PLACEMENT" ] || { echo "PLACEMENT: no file $PLACEMENT"; exit 2; }
+  [ "$BRONZE" = shared ] && [ "$PIPES" = 1 ] && [ "${SPLIT:-0}" = 0 ] && [ "$ROUNDS" = 5 ] && [ -z "${DBZ_SHARDS:-}" ] \
+    || { echo "PLACEMENT: with BRONZE=shared, PIPES=1, SPLIT=0, ROUNDS=5 and no DBZ_SHARDS (the placement says the rest)"; exit 2; }
+  SILVER=composite; MOVE=0; fi
 case $BRONZE in shared|fanout|per-table) ;; *) echo "BRONZE: shared, fanout or per-table"; exit 2;; esac
 SRC_DB=${MODEL}1
 case $SOURCE in
@@ -298,7 +306,15 @@ HS=$(echo "$TABLES" | tr ' A-Z' '\na-z' | awk '{t[$0]} END {for (x in t) if ((x 
 # include [k]: schema.table,... for the current source's connector; with DBZ_SHARDS=K, only producer k's tables
 # (crc32(name) % K, silver's rule)
 DS=${DBZ_SHARDS:-1}; [ "$DS" -gt 1 ] && { [ "$SOURCE" = crdb ] && [ "$SINK" = zerobus ] || { echo "DBZ_SHARDS: CockroachDB with Debezium Server only (YugabyteDB would need a slot per shard)"; exit 2; }; }
+if [ -n "$PLACEMENT" ]; then   # the placement's servers: table -> server index; every group's servers in one numbering
+  echo "$TABLES" | tr ' ' '\n' > "$W/tables.txt"
+  python3 -I "$HERE/placement.py" "$PLACEMENT" "$W/tables.txt" > "$W/placement.tsv" || exit 2
+  cut -f1,5 "$W/placement.tsv" > "$W/dbz-shard.tsv"; DS=$(awk -F'\t' '$2 + 1 > n {n = $2 + 1} END {print n}' "$W/dbz-shard.tsv")
+  [ "$DS" -gt 1 ] && { [ "$SOURCE" = crdb ] && [ "$SINK" = zerobus ] || { echo "PLACEMENT: several servers with CockroachDB and Debezium Server only"; exit 2; }; }
+else
 echo "$TABLES" | tr ' ' '\n' | python3 -I -c "import sys, zlib; [print(t + '\t' + str(zlib.crc32(t.encode()) % $DS)) for t in sys.stdin.read().split()]" > "$W/dbz-shard.tsv"
+fi
+place() { awk -F'\t' -v t="$1" -v c="$2" '$1 == t {print $c; exit}' "$W/placement.tsv" 2>/dev/null; }   # place <table> <column>
 include() { awk -F'\t' -v k="${1:-}" -v s="$SRC_SCHEMA" 'k == "" || $2 == k {printf "%s%s.%s", (n++ ? "," : ""), s, $1}' "$W/dbz-shard.tsv"; }
 ntables() { # ntables <container>: the tables that producer captures ("83 of 1000" for a shard)
   case $1 in *-s[0-9]*) echo "$(awk -F'\t' -v k="${1##*-s}" '$2 == k' "$W/dbz-shard.tsv" | wc -l | tr -d ' ') of $NT";; *) echo "$NT";; esac; }
@@ -388,10 +404,11 @@ LOG=$T.cdc_log
 # key, value, source_position, headers, _seq (orders each key's changes) and _event_ns (for the deduplication watermark).
 # Kafka Connect's records carry only the event (the Kafka API ingests the value alone): the operation comes from op, the
 # key from after or before, and the sequence from the slot's LSN (YugabyteDB), which follows commit order, with the
-# snapshot at sequence 0; CockroachDB's connector has no LSN: its ts_ns, as on the Debezium Server route, the snapshot at T.
+# snapshot at sequence 0; CockroachDB's connector has no LSN: its ts_ns, as on the Debezium Server route, the snapshot at T,
+# and no idempotency key (a replay gets a new ts_ns): replays are matched on destination, operation and row image.
 if [ "$SINK" = kafka ]; then
   NORM="SELECT destination, CASE value:op::STRING WHEN 'c' THEN 'create' WHEN 'u' THEN 'update' WHEN 'd' THEN 'delete' WHEN 'r' THEN 'read' END AS operation,
-    COALESCE(value:source:lsn::STRING, value:ts_ns::STRING) AS idempotency_key, CASE value:op::STRING WHEN 'd' THEN value:before ELSE value:after END AS key, value, value:source AS source_position,
+    value:source:lsn::STRING AS idempotency_key, CASE value:op::STRING WHEN 'd' THEN value:before ELSE value:after END AS key, value, value:source AS source_position,
     CAST(NULL AS VARIANT) AS headers, COALESCE(value:source:lsn::BIGINT, value:ts_ns::BIGINT) AS _seq, value:ts_ms::BIGINT * 1000000 AS _event_ns"
   for i in $(seq 1 "$NSRC"); do SNAPSEQ[$i]=$([ "$SOURCE" = crdb ] && echo "${TNS[$i]}" || echo 0); done
   mklog() { q "CREATE TABLE $T.$1 (destination STRING NOT NULL, value VARIANT) CLUSTER BY (destination)
@@ -705,7 +722,8 @@ if [ "$PHASE" -ge 2 ]; then
   } > "$W/_sources.yaml"
   # _snapshot.tsv: table, prefix, format, files; silver reads it rather than list every table's folder
   awk -F'\t' -v f="$SNAP_FMT" '{i = index($1, "/"); printf "%s\t%s\t%s\t%s\n", substr($1, 1, i - 1), substr($1, i + 1), f, $2}' "$W/snapfiles.tsv" > "$W/_snapshot.tsv"
-  for f in _sources.yaml _snapshot.tsv; do dbx fs cp "$W/$f" "dbfs:$VOL/$f" --overwrite >/dev/null || { echo "$f upload failed"; exit 2; }; done
+  [ -n "$PLACEMENT" ] && cp "$W/placement.tsv" "$W/_placement.tsv"
+  for f in _sources.yaml _snapshot.tsv $([ -n "$PLACEMENT" ] && echo _placement.tsv); do dbx fs cp "$W/$f" "dbfs:$VOL/$f" --overwrite >/dev/null || { echo "$f upload failed"; exit 2; }; done
 
   if [ "$SCHEMA_VIA" = volume ]; then
   claim schema-in-volume PASS "statschema schema.yaml (ddl-to-schema.py from each source's DDL, then schema-union.py) for $VOL/_schema: $(brief)"
@@ -796,7 +814,7 @@ if [ "$PHASE" -ge 2 ]; then
       "cdc.bronze_shards": strenv(SHARDS), "cdc.nodedup_table": strenv(NODEDUP), "cdc.history_suffix": strenv(HS), "cdc.on_drift": strenv(ON_DRIFT)}' > "$W/pipe.json"
   # PIPES=K: K pipelines, the same files, each with cdc.shard = <k>/<K> (its own tables)
   PIPELINE_IDS=(); MERGE_JOBS=(); MERGE_PARAMS=(); MERGE_EXTRA=(); SPLIT_SCHEMAS=()
-  for k in $(seq 0 $((PIPES - 1))); do
+  for k in $([ -z "$PLACEMENT" ] && seq 0 $((PIPES - 1))); do
     if [ "$SILVER" = merge ]; then   # merge-silver.py as a serverless job, shard k of K
       export JN="$PIPE_NAME-merge$([ "$PIPES" -gt 1 ] && echo "-p$k")" MPY=$WSDIR/merge-silver.py MSH=$([ "$PIPES" -gt 1 ] && echo "$k/$PIPES") MCP="$VOL/_merge/p$k" MS=$S
       if [ "$SPLIT" = 1 ]; then MS=${S}_s$k; dbx schemas create "$MS" "$CATALOG" >/dev/null || { echo "schema $MS create failed"; exit 2; }
@@ -812,7 +830,26 @@ if [ "$PHASE" -ge 2 ]; then
       || cp "$W/pipe.json" "$W/pipe-$k.json"
     p=$(dbx pipelines create --json @"$W/pipe-$k.json" -o json | yq '.pipeline_id') && [ -n "$p" ] || { echo "pipeline create failed"; exit 2; }
     PIPELINE_IDS+=("$p"); link "pipeline $(yq '.name' "$W/pipe-$k.json") (silver${GOLD:+, gold}; bronze $BT$([ "$PIPES" -gt 1 ] && echo "; cdc.shard $k/$PIPES"))" "$HOST/pipelines/$p"
-  done; PIPELINE_ID=${PIPELINE_IDS[0]:-}
+  done
+  if [ -n "$PLACEMENT" ]; then   # a pipeline per pipeline group; a merge job per merge group and shard
+    for g in $(cut -f2 "$W/placement.tsv" | awk '!s[$0]++'); do
+      mode=$(awk -F'\t' -v g="$g" '$2 == g {print $4; exit}' "$W/placement.tsv"); n=$(awk -F'\t' -v g="$g" '$2 == g {print $7; exit}' "$W/placement.tsv")
+      if [ "$mode" = pipeline ]; then
+        export PN="$PIPE_NAME-$g" G=$g; yq -p json -o json '.name = strenv(PN) | .configuration["cdc.placement_group"] = strenv(G)' "$W/pipe.json" > "$W/pipe-$g.json"
+        p=$(dbx pipelines create --json @"$W/pipe-$g.json" -o json | yq '.pipeline_id') && [ -n "$p" ] || { echo "pipeline create failed"; exit 2; }
+        PIPELINE_IDS+=("$p"); link "pipeline $PN (silver, group $g: $(awk -F'\t' -v g="$g" '$2 == g' "$W/placement.tsv" | wc -l | tr -d ' ') tables)" "$HOST/pipelines/$p"
+      else for k in $(seq 0 $((n - 1))); do
+        export JN="$PIPE_NAME-merge-$g$([ "$n" -gt 1 ] && echo "-p$k")" MPY=$WSDIR/merge-silver.py MSH=$([ "$n" -gt 1 ] && echo "$k/$n") MCP="$VOL/_merge/$g-p$k" MG=$g MS=$S
+        yq -n -o json '.name = strenv(JN) | .environments = [{"environment_key": "default", "spec": {"environment_version": "4", "dependencies": ["pyyaml"]}}] |
+          .tasks = [{"task_key": "silver", "environment_key": "default", "spark_python_task": {"python_file": strenv(MPY),
+            "parameters": ["--volume", strenv(VOL), "--source", "`" + strenv(CATALOG) + "`." + strenv(S) + ".cdc_log", "--target", "`" + strenv(CATALOG) + "`." + strenv(MS),
+              "--checkpoint", strenv(MCP), "--bronze", strenv(SINK), "--history-suffix", strenv(HS), "--on-drift", strenv(ON_DRIFT), "--once",
+              "--placement-group", strenv(MG), "--drift-table", "schema_drift_" + strenv(MG)] + (strenv(MSH) | select(. != "") | ["--shard", .]) // []}}]' > "$W/merge-$g-$k.json"
+        j=$(dbx jobs create --json @"$W/merge-$g-$k.json" -o json | yq '.job_id') && [ -n "$j" ] || { echo "merge job create failed"; exit 2; }
+        MERGE_JOBS+=("$j"); MERGE_PARAMS+=("$(yq -o json -I0 '.tasks[0].spark_python_task.parameters' "$W/merge-$g-$k.json")"); link "silver job $JN (merge-silver.py, group $g${MSH:+, shard $MSH})" "$HOST/jobs/$j"
+      done; fi
+    done
+  fi; PIPELINE_ID=${PIPELINE_IDS[0]:-}
   [ "$NT" -le 20 ] && for t in $TABLES; do link "silver $t" "$HOST/explore/data/$CATALOG/$S/$t"; done
   [ -n "$GOLD" ] && link "gold $GOLD" "$HOST/explore/data/$CATALOG/$S/$GOLD"
   [ "$ON_DRIFT" = record ] && link "schema drift schema_drift" "$HOST/explore/data/$CATALOG/$S/schema_drift"
@@ -826,8 +863,10 @@ if [ "$PHASE" -ge 2 ]; then
     JOB_ID=$(dbx jobs create --json @"$W/job.json" -o json | yq '.job_id') || return 1
     link "fan-out job $JOB_NAME (${3:+tables $3 }to $1)" "$HOST/jobs/$JOB_ID"; }
   [ "$BRONZE" = fanout ] && { make_fanout "$T.$BT" "$VOL/_fanout" || { echo "fan-out job create failed"; exit 2; }; }
+  OWNT=$([ -n "$PLACEMENT" ] && awk -F'\t' '$3 == "own" {printf "%s%s", (n++ ? "," : ""), $1}' "$W/placement.tsv")
+  [ -n "$OWNT" ] && { make_fanout "$T.cdc_log_{table}" "$VOL/_fanout_own" "$OWNT" || { echo "fan-out job create failed"; exit 2; }; }
   run_fanout() { # the fan-out job, when there is one, once over what's in cdc_log; prints its result
-    [ -n "${JOB_ID:-}" ] || return 0
+    [ -n "${JOB_ID:-}" ] && [ -z "${NOFANOUT:-}" ] || return 0
     dbx jobs run-now "$JOB_ID" -o json 2>"$W/fanout.err" | yq '.state.result_state // "FAILED"'; }
 
   run_merge() { # SILVER=merge: every merge job once, at once, after the fan-out when there is one; COMPLETED when all
@@ -859,6 +898,16 @@ if [ "$PHASE" -ge 2 ]; then
   run_silver() { # one update of every pipeline at once (extra args go to start-update), after the fan-out when there is
     # one; their final state: COMPLETED when all completed. Each pipeline's seconds in $W/update_s (k=seconds ...)
     [ "$SILVER" = merge ] && { run_merge "$@"; return; }
+    if [ "$SILVER" = composite ]; then   # the fan-out once, then the pipelines and the merge jobs, each with its own refresh
+      local n b pj= mj= f s1 s2
+      [ "${1:-}" = --json ] && for n in $(echo "$2" | yq -p json -r '(.full_refresh_selection // [])[]'); do
+        b=${n%"${HS}_nodedup"}; b=${b%"$HS"}
+        case $(place "$b" 4) in pipeline) pj="$pj${pj:+, }\"$n\"";; merge) mj="$mj${mj:+, }\"$n\"";; esac; done
+      f=$(run_fanout); [ -n "$f" ] && [ "$f" != SUCCESS ] && { echo "fan-out $f: $(tail -c 300 "$W/fanout.err")" >&2; echo "FANOUT_$f"; return; }
+      s1=$(NOFANOUT=1 SILVER=pipeline run_silver ${pj:+--json "{\"full_refresh_selection\": [$pj]}"})
+      s2=$(NOFANOUT=1 run_merge ${mj:+--json "{\"full_refresh_selection\": [$mj]}"})
+      [ "$s1" = COMPLETED ] && [ "$s2" = COMPLETED ] && echo COMPLETED || echo "pipeline $s1, merge $s2"; return
+    fi
     local u=() st=() k f t0=$SECONDS done; f=$(run_fanout); [ -n "$f" ] && [ "$f" != SUCCESS ] && { echo "fan-out $f: $(tail -c 300 "$W/fanout.err")" >&2; echo "FANOUT_$f"; return; }
     for k in "${!PIPELINE_IDS[@]}"; do u[$k]=$(dbx pipelines start-update "${PIPELINE_IDS[$k]}" "$@" -o json | yq '.update_id'); done
     echo "${u[0]}" > "$W/update_id"; : > "$W/update_s"; printf '%s\n' "${u[@]}" > "$W/update_ids"
@@ -967,7 +1016,9 @@ if [ "$PHASE" -ge 2 ]; then
   refresh_tables() { # the tables a full refresh of these source tables covers, as a JSON list
     local t; for t in "$@"; do printf '"%s", "%s%s"%s, ' "$t" "$t" "$HS" "$([ "$t" = "$NODEDUP" ] && echo ", \"$t${HS}_nodedup\"")"; done | sed 's/, $//'; }
   drift_rows() { # drift_rows <table> <source>: what silver recorded for it, as "kind:column" lines
-    q "SELECT CONCAT(kind, ':', col) FROM $T.schema_drift WHERE tbl = '$1' AND _source = '$2' ORDER BY 1" 2>/dev/null; }
+    local dt=schema_drift   # a merge group's: schema_drift_<group>[_s<k>_of_<n>]
+    [ "$(place "$1" 4)" = merge ] && dt=schema_drift_$(place "$1" 2)$([ "$(place "$1" 7)" -gt 1 ] && echo "_s$(place "$1" 6)_of_$(place "$1" 7)")
+    q "SELECT CONCAT(kind, ':', col) FROM $T.$dt WHERE tbl = '$1' AND _source = '$2' ORDER BY 1" 2>/dev/null; }
   evolve() { # evolve <round> <table> <source i> <expected kind:column ...>: asynchronous schema evolution
     # 1. silver went on with the old schema and recorded the drift; 2. every source's schema again, and their union:
     # the tables whose union changed get their own _schema/tables/<table>.yaml; 3. a full refresh of only those, which
@@ -1050,7 +1101,7 @@ if [ "$PHASE" -ge 2 ]; then
       fi
     done; use 1
     for t in $TABLES; do history "$t" "$t$HS" claim; same_hist "$t" 3; done
-    [ "$SILVER" = pipeline ] && history "$NODEDUP" "$NODEDUP${HS}_nodedup" observe
+    { [ "$SILVER" = pipeline ] || [ "$(place "$NODEDUP" 4)" = pipeline ]; } && history "$NODEDUP" "$NODEDUP${HS}_nodedup" observe
 
     # a table moved out of the shared log while the others stay (BRONZE=shared, MOVE=1, the default there): the
     # fan-out for that table only, from the log's beginning, into cdc_log_<table>; silver's cdc.bronze_table.<table>

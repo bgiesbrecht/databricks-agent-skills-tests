@@ -65,6 +65,7 @@ ON_DRIFT = spark.conf.get("cdc.on_drift", "record")
 DRIFT_SAMPLE = int(spark.conf.get("cdc.drift_sample", "1"))
 TRY = ON_DRIFT == "record"
 HIST = spark.conf.get("cdc.history_suffix", "_history")
+GROUP = spark.conf.get("cdc.placement_group", "")   # composite: only this group's tables, from <volume>/_placement.tsv
 
 # the type names the TPC schema files use besides statschema's canonical ones (ddl.py takes the same)
 ALIAS = {"int": "integer", "smallint": "integer", "tinyint": "integer", "bigint": "long", "numeric": "decimal",
@@ -99,16 +100,15 @@ def shard_of(name, n):
 def decode(c, s, cast="CAST"):
     """s, a STRING expression with the value as text or a number -> the column's type. A number is Debezium's: days
     for a date; for a timestamp, epoch milliseconds when the column holds 3 digits of fraction or fewer, else
-    microseconds (without a precision, a value under 10^14, before 1973 in microseconds, is taken as milliseconds);
+    microseconds (without a precision too: PostgreSQL's and CockroachDB's default is 6 digits);
     microseconds of the day for a time. cast: CAST, or TRY_CAST (NULL where the text doesn't fit)."""
     t, ty = ctype(c), spark_type(c)
     num = f"{s} RLIKE '^-?[0-9]+$'"
     p = c.get("precision")
     n = f"CAST({s} AS BIGINT)"
-    if p is None:
-        us = f"CASE WHEN ABS({n}) < 100000000000000 THEN {n} * 1000 ELSE {n} END"
-    else:
-        us = f"{n} * 1000" if int(p) <= 3 else n
+    # no precision: 6 digits, as PostgreSQL and CockroachDB default to, so microseconds (a guess by size took a
+    # date near 1970 for milliseconds: 1 s after the epoch, 1000000 us, read as 1000 s)
+    us = n if p is None or int(p) > 3 else f"{n} * 1000"
     if t == "date":
         return f"CASE WHEN {num} THEN date_add(DATE'1970-01-01', CAST({s} AS INT)) ELSE {cast}({s} AS DATE) END"
     if t == "timestamp":
@@ -149,6 +149,12 @@ SCHEMA = load()
 if SHARD:
     _i, _n = (int(x) for x in SHARD.split("/"))
     SCHEMA = {t: c for t, c in SCHEMA.items() if shard_of(t, _n) == _i}
+OWN = set()
+if GROUP:
+    with open(f"{VOL}/_placement.tsv") as f:
+        _p = [r.rstrip("\n").split("\t") for r in f if r.strip()]
+    SCHEMA = {t: c for t, c in SCHEMA.items() if any(r[0] == t and r[1] == GROUP for r in _p)}
+    OWN = {r[0] for r in _p if r[1] == GROUP and r[2] == "own"}   # own bronze: cdc_log_<table>, from the fan-out
 _clash = sorted(t for t in SCHEMA if (t + HIST).lower() in {x.lower() for x in SCHEMA})
 if _clash:
     raise ValueError(f"cdc.history_suffix {HIST}: {', '.join(t + HIST for t in _clash[:5])} would be a source table too; set another")
@@ -176,7 +182,8 @@ SNAPSHOT_FILES = _snapshot_files()
 
 
 def bronze_of(table):
-    return spark.conf.get(f"cdc.bronze_table.{table}", BRONZE_TABLE).format(table=table, shard=shard_of(table, BRONZE_SHARDS))
+    default = "cdc_log_{table}" if table in OWN else BRONZE_TABLE
+    return spark.conf.get(f"cdc.bronze_table.{table}", default).format(table=table, shard=shard_of(table, BRONZE_SHARDS))
 
 
 def norm_view(bronze):
@@ -196,7 +203,7 @@ def norm_view(bronze):
                 "destination",
                 F.expr("CASE value:op::STRING WHEN 'c' THEN 'create' WHEN 'u' THEN 'update' WHEN 'd' THEN 'delete' "
                        "WHEN 'r' THEN 'read' END").alias("operation"),
-                F.expr("COALESCE(value:source:lsn::STRING, value:ts_ns::STRING)").alias("idempotency_key"),
+                F.expr("value:source:lsn::STRING").alias("idempotency_key"),   # none from CockroachDB: replays match on the row
                 F.expr("CASE value:op::STRING WHEN 'd' THEN value:before ELSE value:after END").alias("key"), "value",
                 F.expr("COALESCE(value:source:lsn::BIGINT, value:ts_ns::BIGINT)").alias("_seq"), F.expr("value:ts_ms::BIGINT * 1000000").alias("_event_ns"))
         return log.withColumn("_seq", F.expr("value:ts_ns::BIGINT")).withColumn("_event_ns", F.expr("value:ts_ns::BIGINT"))
@@ -280,8 +287,11 @@ def define(table, cols):
         dp.create_streaming_table(name=table, table_properties=props)
         dp.append_flow(target=table, name=f"{table}_from_snapshot")(   # not once: a once append flow takes a batch only
             lambda: spark.readStream.table(f"{table}_snapshot").drop("_seq", "_op"))
+        # the inserts with producer replays removed (the dedup view): without a key, a replay would be a second row.
+        # Two identical rows inserted within the dedup watermark count as one
+        dp.temporary_view(name=f"{table}_changes_dedup")(lambda: changes(f"_dedup_{bronze_of(table)}"))
         dp.append_flow(target=table, name=f"{table}_from_changes")(
-            lambda: spark.readStream.table(f"{table}_changes").where("_op = 'create'").drop("_seq", "_op"))
+            lambda: spark.readStream.table(f"{table}_changes_dedup").where("_op = 'create'").drop("_seq", "_op"))
         return
     dp.temporary_view(name=f"{table}_changes_dedup")(lambda: changes(f"_dedup_{bronze_of(table)}"))
 

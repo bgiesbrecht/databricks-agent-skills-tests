@@ -150,6 +150,38 @@ Found on the way, and fixed:
 
 **More producers, started one at a time.** `DBZ_SHARDS=K` splits the tables over K Debezium Servers, one changefeed each, and starts them one after another: each waits for the one before to reach `POLLING_TASKS` (or fail). Started all at once, the servers' JVMs compete for the host's CPU and spend the 40 s starting up. On the 4-vCPU test VM, 1000 tables streamed on 20 servers of about 50 tables each; 12 servers of about 83 tables, started one at a time, got only 4 to stream, and 12 started at once got none. Keep a server's tables well under what starts in 40 s, and count its changefeed against CockroachDB's recommended maximum per cluster (see lfc-source-sizing's limits).
 
+## Composite: a placement per table group
+
+`PLACEMENT=<placement.yaml>` replaces the global `BRONZE`, `SILVER`, `PIPES` and `DBZ_SHARDS` with one choice per table group ([scripts/placement.py](scripts/placement.py); an example: [placements/mix20-busy-quiet.yaml](placements/mix20-busy-quiet.yaml)). Each group lists its tables or a pattern, and says:
+- its producers: how many Debezium Servers, started one at a time;
+- its bronze: `own` (`cdc_log_<table>`, written by the fan-out from `cdc_log`) or `shared` (`cdc_log`);
+- its silver: `pipeline` (AUTO CDC, one pipeline for the group) or `merge` (`merge-silver.py` jobs).
+
+The run writes `_placement.tsv` (one row per table) to the volume; the pipeline (`cdc.placement_group`) and each MERGE job (`--placement-group`) read their tables from it. Each silver update runs the fan-out once, then the pipelines and the MERGE jobs; a full refresh goes to whichever builds the table. A MERGE group records drift in `schema_drift_<group>` (the pipeline owns `schema_drift`). With `ROUNDS=5`, `BRONZE=shared`; no table move.
+
+## Trade-offs
+
+What silver gives up, and where, so a result can be read for what it is:
+
+- **Replays and identical changes.** A producer resends changes after a restart, under a new sequence. Silver drops a change as a replay when it has the same event (destination, key, operation, row image, and idempotency key where the producer gives one) within 10 minutes of one already applied (the pipeline's dedup watermark; `merge-silver.py`'s `REPLAY_NS`). So:
+  - in the history (SCD type 2), a real update that sets a row to the same values within 10 minutes counts once; the history check counts consecutive identical versions once on both sides;
+  - in a table without a key (append-only), two identical rows inserted within 10 minutes count as one;
+  - current rows (SCD type 1) keep every change: a replay comes in order with a newer sequence and converges.
+  CockroachDB's connector on the Kafka route gives no idempotency key, so there replays are matched on the row image alone. Debezium Server's key isn't unique per change either ([Round 3](#round-3-debezium-killed-and-restarted)), so it's never used on its own.
+- **Sequence.** CockroachDB's connector drops the commit time, so silver orders by `ts_ns`, when Debezium processed the change. Each key's changes stay in order, and the snapshot (sequenced by T, the database's clock) compares correctly only while the two clocks agree.
+- **Timestamps as numbers.** A timestamp column without a declared precision is read as microseconds (6 digits, PostgreSQL's and CockroachDB's default). A producer that sends milliseconds for such a column (Debezium's `time.precision.mode=connect`) would be read wrong.
+- **Schema drift on record.** Until a table is evolved and refreshed, a value its column type can't hold is NULL, a dropped column gets its default, and a new column waits. A refresh rebuilds the table from its snapshot and every change since T, so the change log has to be kept back to T.
+- **MERGE in place of AUTO CDC.**
+  - Every delete is kept (`_cdc_tombstones`), as is every appended fingerprint (`_cdc_appended`): they grow with the deletes and inserts. AUTO CDC drops its tombstones after a set time.
+  - Silver tables carry `_seq` (current rows) and `_idem` (history), which AUTO CDC keeps hidden.
+  - A batch rewrites the end of every version of each key it touches, from that key's whole history: more work for keys with long histories.
+  - There's no `_history_nodedup` table.
+- **Producers sharded.** Each Debezium Server has its own changefeed (CockroachDB recommends a maximum per cluster: lfc-source-sizing's limits), the servers start one after another (start-up grows with their number), and commit order holds per key, not across servers.
+- **Own bronze on the direct route.** Debezium Server's Zerobus sink writes one table, so a table's own bronze is copied from the shared log by the fan-out: one more hop, and its changes stored twice.
+- **Silver across schemas (`SPLIT`).** Readers and gold name each table's schema.
+- **The Kafka route.** Zerobus's Kafka API takes the record value only, so the event is wrapped (`HoistField`, `StringifyField`) and nothing is dropped from it (no `DROP_FIELDS`): larger events than the direct route's.
+- **Test data on CockroachDB.** The generator casts `POWER` and the uniform draws (`<int> + 0.5`) to double precision for the PostgreSQL dialect (CockroachDB doesn't mix float and decimal); on PostgreSQL a value at an exact `FLOOR` boundary may round to the other side than before.
+
 ## Before running
 
 1. **A VM with Podman** from **lfc-source-cloud-vm**, reachable over SSH, with outbound 443.
