@@ -59,24 +59,38 @@ fi
 if [ "$REUSED" = 0 ]; then
 # one schema per copy, filled inside SQL Server --------------------------------------------------------------
 echo "SELECT 1;" | src_db
-build() {   # build <i>: the copy's schema, its tables (names qualified, tags keyed by the schema), its rows
-  local s; s=$(copy "$1")
-  echo "CREATE SCHEMA $s;" | src >/dev/null
-  sed -E "s/(CREATE TABLE|ALTER TABLE|REFERENCES) \[($RE)\]/\1 [$s].[\2]/g; s/SCHEMA_NAME\(\)/N'$s'/g" "$W/model.sql" | src > "$W/ddl-$s.out" 2>&1 \
-    || { echo "DDL for $s failed: $(grep -m1 Msg "$W/ddl-$s.out")"; return 1; }
-  # fill.sh resumes where it stopped, so a fill cut short (sshd refusing connections when many copies fill at once:
-  # "Connection closed by ... port 22") is run again
-  local n
-  for n in 1 2 3; do
-    SQLCMD_FLAGS="-b -y 0" MSSQL="$SRC_SQL $DB" DIR="$SK/lfc-source-datagen/scripts/sqlserver" \
-      bash "$SK/lfc-source-datagen/scripts/fill.sh" ms "$s" > "$W/fill-$s.out" 2>&1 && return 0
-    echo "fill of $s stopped (try $n): $(grep -m1 -E 'Connection closed|Msg [0-9]' "$W/fill-$s.out")"; sleep $((n * 30))
+# The build runs on the database's VM (lfc-source-datagen bundle.sh + copies.sh), not as hundreds of SSH calls from
+# here: a laptop's network drop then only delays the polling below. BUILD_HERE=1 builds from this machine instead.
+T0=$(date +%s); RUN=/tmp/lfc-build-$DB
+if [ "${BUILD_HERE:-0}" = 1 ]; then
+  MSSQL="env SQLCMD_FLAGS=-b\ -y\ 0 $SRC_SQL $DB" bash "$SK/lfc-source-datagen/scripts/copies.sh" ms "$W/model.sql" "$MODEL" 1 "$COPIES" "$FILLS" \
+    | tee "$W/build.log" | grep -v '^done' || { echo "source build failed"; exit 2; }
+else
+  : "${VM_IP:?BUILD_HERE=0 builds on the VM: set VM_IP and MSSQL_CONTAINER}" "${MSSQL_CONTAINER:?}"
+  SSHV=(ssh -i "${SSH_KEY:-$HOME/.ssh/lfc_test_rsa}" -o BatchMode=yes -o ConnectTimeout=15 "${VM_USER:-azureuser}@$VM_IP")
+  SCPV=(scp -q -i "${SSH_KEY:-$HOME/.ssh/lfc_test_rsa}" -o BatchMode=yes -o ConnectTimeout=15)
+  bash "$SK/lfc-source-datagen/scripts/bundle.sh" "$W/datagen.tgz" >/dev/null
+  # the VM-side client: SQL on stdin into sqlcmd in the container, the sa password read inside it
+  cat > "$W/sq" <<SQ
+#!/usr/bin/env bash
+podman --remote --url unix:///run/podman/podman.sock exec -i $MSSQL_CONTAINER sh -c 'f=\$(mktemp); cat > \$f; /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "\$MSSQL_SA_PASSWORD" -b -y 0 -d $DB -i \$f; rc=\$?; rm -f \$f; exit \$rc'
+SQ
+  "${SSHV[@]}" "rm -rf $RUN && mkdir -p $RUN" && "${SCPV[@]}" "$W/datagen.tgz" "$W/model.sql" "$W/sq" "${VM_USER:-azureuser}@$VM_IP:$RUN/" \
+    || { echo "copy to the VM failed"; exit 2; }
+  "${SSHV[@]}" "cd $RUN && tar xzf datagen.tgz && chmod +x sq && MSSQL=$RUN/sq nohup bash copies.sh ms model.sql $MODEL 1 $COPIES $FILLS > build.log 2>&1 < /dev/null &" \
+    || { echo "starting the build on the VM failed"; exit 2; }
+  echo "building on the VM: $RUN/build.log"
+  last=""
+  while :; do
+    sleep 30
+    st=$("${SSHV[@]}" "tail -1 $RUN/build.log; grep -c '^done' $RUN/build.log; grep '^failed' $RUN/build.log | head -3" 2>/dev/null) || continue   # a drop: try again
+    cur=$(sed -n 2p <<< "$st"); [ "$cur" != "$last" ] && { echo "  $cur of $COPIES copies built"; last=$cur; }
+    case $(head -1 <<< "$st") in
+      "all done") break;;
+      "finished with failures") echo "source build failed: $(sed -n '3,$p' <<< "$st" | tr '\n' ' ')"; exit 2;;
+    esac
   done
-  echo "fill of $s failed"; return 1
-}
-export -f build copy src; export W RE MODEL DB SRC_SQL SK
-T0=$(date +%s)
-seq 1 "$COPIES" | xargs -P "$FILLS" -I{} bash -c 'build {}' || { echo "source build failed"; exit 2; }
+fi
 echo "source built in $(( $(date +%s) - T0 ))s"
 fi
 srcrows() { printf "SET NOCOUNT ON; SELECT SCHEMA_NAME(t.schema_id) + '.' + t.name, SUM(p.rows) FROM sys.tables t JOIN sys.partitions p ON p.object_id = t.object_id AND p.index_id < 2 WHERE SCHEMA_NAME(t.schema_id) LIKE '%s[_]%%' GROUP BY t.schema_id, t.name ORDER BY 1;\n" "$MODEL" | src | tr -s ' \t' '\t'; }
