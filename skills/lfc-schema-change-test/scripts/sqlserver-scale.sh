@@ -162,8 +162,14 @@ COL=$(printf "SET NOCOUNT ON; SELECT TOP 1 c.name FROM sys.columns c WHERE c.obj
 ver() { q "SELECT MAX(version) FROM (DESCRIBE HISTORY $(dest "$1"))" 2>&1 | tr -d '[:space:]'; }
 A0=$(ver "$(copy 1).$FIRST"); Z0=$(ver "$(copy "$COPIES").$FIRST")
 for i in $(seq 1 "$COPIES"); do printf "UPDATE TOP (1) %s.%s SET %s = %s;\n" "$(copy "$i")" "$FIRST" "$COL" "$COL"; done | src >/dev/null
-sleep "$WAIT"; update
-A1=$(ver "$(copy 1).$FIRST"); Z1=$(ver "$(copy "$COPIES").$FIRST")
+# with hundreds of tables the gateway takes longer to go round them all: up to 4 updates, and the time it took
+TC=$(date +%s)
+for _ in 1 2 3 4; do
+  sleep "$WAIT"; update
+  A1=$(ver "$(copy 1).$FIRST"); Z1=$(ver "$(copy "$COPIES").$FIRST")
+  [ "${A1:-0}" -gt "${A0:-0}" ] && [ "${Z1:-0}" -gt "${Z0:-0}" ] && break
+done
+observe change-latency "both changes in the destination after $(( $(date +%s) - TC ))s (or not, see below)"
 [ "${A1:-0}" -gt "${A0:-0}" ] && [ "${Z1:-0}" -gt "${Z0:-0}" ] \
   && claim changes-arrive PASS "an update in the first and the last copy reached the destination (versions $A0 -> $A1, $Z0 -> $Z1)" \
   || claim changes-arrive FAIL "destination versions $A0 -> $A1 (first copy), $Z0 -> $Z1 (last copy); errors: ${ERRS:-none}"
