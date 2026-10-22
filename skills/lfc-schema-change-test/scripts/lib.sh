@@ -316,6 +316,16 @@ record_run() {
     '{date:$date, run:$run, test:$test, subject:{engine:$engine, version:$ver}, outcome:$outcome, result:$res,
       workspace:{cloud:$cloud, region:$region}, setup:({scenario:$scen, mode:$mode, tool:"lfc-schema-change-test"} + $conf),
       metrics:$metrics, notes:$claims}' | uv run "$rec" >&2 && echo "recorded: $1 ($res)" || echo "record_run: not recorded (see above)" >&2
+  # LFC_PERF_DIR=<a perf/runs folder with record.sh one level up>: also keep the full config and the numbers there (a
+  # private results store can hold the workspace and the source host, which this public repo can't)
+  if [ -n "${LFC_PERF_DIR:-}" ] && [ -x "$LFC_PERF_DIR/../record.sh" ] && [ "$METRICS" != "{}" ]; then
+    jq -n -c --arg id "$(date -u +%F)-$1-$E" --arg date "$(date -u +%F)" --arg scen "$1" --arg mode "$MODE" --arg engine "$ENGINE" \
+      --arg ver "$ver" --arg ws "$PROFILE" --arg cloud "${cloud:-}" --arg region "${region:-}" \
+      --arg rt "$( "${LFC_RUNTIME:-$LIB/../../../bin/lfc-runtime.sh}" --summary "$PROFILE" "$AP" 2>/dev/null | sed 's/^Lakeflow runtime: //' | head -1)" \
+      --argjson conf "$RUN_CONF" --argjson metrics "$METRICS" --arg claims "$(printf '%s\n' "${RESULTS[@]}" | sed -E 's/^\| `([^`]*)` \| ([A-Z]+) \|.*/\1=\2/' | paste -sd' ' -)" \
+      '{run_id:$id, date:$date, scenario:$scen, config:({source:$engine, source_version:$ver, mode:$mode, workspace:$ws, cloud:$cloud, region:$region, runtime:$rt} + $conf), metrics:$metrics, notes:$claims}' \
+      | LFC_PERF_DIR=$LFC_PERF_DIR "$LFC_PERF_DIR/../record.sh" >&2 || echo "record_run: performance record not written" >&2
+  fi
 }
 
 # result_md <title>: the runtime each pipeline ran on, the source, and the claim table; to stdout and $OUT
