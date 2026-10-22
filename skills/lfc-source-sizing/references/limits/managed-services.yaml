@@ -1,0 +1,223 @@
+# Documented limits: managed-services. Each quote is on its page: check with scripts/limits-check.py.
+- product: Amazon RDS for PostgreSQL
+  limit: maximum connections (configurable)
+  value: 6–262143
+  kind: configurable
+  setting: max_connections
+  url: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_Limits.html
+  quote: PostgreSQL | max_connections | 6–262143 | LEAST( { DBInstanceClassMemory/9531392}, 5000) | Maximum number of concurrent connections
+  ask: how many connections are free for the CDC reader?
+  checked: '2026-10-22'
+- product: Amazon RDS for MySQL
+  limit: maximum connections (configurable)
+  value: 1–100000
+  kind: configurable
+  setting: max_connections
+  url: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_Limits.html
+  quote: MySQL | max_connections | 1–100000 | { DBInstanceClassMemory/12582880} | The formula is effectively equivalent to MB/12
+  ask: how many connections are free for the CDC reader?
+  checked: '2026-10-22'
+- product: Amazon RDS for MariaDB
+  limit: maximum connections (configurable)
+  value: 1–100000
+  kind: configurable
+  setting: max_connections
+  url: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_Limits.html
+  quote: 'MariaDB | max_connections | 1–100000 | For MariaDB 10.5 and higher versions, the default is: LEAST( { DBInstanceClassMemory/25165760},12000)'
+  ask: how many connections are free for the CDC reader?
+  checked: '2026-10-22'
+- product: Amazon RDS for SQL Server
+  limit: maximum connections (configurable)
+  value: 0–32767
+  kind: configurable
+  setting: user connections
+  url: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_Limits.html
+  quote: SQL Server | user connections | 0–32767 | 0 (unlimited) | Maximum number of concurrent connections
+  ask: how many connections are free for the CDC reader?
+  checked: '2026-10-22'
+- product: Amazon RDS for Oracle
+  limit: maximum user processes
+  value: 80–20000
+  kind: configurable
+  setting: processes
+  url: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_Limits.html
+  quote: Oracle | processes | 80–20000 | LEAST( { DBInstanceClassMemory/9868951}, 20000) | User processes
+  ask: how many sessions are free for the CDC reader?
+  checked: '2026-10-22'
+- product: Amazon RDS for Oracle
+  limit: maximum database sessions
+  value: 100–65535
+  kind: configurable
+  setting: sessions
+  url: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_Limits.html
+  quote: Oracle | sessions | 100–65535 | Not applicable | User and system sessions
+  ask: how many sessions are free for the CDC reader?
+  checked: '2026-10-22'
+- product: Amazon RDS (all engines)
+  limit: DB instances per region
+  value: '40'
+  kind: soft
+  url: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_Limits.html
+  quote: total of 40 DB instances. RDS DB instances, Aurora DB instances, Amazon Neptune instances, and Amazon DocumentDB instances apply to this quota
+  ask: how many RDS instances in the region? raisable through Service Quotas
+  checked: '2026-10-22'
+- product: Amazon RDS (all engines)
+  limit: total storage per region (EBS)
+  value: 100000 GB (100 TB)
+  kind: soft
+  url: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_Limits.html
+  quote: maximum total storage (in GB) on EBS volumes for all Amazon RDS DB instances added together. This quota does not apply to Amazon Aurora
+  ask: how much RDS storage is already used in the region? raisable through Service Quotas
+  checked: '2026-10-22'
+- product: Amazon Aurora
+  limit: cluster storage capacity
+  value: 128 TiB
+  kind: hard
+  url: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_Limits.html
+  quote: maximum cluster volume of 128 TiB for each DB cluster
+  ask: 'more than 128 TiB in one Aurora cluster isn''t possible: how is it split?'
+  checked: '2026-10-22'
+- product: Amazon Aurora
+  limit: read replicas per primary DB instance
+  value: '15'
+  kind: hard
+  url: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_Limits.html
+  quote: maximum number of read replicas per primary DB instance. This quota cant be adjusted for Amazon Aurora
+  ask: will CDC read a replica? how many replicas exist?
+  checked: '2026-10-22'
+- product: Amazon RDS for Db2
+  limit: maximum connections
+  value: '64000'
+  kind: hard
+  url: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_Limits.html
+  quote: For Db2, you can't set maximum connections. The limit is 64000.
+  ask: how many connections are free for the CDC reader?
+  checked: '2026-10-22'
+- product: Google Cloud SQL for PostgreSQL
+  limit: maximum table size
+  value: 32 TB
+  kind: hard
+  url: https://cloud.google.com/sql/docs/postgres/quotas
+  quote: The maximum table size for Cloud SQL for PostgreSQL is 32 TB. When a table size reaches 32 TB, no additional data can be added
+  ask: how big is the largest table?
+  checked: '2026-10-22'
+- product: Google Cloud SQL (dedicated core)
+  limit: maximum instance storage
+  value: 64 TB
+  kind: hard
+  url: https://cloud.google.com/sql/docs/postgres/quotas
+  quote: 'Cloud SQL storage limits Dedicated core: Up to 64 TB'
+  ask: how big is the instance? more than the tier's cap means several instances
+  checked: '2026-10-22'
+- product: Google Cloud SQL (shared core)
+  limit: maximum instance storage
+  value: 3 TB
+  kind: hard
+  url: https://cloud.google.com/sql/docs/postgres/quotas
+  quote: 'Shared core: Up to 3 TB. See Instance pricing for more information'
+  ask: how big is the instance? more than the tier's cap means several instances
+  checked: '2026-10-22'
+- product: Azure SQL Database (General Purpose, Business Critical)
+  limit: maximum database storage
+  value: 4 TB
+  kind: hard
+  url: https://learn.microsoft.com/en-us/azure/azure-sql/database/service-tiers-sql-database-vcore
+  quote: Storage size | 1 GB - 4 TB | 1 GB - 4 TB
+  ask: how big is the database, and which service tier?
+  checked: '2026-10-22'
+- product: Azure SQL Database (Hyperscale)
+  limit: maximum database storage
+  value: 128 TB
+  kind: hard
+  url: https://learn.microsoft.com/en-us/azure/azure-sql/database/service-tiers-sql-database-vcore
+  quote: Maximum data storage size is set to 128 TB and isn't configurable
+  ask: how big is the database, and which service tier?
+  checked: '2026-10-22'
+- product: Azure SQL Database (Hyperscale)
+  limit: maximum elastic pool size
+  value: 100 TB
+  kind: hard
+  url: https://learn.microsoft.com/en-us/azure/azure-sql/database/service-tier-hyperscale
+  quote: up to 128 TB of database or 100 TB elastic pool size. Higher overall performance
+  ask: is it in an elastic pool? how big is the pool?
+  checked: '2026-10-22'
+- product: Azure SQL Managed Instance
+  limit: maximum instance storage (General Purpose)
+  value: 32 TB
+  kind: hard
+  url: https://learn.microsoft.com/en-us/azure/azure-sql/managed-instance/resource-limits
+  quote: 'General Purpose: up to 32 TB'
+  ask: how big is the managed instance, and which tier?
+  checked: '2026-10-22'
+- product: Azure SQL Managed Instance
+  limit: maximum instance storage (Business Critical)
+  value: 16 TB
+  kind: hard
+  url: https://learn.microsoft.com/en-us/azure/azure-sql/managed-instance/resource-limits
+  quote: 'Business Critical: up to 16 TB'
+  ask: how big is the managed instance, and which tier?
+  checked: '2026-10-22'
+- product: Azure SQL Database (Logical Server)
+  limit: maximum databases per server
+  value: '5000'
+  kind: hard
+  url: https://learn.microsoft.com/en-us/azure/azure-sql/database/resource-limits-logical-server
+  quote: Databases per logical server | 5000 | Default number of logical servers
+  ask: how many databases on the logical server?
+  checked: '2026-10-22'
+- product: Azure Database for PostgreSQL Flexible Server
+  limit: maximum connections (B12ms+)
+  value: '5000'
+  kind: hard
+  url: https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/concepts-limits
+  quote: Maximum user connections by 15 from the total maximum connections
+  ask: how many connections are free for the CDC reader?
+  checked: '2026-10-22'
+- product: Azure Database for PostgreSQL Flexible Server
+  limit: storage scaling behavior
+  value: 2x increments only
+  kind: hard
+  url: https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/concepts-limits
+  quote: Server storage can only be scaled in 2x increments. See Storage for details
+  ask: how much headroom for WAL while CDC is stopped?
+  checked: '2026-10-22'
+- product: Azure Database for PostgreSQL Flexible Server
+  limit: storage reduction capability
+  value: not supported
+  kind: hard
+  url: https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/concepts-limits
+  quote: Decreasing the server storage size isn't supported
+  ask: 'storage only grows: plan the test''s size up front'
+  checked: '2026-10-22'
+- product: Azure Database for PostgreSQL Flexible Server
+  limit: read-only mode threshold
+  value: 95% storage
+  kind: behavior
+  url: https://learn.microsoft.com/en-us/azure/postgresql/flexible-server/concepts-limits
+  quote: storage usage reaches 95% or if the available capacity is less than 5 GiB
+  ask: how much free storage is there? a slot holding WAL can make the server read-only
+  checked: '2026-10-22'
+- product: Azure SQL Database (Hyperscale)
+  limit: log rate (other hardware)
+  value: 100 MiB/s
+  kind: hard
+  url: https://learn.microsoft.com/en-us/azure/azure-sql/database/resource-limits-logical-server
+  quote: Hyperscale service tier provides 100 MiB/s log rate per database and 125 MiB/s per elastic pool
+  ask: what change rate (MiB/s of log) at peak?
+  checked: '2026-10-22'
+- product: Amazon RDS (PostgreSQL, MySQL, MariaDB, Db2)
+  limit: storage per DB instance
+  value: 64 TiB
+  kind: hard
+  url: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_Storage.html
+  quote: You can create Db2, MySQL, MariaDB, and PostgreSQL RDS DB instances with up to 64 tebibytes (TiB) of storage
+  ask: 'more than 64 TiB on RDS PostgreSQL or MySQL can''t be one instance: is it Aurora (128 TiB), self-managed, or several instances?'
+  checked: 2026-10-22
+- product: Amazon RDS (Oracle, SQL Server)
+  limit: storage per DB instance, with additional storage volumes
+  value: 256 TiB
+  kind: hard
+  url: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_Storage.html
+  quote: You can create Oracle and SQL Server instances with up to 256 TiB of storage with additional storage volumes
+  ask: 'over 64 TiB: are additional storage volumes attached?'
+  checked: 2026-10-22

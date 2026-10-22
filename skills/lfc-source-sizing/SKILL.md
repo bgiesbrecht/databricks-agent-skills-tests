@@ -52,3 +52,19 @@ Tested: a Postgres table with 2,000,000 rows whose statistics said 1,000,000 (ha
 - **MySQL:** every user database in one run. `data_length` is the clustered index, rows and large values together, so large values aren't split out. Run `ANALYZE TABLE` first, or set `information_schema_stats_expiry = 0` in a session, for current figures; `remote_query` can't set it.
 - **SQL Server:** one database per run. Needs `VIEW DATABASE STATE` (the Lakeflow utility script's `lakeflowFixPermissions` grants what's needed). In-row data, LOB and row-overflow pages are reported separately.
 - **Oracle:** a connection whose `service_name` is the **PDB**: a connection on the CDB service (as integrated CDC needs) puts `remote_query` in `CDB$ROOT`, where the PDB's tables don't exist, whatever `service_name =>` argument you pass (tested). Needs `SELECT` on the `DBA_` views (the Databricks Oracle setup package grants it).
+
+## Is it possible? Documented limits
+
+Before planning a test or a pipeline around a stated size or table count, check it against the documented limits in [references/limits.md](references/limits.md): the engines, the managed services, Debezium, and Databricks itself. Each row has its kind (hard, soft: raised on request, configurable, recommended, behavior) and the question it raises. For example:
+
+- "100 TB on RDS for PostgreSQL" can't be one instance (RDS caps PostgreSQL and MySQL at 64 TiB): ask whether it's Aurora (128 TiB a cluster), self-managed, or several instances. Self-managed PostgreSQL has no database size limit, but one table can't pass 32 TB: ask for the largest table.
+- "8,000 tables": a schema holds 10,000 tables (soft, the account team raises it) and each source table makes 2 silver tables, so plan several schemas or ask; a pipeline holds 1,000 tables (hard), and the SQL Server connector recommends 250 or fewer a pipeline.
+
+The rows are in `references/limits/*.yaml`, each with the page it comes from and a quote from it. [scripts/limits-check.py](scripts/limits-check.py) fetches each page and checks that the quote is still there (a page that changed, or moved, fails); `--find <url> <words>` prints a page's text to quote from; `--markdown` regenerates the tables.
+
+```bash
+python3 scripts/limits-check.py references/limits/*.yaml --cache /tmp/limits-cache            # PASS / FAIL per row
+python3 scripts/limits-check.py --find https://www.postgresql.org/docs/current/limits.html "relation size"
+```
+
+Not covered yet: MySQL's own documentation (it refuses scripted fetches, so MySQL rows come from the managed services' pages), MariaDB, Db2, YugabyteDB and Kafka. Add rows the same way, checked, in the same pull request as the test that needed them.

@@ -1,0 +1,347 @@
+# Documented limits: databricks. Each quote is on its page: check with scripts/limits-check.py.
+- product: Databricks
+  limit: Unity Catalog tables per metastore
+  value: 1,000,000
+  kind: hard
+  url: https://docs.databricks.com/aws/en/resources/limits
+  quote: Unity Catalog | Table | 1,000,000 | Metastore | Yes
+  ask: how many tables in total across every source and silver/gold?
+  checked: '2026-10-22'
+- product: Databricks
+  limit: Unity Catalog tables per schema
+  value: 10,000
+  kind: soft
+  note: 'raised on request through the Databricks account team (Fixed: No)'
+  url: https://docs.databricks.com/aws/en/resources/limits
+  quote: Unity Catalog | Table | 10,000 | Schema | No
+  ask: more than about 5,000 source tables into one schema (each makes 2 silver tables)? split schemas, or ask the account team to raise it
+  checked: '2026-10-22'
+- product: Databricks
+  limit: Unity Catalog volumes per schema
+  value: 10,000
+  kind: soft
+  note: 'raised on request through the Databricks account team (Fixed: No)'
+  url: https://docs.databricks.com/aws/en/resources/limits
+  quote: Unity Catalog | Volume | 10,000 | Schema | No
+  ask: one staging volume per table or per source?
+  checked: '2026-10-22'
+- product: Databricks
+  limit: Unity Catalog volumes per metastore
+  value: 100,000
+  kind: soft
+  note: 'raised on request through the Databricks account team (Fixed: No)'
+  url: https://docs.databricks.com/aws/en/resources/limits
+  quote: Unity Catalog | Volume | 100,000 | Metastore | No
+  ask: how many volumes across all schemas?
+  checked: '2026-10-22'
+- product: Databricks
+  limit: Lakeflow pipelines tables per pipeline
+  value: 1,000
+  kind: hard
+  url: https://docs.databricks.com/aws/en/resources/limits
+  quote: Lakeflow pipelines | Number of tables per pipeline | 1,000 | Pipeline | Yes
+  ask: more than about 500 source tables (2 tables each in a pipeline)? split them over pipelines
+  checked: '2026-10-22'
+- product: Databricks
+  limit: Lakeflow pipelines saved pipelines
+  value: 12,000
+  kind: hard
+  url: https://docs.databricks.com/aws/en/resources/limits
+  quote: Lakeflow pipelines | Saved pipelines | 12,000 | Workspace | Yes | Includes active and inactive pipelines
+  ask: 'one pipeline per source or per table group: how many in total?'
+  checked: '2026-10-22'
+- product: Databricks
+  limit: Lakeflow pipelines concurrent updates
+  value: 1,000
+  kind: hard
+  url: https://docs.databricks.com/aws/en/resources/limits
+  quote: Lakeflow pipelines | Concurrent pipeline updates | 1,000 | Workspace | Yes
+  ask: how many pipelines update at the same time?
+  checked: '2026-10-22'
+- product: Databricks
+  limit: SQL Statement Execution API result payload
+  value: 25 MiB
+  kind: hard
+  url: https://docs.databricks.com/aws/en/dev-tools/sql-execution-tutorial
+  quote: If you attempt to return data results larger than 25 MiB in the response payload, a failure status is returned and the SQL statement is canceled
+  ask: a result over 25 MiB inline? use EXTERNAL_LINKS
+  checked: '2026-10-22'
+- product: Databricks
+  limit: Jobs tasks running simultaneously
+  value: 2,000
+  kind: hard
+  url: https://docs.databricks.com/aws/en/resources/limits
+  quote: Jobs | Tasks running simultaneously | 2,000 | Workspace | Yes
+  ask: how many jobs or tasks (MERGE jobs, fan-out) run at once?
+  checked: '2026-10-22'
+- product: Databricks
+  limit: Jobs saved jobs
+  value: 12,000
+  kind: hard
+  url: https://docs.databricks.com/aws/en/resources/limits
+  quote: Jobs | Saved jobs | 12,000 | Workspace | Yes
+  ask: 'one job per source or per shard: how many in total?'
+  checked: '2026-10-22'
+- product: Databricks
+  limit: Unity Catalog catalogs per metastore
+  value: 1,000
+  kind: soft
+  note: 'raised on request through the Databricks account team (Fixed: No)'
+  url: https://docs.databricks.com/aws/en/resources/limits
+  quote: Unity Catalog | Catalog | 1,000 | Metastore | No
+  ask: one catalog per source system or per environment?
+  checked: '2026-10-22'
+- product: Databricks
+  limit: Unity Catalog schemas per catalog
+  value: 10,000
+  kind: soft
+  note: 'raised on request through the Databricks account team (Fixed: No)'
+  url: https://docs.databricks.com/aws/en/resources/limits
+  quote: Unity Catalog | Schema | 10,000 | Catalog | No
+  ask: 'one schema per source database: how many databases?'
+  checked: '2026-10-22'
+- product: Databricks
+  limit: Unity Catalog connections per metastore
+  value: 1,000
+  kind: soft
+  note: 'raised on request through the Databricks account team (Fixed: No)'
+  url: https://docs.databricks.com/aws/en/resources/limits
+  quote: Unity Catalog | Connection | 1,000 | Metastore | No
+  ask: 'one connection per source host: how many hosts?'
+  checked: '2026-10-22'
+- product: Databricks
+  limit: Managed disaster recovery catalogs per failover group
+  value: '10'
+  kind: soft
+  note: 'raised on request through the Databricks account team (Fixed: No)'
+  url: https://docs.databricks.com/aws/en/resources/limits
+  quote: Managed disaster recovery | Catalogs | 10 | Failover group | No
+  ask: is disaster recovery in scope? how many catalogs fail over together?
+  checked: '2026-10-22'
+- product: Databricks
+  limit: Unity Catalog columns per table
+  value: 32,768
+  kind: hard
+  url: https://docs.databricks.com/aws/en/resources/limits
+  quote: Unity Catalog | Column | 32,768 | Table | Yes
+  ask: any source table wider than 32,768 columns?
+  checked: '2026-10-22'
+- product: Databricks
+  limit: Secrets scopes per workspace
+  value: 1,000
+  kind: soft
+  note: 'raised on request through the Databricks account team (Fixed: No)'
+  url: https://docs.databricks.com/aws/en/resources/limits
+  quote: Secrets | Scopes | 1,000 | Workspace | No
+  ask: one secret scope per source?
+  checked: '2026-10-22'
+- product: Databricks
+  limit: API request rate limits for workspace APIs
+  value: 50 requests per second
+  kind: hard
+  url: https://docs.databricks.com/aws/en/resources/limits
+  quote: Workspace API | /workspace/list requests per second | 50 | Workspace | Yes
+  ask: does automation create or poll many objects at once?
+  checked: '2026-10-22'
+- product: Lakeflow Connect PostgreSQL
+  limit: Tables per pipeline with same name
+  value: 0 (not allowed)
+  kind: behavior
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/postgresql-limits
+  quote: Databricks can't ingest two or more tables with the same name in the same pipeline, even if they come from different source schemas
+  ask: do several source schemas share table names? they need separate pipelines
+  checked: '2026-10-22'
+- product: Lakeflow Connect PostgreSQL
+  limit: Replication slots management
+  value: manual cleanup required
+  kind: behavior
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/postgresql-limits
+  quote: Replication slots are not automatically removed when you delete pipelines. You must manually clean up replication slots to prevent WAL accumulation
+  ask: who removes the slot when a pipeline is deleted? an orphaned slot keeps WAL growing
+  checked: '2026-10-22'
+- product: Lakeflow Connect PostgreSQL
+  limit: Failover recovery requirement
+  value: full refresh required
+  kind: behavior
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/postgresql-limits
+  quote: If the primary PostgreSQL node is demoted or replaced (for example, during a failover), the replication slot information is lost. This results in a slot not found error that requires a full refresh
+    of all tables in the pipeline
+  ask: does the source fail over (HA, managed service)? a failover means a full refresh of the pipeline's tables
+  checked: '2026-10-22'
+- product: Lakeflow Connect PostgreSQL
+  limit: Replica identity requirement
+  value: FULL or DEFAULT required
+  kind: behavior
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/postgresql-limits
+  quote: Each table that you replicate must have its replica identity set to FULL or DEFAULT. Databricks recommends using FULL replica identity for tables without primary keys or with TOASTable columns
+  ask: which tables have no primary key, or TOASTed columns? set REPLICA IDENTITY FULL
+  checked: '2026-10-22'
+- product: Lakeflow Connect PostgreSQL
+  limit: New column backfill
+  value: not automatic
+  kind: behavior
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/postgresql-limits
+  quote: If you select a column after a pipeline has already started, the connector does not automatically backfill data for the new column. To ingest historical data, manually run a full refresh on the
+    table
+  ask: are columns added often? historical values need a full refresh of the table
+  checked: '2026-10-22'
+- product: Lakeflow Connect PostgreSQL
+  limit: Cursor columns requirement
+  value: monotonically increasing
+  kind: behavior
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/postgresql-limits
+  quote: The source system assumes that the cursor columns are monotonically increasing
+  ask: 'query-based: which column only ever increases (updated_at, an ID)?'
+  checked: '2026-10-22'
+- product: Lakeflow Connect SQL Server
+  limit: Pipeline gateway association
+  value: exactly one per pipeline
+  kind: hard
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/sql-server-limits
+  quote: Each ingestion pipeline must be associated with exactly one ingestion gateway. Gateways cannot be shared across pipelines
+  ask: several pipelines on one source need a gateway each (classic compute)
+  checked: '2026-10-22'
+- product: Lakeflow Connect SQL Server
+  limit: Failover recovery requirement
+  value: full refresh required
+  kind: behavior
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/sql-server-limits
+  quote: Any source node change, including an AG failover, requires a full refresh of all tables in the pipeline
+  ask: does the source fail over (HA, managed service)? a failover means a full refresh of the pipeline's tables
+  checked: '2026-10-22'
+- product: Lakeflow Connect SQL Server
+  limit: CDC version support
+  value: SQL Server 2012 SP1 CU3 or above
+  kind: hard
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/sql-server-limits
+  quote: 'To use Microsoft change data capture (CDC): You must have SQL Server 2012 service pack 1 (SP1) cumulative update package 3 (CU3) or above'
+  ask: which SQL Server version and edition?
+  checked: '2026-10-22'
+- product: Lakeflow Connect SQL Server
+  limit: Change tracking version support
+  value: SQL Server 2012 or above
+  kind: hard
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/sql-server-limits
+  quote: To use Microsoft change tracking, you must have SQL Server 2012 or above
+  ask: 'change tracking or CDC: which version?'
+  checked: '2026-10-22'
+- product: Lakeflow Connect (SQL Server)
+  limit: tables per ingestion pipeline
+  value: 250 or fewer
+  kind: recommended
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/sql-server-limits
+  quote: Databricks recommends ingesting 250 or fewer tables per pipeline
+  ask: 'how many tables? more than 250: plan several pipelines'
+  checked: 2026-10-22
+- product: Lakeflow Connect (SQL Server)
+  limit: rows and columns per table
+  value: no limit
+  kind: behavior
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/sql-server-limits
+  quote: there is no limit on the number of rows or columns that are supported within these objects
+  checked: 2026-10-22
+- product: Lakeflow Connect (SQL Server)
+  limit: source instance
+  value: primary only
+  kind: behavior
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/sql-server-limits
+  quote: change tracking and change data capture are not supported on read replicas or secondary instances
+  ask: can the gateway read the primary? a read replica or secondary won't do
+  checked: 2026-10-22
+- product: Lakeflow Connect (SQL Server)
+  limit: gateway mode
+  value: continuous
+  kind: behavior
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/sql-server-limits
+  quote: The ingestion gateway must run in continuous mode to avoid changes being dropped due to log retention
+  ask: how long is CDC or change-tracking retention on the source?
+  checked: 2026-10-22
+- product: Lakeflow Connect (database connectors)
+  limit: gateways per pipeline
+  value: exactly one, not shared
+  kind: hard
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/mysql-limits
+  quote: Each ingestion pipeline must be associated with exactly one ingestion gateway
+  ask: several pipelines for one source each need their own gateway (classic compute)
+  checked: 2026-10-22
+- product: Lakeflow Connect (database connectors)
+  limit: gateway compute
+  value: classic
+  kind: behavior
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/mysql-limits
+  quote: the ingestion gateway must run on classic compute
+  ask: does the workspace allow classic compute? a serverless-only workspace can't run the gateway
+  checked: 2026-10-22
+- product: Lakeflow Connect (database connectors)
+  limit: table names in one pipeline
+  value: unique, across source schemas
+  kind: behavior
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/oracle-limits
+  quote: Databricks can't ingest two or more tables with the same name in the same pipeline, even if they come from different source schemas
+  ask: do several source schemas share table names? they need separate pipelines
+  checked: 2026-10-22
+- product: Lakeflow Connect (MySQL)
+  limit: binary log format
+  value: binlog_format=ROW, binlog_row_image=FULL
+  kind: configurable
+  setting: binlog_format, binlog_row_image
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/mysql-limits
+  quote: Binary logging must be enabled with binlog_format=ROW and binlog_row_image=FULL
+  ask: what are binlog_format and binlog_row_image now?
+  checked: 2026-10-22
+- product: Lakeflow Connect (MySQL)
+  limit: binlog purged before it's read
+  value: full refresh of every table in the pipeline
+  kind: behavior
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/mysql-limits
+  quote: If the binlog is purged before the gateway processes changes, you must perform a full refresh of all tables in the pipeline
+  ask: how long is binlog retention? it bounds how long the gateway can be down
+  checked: 2026-10-22
+- product: Lakeflow Connect (MySQL)
+  limit: spatial types
+  value: not supported
+  kind: hard
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/mysql-limits
+  quote: Spatial data type columns are not supported and can't be ingested
+  ask: any spatial columns?
+  checked: 2026-10-22
+- product: Lakeflow Connect (Oracle)
+  limit: versions
+  value: 12c and above
+  kind: hard
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/oracle-limits
+  quote: The connector supports Oracle versions 12c and above
+  ask: which Oracle version?
+  checked: 2026-10-22
+- product: Lakeflow Connect (Oracle)
+  limit: RAC
+  value: not supported
+  kind: hard
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/oracle-limits
+  quote: Oracle Real Application Clusters (RAC) is not supported, including Exadata in a RAC configuration
+  ask: is it RAC or Exadata RAC?
+  checked: 2026-10-22
+- product: Lakeflow Connect (Oracle)
+  limit: deployments not supported
+  value: physical standby, Autonomous Database, multi-tenant RDS for Oracle
+  kind: hard
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/oracle-limits
+  quote: 'The following Oracle deployments are also not supported: physical standby, Oracle Autonomous Database, and multi-tenant Amazon RDS for Oracle instances'
+  ask: where does the database run?
+  checked: 2026-10-22
+- product: Lakeflow Connect (Oracle)
+  limit: table and column name length (LogMiner)
+  value: 30 characters
+  kind: hard
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/oracle-limits
+  quote: LogMiner requires tables or column names to not exceed 30 characters
+  ask: any table or column names longer than 30 characters?
+  checked: 2026-10-22
+- product: Lakeflow Connect (Oracle)
+  limit: tables per pipeline
+  value: the pipelines limit
+  kind: hard
+  url: https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/oracle-limits
+  quote: The maximum number of tables per pipeline is the same as the limit for Spark Declarative Pipelines on Lakeflow
+  ask: 'see Lakeflow pipelines: 1,000 tables per pipeline'
+  checked: 2026-10-22
