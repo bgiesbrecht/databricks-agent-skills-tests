@@ -57,7 +57,8 @@ def bq(n):   # a Databricks identifier
 
 
 def vpath(base, n):   # a VARIANT field: the plain form for simple names, brackets otherwise
-    return f"{base}:{n}" if re.fullmatch(r"[a-z_][a-z0-9_]*", n) else f"{base}['{n}']"
+    # a bracket right after a column is a map's; on a VARIANT column it follows a colon (key:['SK_TimeID'])
+    return f"{base}:{n}" if re.fullmatch(r"[a-z_][a-z0-9_]*", n) else f"{base}{'' if ':' in base else ':'}['{n}']"
 
 
 class Model:

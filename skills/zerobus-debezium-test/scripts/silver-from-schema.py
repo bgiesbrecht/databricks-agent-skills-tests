@@ -10,11 +10,15 @@
 #
 # For every table in <volume>/_schema/schema.yaml (or _schema/tables/<table>.yaml, which wins: one table's evolved
 # schema, written without touching the others) it defines, when the pipeline starts:
-#   <table>_snapshot        every source's snapshot as of its T, from <volume>/<table>/<prefix>/ (Parquet or CSV)
+#   <table>_snapshot        every source's snapshot as of its T, from <volume>/<table>/<prefix>/ (Parquet or CSV); a
+#                           table with no files there (CockroachDB writes none for an empty table) has an empty one.
+#                           <volume>/_snapshot.tsv (table, prefix, format, files), when there is one, says which do,
+#                           so 10,000s of folders aren't listed when the pipeline starts
 #   <table>_changes         the table's events in the change log, sequenced by the event's position in its source
 #   <table>_changes_dedup   the same, producer replays removed
 #   <table>                 current rows (AUTO CDC, SCD type 1)
-#   <table>_history         every version (AUTO CDC, SCD type 2), replays removed
+#   <table>_history         every version (AUTO CDC, SCD type 2), replays removed; the suffix is cdc.history_suffix
+#                           (default _history; TPC-E has both holding and holding_history, so there it can't be)
 # and, for the table in cdc.nodedup_table, <table>_history_nodedup (SCD type 2 with the replays). A table without a
 # primary key (TPC-B's and TPC-C's history) is append-only: <table> gets the snapshot rows and the inserts, appended.
 # Dates, timestamps and times are decoded from either form a producer sends: text (CockroachDB's changefeed, the
@@ -40,6 +44,7 @@
 #   cdc.bronze_shards     for {shard}: how many (fanout.py writes them with the same rule)
 #   cdc.shard             i/n: this pipeline builds only the tables with crc32(name) % n == i, so 10,000s of tables
 #                         spread over n pipelines (default: every table)
+#   cdc.history_suffix    the SCD type 2 tables' suffix (default _history); a source table with that name stops the start
 #   cdc.nodedup_table, cdc.on_drift (record | fail), cdc.drift_sample (check one event in n for drift, default 1)
 import functools
 import os
@@ -59,6 +64,7 @@ NODEDUP = spark.conf.get("cdc.nodedup_table", "")
 ON_DRIFT = spark.conf.get("cdc.on_drift", "record")
 DRIFT_SAMPLE = int(spark.conf.get("cdc.drift_sample", "1"))
 TRY = ON_DRIFT == "record"
+HIST = spark.conf.get("cdc.history_suffix", "_history")
 
 # the type names the TPC schema files use besides statschema's canonical ones (ddl.py takes the same)
 ALIAS = {"int": "integer", "smallint": "integer", "tinyint": "integer", "bigint": "long", "numeric": "decimal",
@@ -81,7 +87,8 @@ def spark_type(c):
 
 def path(base, n):
     """A VARIANT field: the plain form for simple names, brackets for the rest (TPC-DI's mixed-case names)."""
-    return f"{base}:{n}" if re.fullmatch(r"[a-z_][a-z0-9_]*", n) else f"{base}['{n}']"
+    # a bracket right after a column is a map's; on a VARIANT column it follows a colon (key:['SK_TimeID'])
+    return f"{base}:{n}" if re.fullmatch(r"[a-z_][a-z0-9_]*", n) else f"{base}{'' if ':' in base else ':'}['{n}']"
 
 
 def shard_of(name, n):
@@ -142,8 +149,30 @@ SCHEMA = load()
 if SHARD:
     _i, _n = (int(x) for x in SHARD.split("/"))
     SCHEMA = {t: c for t, c in SCHEMA.items() if shard_of(t, _n) == _i}
+_clash = sorted(t for t in SCHEMA if (t + HIST).lower() in {x.lower() for x in SCHEMA})
+if _clash:
+    raise ValueError(f"cdc.history_suffix {HIST}: {', '.join(t + HIST for t in _clash[:5])} would be a source table too; set another")
 DRIFT = "schema_drift" + (f"_s{SHARD.replace('/', '_of_')}" if SHARD else "")
 _views = set()
+
+
+def _snapshot_files():
+    """{(table, format)} with snapshot files: from _snapshot.tsv, else by listing the volume."""
+    m = f"{VOL}/_snapshot.tsv"
+    if os.path.exists(m):
+        with open(m) as f:
+            return {(r[0], r[2]) for r in (line.rstrip("\n").split("\t") for line in f) if len(r) == 4 and int(r[3]) > 0}
+    out = set()
+    for s in SOURCES:
+        fmt = s.get("format", "parquet")
+        for table in SCHEMA:
+            d = f"{VOL}/{table}/{s['prefix']}"
+            if os.path.isdir(d) and any(n.endswith(f".{fmt}") for n in os.listdir(d)):
+                out.add((table, fmt))
+    return out
+
+
+SNAPSHOT_FILES = _snapshot_files()
 
 
 def bronze_of(table):
@@ -221,7 +250,7 @@ def define(table, cols):
     def snapshot():
         # one Auto Loader stream per format over <volume>/<table>/<prefix>/: the source from the folder, T from _sources
         parts = []
-        for fmt in sorted({s.get("format", "parquet") for s in SOURCES}):
+        for fmt in sorted({s.get("format", "parquet") for s in SOURCES if (table, s.get("format", "parquet")) in SNAPSHOT_FILES}):
             r = (spark.readStream.format("cloudFiles").option("cloudFiles.format", fmt)
                  .option("pathGlobFilter", f"*.{fmt}"))
             if fmt == "csv":
@@ -231,6 +260,10 @@ def define(table, cols):
             parts.append(df.select(*[F.expr(snap(c, have)).alias(c["name"]) for c in cols],
                                    F.regexp_extract(F.col("_metadata.file_path"), f"/{re.escape(table)}/([^/]+)/", 1)
                                    .alias("_source")))
+        if not parts:   # no snapshot files: no rows at T; an empty stream of the view's columns (no join: it folds away)
+            return spark.readStream.table(norm).where("false").select(
+                *[F.expr(f"CAST(NULL AS {spark_type(c)})").alias(c["name"]) for c in cols], F.lit(None).cast("string").alias("_source"),
+                F.lit(0).cast("bigint").alias("_seq"), F.lit("read").alias("_op"))
         t = spark.createDataFrame([(s["prefix"], int(s["t_ns"])) for s in SOURCES], "_source STRING, _seq BIGINT")
         return (functools.reduce(lambda a, b: a.unionByName(b), parts).join(F.broadcast(t), "_source")
                 .select(*names, "_source", "_seq", F.lit("read").alias("_op")))
@@ -238,25 +271,29 @@ def define(table, cols):
     def changes(view):
         return spark.readStream.table(view).where(mine).select(*chg_cols, src, F.col("_seq"), F.col("operation").alias("_op"))
 
+    # a TIMESTAMP_NTZ column needs its Delta table feature enabled (an append-only table's create fails without it)
+    props = {"delta.feature.timestampNtz": "supported"} if any(spark_type(c) == "TIMESTAMP_NTZ" for c in cols) else {}
     dp.temporary_view(name=f"{table}_changes")(lambda: changes(norm))
     if TRY:
         drift(table, cols, pk, norm, mine, src)
     if not pk:   # append-only: the snapshot rows, then each insert (a table without a key gets no updates or deletes)
-        dp.create_streaming_table(name=table)
-        dp.append_flow(target=table, name=f"{table}_from_snapshot")(
+        dp.create_streaming_table(name=table, table_properties=props)
+        dp.append_flow(target=table, name=f"{table}_from_snapshot")(   # not once: a once append flow takes a batch only
             lambda: spark.readStream.table(f"{table}_snapshot").drop("_seq", "_op"))
         dp.append_flow(target=table, name=f"{table}_from_changes")(
             lambda: spark.readStream.table(f"{table}_changes").where("_op = 'create'").drop("_seq", "_op"))
         return
     dp.temporary_view(name=f"{table}_changes_dedup")(lambda: changes(f"_dedup_{bronze_of(table)}"))
 
-    targets = [(table, 1, f"{table}_changes"), (f"{table}_history", 2, f"{table}_changes_dedup")]
+    targets = [(table, 1, f"{table}_changes"), (f"{table}{HIST}", 2, f"{table}_changes_dedup")]
     if table == NODEDUP:
-        targets.append((f"{table}_history_nodedup", 2, f"{table}_changes"))
+        targets.append((f"{table}{HIST}_nodedup", 2, f"{table}_changes"))
     for target, scd, change_view in targets:
-        dp.create_streaming_table(name=target, cluster_by=keys)
+        dp.create_streaming_table(name=target, cluster_by=keys, table_properties=props)
+        # once: the snapshot is loaded on the first update only (and again on a full refresh), so later updates don't
+        # start a snapshot stream per table
         dp.create_auto_cdc_flow(name=f"{target}_from_snapshot", target=target, source=f"{table}_snapshot", keys=keys,
-                                sequence_by="_seq", except_column_list=["_seq", "_op"], stored_as_scd_type=scd)
+                                sequence_by="_seq", except_column_list=["_seq", "_op"], stored_as_scd_type=scd, once=True)
         dp.create_auto_cdc_flow(name=f"{target}_from_changes", target=target, source=change_view, keys=keys,
                                 sequence_by="_seq", apply_as_deletes=F.expr("_op = 'delete'"),
                                 except_column_list=["_seq", "_op"], stored_as_scd_type=scd)

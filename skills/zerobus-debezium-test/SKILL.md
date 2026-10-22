@@ -103,6 +103,49 @@ In the test:
   - `evolve-<n>`: the union changed only that table;
   - then silver equals each source on that source's own columns.
 
+## Many tables: silver by pipeline or by MERGE
+
+`MIX=N` builds N tables from copies of the TPC models (`scripts/mix-models.py`: `tpcb001_branch` ... `tpcdi085_DimMessage`, 95 tables a copy). The settings for this test:
+
+| Setting | What it does |
+|---|---|
+| `EMPTY=1` | Creates the tables with no rows (no fill.py, and the datagen tags are left out of the DDL) |
+| `FKS=0` | Leaves the foreign keys out. CockroachDB takes about 0.2 s to add each one, against about 0.015 s to create a table |
+| `ROUNDS=0` | No changes. The run stops after the snapshot and silver's first update, then checks every silver table at once (columns and row counts against the source), times a second update with nothing new, and checks that each producer is streaming |
+| `PIPES=K` | K silver pipelines (or K MERGE jobs), each with the tables of `crc32(name) % K` |
+| `SILVER=merge` | Silver without a pipeline: `scripts/merge-silver.py` as a serverless job, with MERGE instead of AUTO CDC (`ROUNDS=0`, `BRONZE=shared` only so far) |
+| `DBZ_SHARDS=K` | K Debezium Servers per source, each with the tables of `crc32(name) % K` |
+
+`ROUNDS=0 PHASE=1` runs the producers only.
+
+`merge-silver.py` reads the same volume as the pipeline: `_sources.yaml`, `_schema/` and `_snapshot.tsv`. One stream reads the change log, and each micro-batch MERGEs only the tables it has events for:
+- **Current rows** take each key's newest change, applied only when it's newer than the row.
+- **Deletes** leave a row in `_cdc_tombstones`, so a replayed older change can't bring the row back.
+- **History:** each new version closes the open one; a replayed version isn't inserted twice.
+- Tables have row tracking and deletion vectors on, so a materialized view over them can refresh incrementally.
+
+Not handled yet: a version older than one already in the history, and schema drift.
+
+Runs on the Azure VM, empty tables, 2026-10-22:
+
+| Source tables | Silver tables | Pipeline: first update | MERGE: first run | MERGE: second run, no changes |
+|---|---|---|---|---|
+| 10 | 18 | 191 s | 78 s | |
+| 100 | 196 | 1184 s (657 s `INITIALIZING`); with the snapshot flows `once`: 1110 s, then 704 s for an update with no changes | 108 s | |
+| 1000 | 1968 | 3310 s, on 4 pipelines of about 250 tables (about 1200 s `INITIALIZING` each) | 323 s | |
+| 2000 | 3936 | | 540 s | 78 s |
+| 4000 | 7872 | | 1201 s | 78 s |
+
+A pipeline declares every table, view and flow when each update starts. Resolving that graph took about 7 minutes per update at 100 tables, even with no changes. MERGE declares nothing per table; a run with no changes takes the same time at any table count.
+
+Found on the way, and fixed:
+- TPC-E has both `holding` and `holding_history`, so the history tables' suffix is a setting (`cdc.history_suffix`); the run uses `__history` when `_history` would clash with a source table.
+- On a VARIANT column a bracketed field follows a colon: `key:['SK_TimeID']`.
+- An append-only table with a `TIMESTAMP_NTZ` column needs the `timestampNtz` table feature turned on.
+- A `once` append flow takes a batch source only, so only the AUTO CDC snapshot flows are `once`.
+
+**Producer limit.** Debezium Server 3.7.0 waits a fixed 40 s for its connector task to start, and doesn't read `task.management.timeout.ms`: the log says "Waiting max. for 40000 ms" whatever it's set to. At start, the CockroachDB connector runs the JDBC column-metadata query once per table, about 0.4 s each on CockroachDB. So one producer takes about 100 to 250 tables: 100 started in 14 s, while 1000 did not, nor did 4 producers of 250 against the one node.
+
 ## Before running
 
 1. **A VM with Podman** from **lfc-source-cloud-vm**, reachable over SSH, with outbound 443.

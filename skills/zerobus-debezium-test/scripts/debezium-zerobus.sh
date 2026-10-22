@@ -24,9 +24,22 @@
 #   shape.py sizes it (SF, default 0.001, for the TPC models' row_count_per_sf), ddl.py writes its DDL, and
 #   lfc-source-datagen's fill.py fills it before T; model-sql.py writes the rounds' changes and the checks' queries
 #   from it, so nothing below names a table or a column. Gold: models/<MODEL>-gold.sql when there is one.
+# MIX=N: N tables from copies of the TPC models (mix-models.py: tpcb001_branch ... tpcdi085_DimMessage), MODEL mix<N>;
+#   for tests of how many tables it takes. EMPTY=1 creates the tables empty (no fill.py; datagen's tags left out of
+#   the DDL); FKS=0 leaves foreign keys out (CockroachDB adds one in about 0.2 s, a table in about 0.015 s).
+# ROUNDS=0: no changes at all; the run stops after the snapshot and silver's first update, and checks every silver
+#   table at once (columns and row counts against the source), in place of rounds 1 to 5. PIPES=K (ROUNDS=0 only so
+#   far) spreads silver over K pipelines, each building the tables with crc32(name) % K == its index (cdc.shard).
+# SILVER=merge (ROUNDS=0 and BRONZE=shared only so far): silver without a pipeline, merge-silver.py as K serverless
+#   jobs (PIPES=K), MERGE in place of AUTO CDC; nothing is declared per table, so start-up doesn't grow with them.
 # Needs: PROFILE (Databricks CLI profile), CATALOG (with its own storage), VM_IP; optional VM_USER (azureuser),
 #   SSH_KEY (~/.ssh/lfc_test_rsa), SRC_IMAGE, DBZ_IMAGE, SRC_PORT (published for the UC connection, default 30026),
-#   WAIT (seconds to wait for rows, default 180), OUT=<file.md>.
+#   WAIT (seconds to wait for rows, default 180), OUT=<file.md>, DBZ_START_TIMEOUT_MS (how long Debezium Server waits for
+#   its connector to start, default 30 minutes), DBZ_EXTRA (more Debezium Server properties, one per line),
+#   DBZ_SHARDS=K (K Debezium Servers per source, each with the tables of crc32(name) % K == k and its own changefeed
+#   from T: one CockroachDB connector with 1000 tables doesn't start within the engine's 40 s, and no property tried
+#   changes that wait).
+# ROUNDS=0 PHASE=1: the producers only: bronze, then whether each producer is streaming.
 # Exit 0 when every claim passed, 1 when one failed, 2 when a prerequisite is missing.
 set -uo pipefail
 export PATH=/opt/homebrew/bin:$PATH
@@ -34,7 +47,7 @@ export PATH=/opt/homebrew/bin:$PATH
 [ -n "${LIMA:-}" ] || : "${VM_IP:?set VM_IP (a cloud VM) or LIMA (a local Lima instance with Podman)}"
 SOURCE=${SOURCE:-crdb}
 # MODEL: which schema the source has, in every name, so a run's tables show which model they hold
-MODEL=${MODEL:-shop}; case $MODEL in *[!a-z0-9]*|"") echo "MODEL: lowercase letters and digits"; exit 2;; esac
+MODEL=${MODEL:-shop}; [ -n "${MIX:-}" ] && MODEL=mix$MIX; case $MODEL in *[!a-z0-9]*|"") echo "MODEL: lowercase letters and digits"; exit 2;; esac
 # NSRC: how many source databases with the model, side by side on the one host (the many-hosts case: identical tables
 # merged into one silver table, keyed by source); database i is <MODEL><i>, its change log destination prefix
 # <SOURCE><i>.<schema>. Rounds 1 to 3 run on every source; round 4's column goes to source 1 only, round 5's changes to
@@ -45,6 +58,11 @@ NSRC=${NSRC:-1}; case $NSRC in *[!0-9]*|""|0) echo "NSRC: 1 or more"; exit 2;; e
 # BRONZE_SHARDS=K, cdc_log_s<k>; silver reads its own), or per-table (the producers write cdc_log_<table> themselves:
 # the Kafka route only; a new table then needs its bronze table and the producer's routing first, so it isn't how
 # tables are added without stopping). ON_DRIFT: record (silver keeps flowing and records drift; the default) or fail.
+EMPTY=${EMPTY:-0}; FKS=${FKS:-1}; ROUNDS=${ROUNDS:-5}; PIPES=${PIPES:-1}
+case $ROUNDS in 0|5) ;; *) echo "ROUNDS: 0 (no changes) or 5"; exit 2;; esac
+[ "$PIPES" -gt 1 ] && [ "$ROUNDS" != 0 ] && { echo "PIPES>1: ROUNDS=0 only so far"; exit 2; }
+SILVER=${SILVER:-pipeline}; case $SILVER in pipeline) ;; merge) [ "$ROUNDS" = 0 ] && [ "${BRONZE:-shared}" = shared ] \
+  || { echo "SILVER=merge: ROUNDS=0 and BRONZE=shared only so far"; exit 2; };; *) echo "SILVER: pipeline or merge"; exit 2;; esac
 BRONZE=${BRONZE:-shared}; BRONZE_SHARDS=${BRONZE_SHARDS:-0}; ON_DRIFT=${ON_DRIFT:-record}
 case $BRONZE in shared|fanout|per-table) ;; *) echo "BRONZE: shared, fanout or per-table"; exit 2;; esac
 SRC_DB=${MODEL}1
@@ -63,7 +81,7 @@ YB_CONNECTOR_URL=${YB_CONNECTOR_URL:-https://github.com/yugabyte/debezium/releas
 CONNECT_IMAGE=${CONNECT_IMAGE:-docker.io/apache/kafka:3.7.2}
 DEST_PREFIX=${SOURCE}1.$SRC_SCHEMA   # the topic prefix and the schema: the change log's destination is <DEST_PREFIX>.<table>
 DBZ_IMAGE=${DBZ_IMAGE:-quay.io/debezium/server:3.7.0.Final}
-WAIT=${WAIT:-180}; PHASE=${PHASE:-3}; CHECK=${CHECK:-$PWD/scripts/scd2-history-check.py}; SRC_PORT=${SRC_PORT:-${CRDB_PORT:-30026}}
+WAIT=${WAIT:-180}; SILVER_WAIT=${SILVER_WAIT:-3600}; PHASE=${PHASE:-3}; [ "$ROUNDS" = 0 ] && [ "$PHASE" -gt 2 ] && PHASE=2; CHECK=${CHECK:-$PWD/scripts/scd2-history-check.py}; SRC_PORT=${SRC_PORT:-${CRDB_PORT:-30026}}
 # PODMAN: rootful, through the root Podman socket, so no sudo (lfc-source-podman ensure-podman-socket.sh sets it up).
 # One store for the databases and the test, so no image is kept twice. PODMAN=podman runs rootless instead.
 PODMAN=${PODMAN:-podman --remote --url unix:///run/podman/podman.sock}
@@ -83,6 +101,7 @@ SCHEMA_VIA=${SCHEMA_VIA:-$([ -n "${LIMA:-}" ] && echo volume || echo connection)
 STATSCHEMA=${STATSCHEMA:-$PWD/../lfc-source-statschema/scripts}; DATAGEN=${DATAGEN:-$PWD/../lfc-source-datagen/scripts}
 HERE=$(cd "$(dirname "$CHECK")" && pwd)
 MODEL_YAML=$HERE/../models/$MODEL.yaml; [ -f "$MODEL_YAML" ] || MODEL_YAML=$STATSCHEMA/../schemas/$MODEL.yaml
+if [ -n "${MIX:-}" ]; then MODEL_YAML=$(mktemp -t mix.XXXXXX); MIXF=$MODEL_YAML; python3 -I "$HERE/mix-models.py" --tables "$MIX" --schemas "$STATSCHEMA/../schemas" > "$MODEL_YAML" || exit 2; fi
 [ -f "$MODEL_YAML" ] || { echo "MODEL $MODEL: no models/$MODEL.yaml, nor lfc-source-statschema schemas/$MODEL.yaml"; exit 2; }
 GOLD_FILE=$HERE/../models/$MODEL-gold.sql; [ -f "$GOLD_FILE" ] || GOLD_FILE=
 SF=${SF:-0.001}
@@ -93,11 +112,11 @@ msel() { python3 -I "$HERE/model-sql.py" "$W/schema-$I.yaml" select "$@" --diale
 # the first table with a primary key: the one the SCD type 2 history without deduplication is built for
 NODEDUP=$(yq -r '[.tables[] | select([.columns[] | select(.primary_key == true)] | length > 0)][0].name' "$MODEL_YAML")
 RESULTS=(); FAILED=0
-claim() { RESULTS+=("| \`$1\` | $2 | $3 |"); [ "$2" = PASS ] || FAILED=1; echo "$2 $1: $3"; }
-observe() { RESULTS+=("| \`$1\` | OBSERVED | $2 |"); echo "OBSERVED $1: $2"; }
+claim() { RESULTS+=("| \`$1\` | $2 | $3 |"); [ "$2" = PASS ] || FAILED=1; echo "$2 $1: $3 [+${SECONDS}s]"; }
+observe() { RESULTS+=("| \`$1\` | OBSERVED | $2 |"); echo "OBSERVED $1: $2 [+${SECONDS}s]"; }
 # link <what> <url>: every Databricks object the run creates gets a clickable link, printed when it's created and kept for
 # the result file (the objects are removed at the end, unless KEEP=1)
-LINKS=(); link() { LINKS+=("- $1: <$2>"); echo "LINK $1: $2"; }
+LINKS=(); link() { LINKS+=("- $1: <$2>"); echo "LINK $1: $2 [+${SECONDS}s]"; }
 # --- pre-flight -------------------------------------------------------------------------------------------------------
 umask 077; W=$(mktemp -d)
 ME=$(dbx current-user me -o json | yq '.userName') || { echo "profile $PROFILE doesn't authenticate"; exit 2; }
@@ -124,11 +143,17 @@ use() { # use <i>: the source the next commands are for
 use 1
 echo "run $E: schema $CATALOG.$S, VM containers $SRCC and $DBZS; $NSRC source database(s), bronze $BRONZE, drift $ON_DRIFT"
 
-sql() {
-  yq -n -o json '.warehouse_id = strenv(WAREHOUSE) | .wait_timeout = "50s" | .statement = strenv(Q)' > "$W/st.json"
-  dbx api post /api/2.0/sql/statements --json @"$W/st.json" > "$W/st.out"
-  [ "$(yq '.status.state' "$W/st.out")" = SUCCEEDED ] || { yq '.status.state + ": " + (.status.error.message // "")' "$W/st.out" | cut -c1-300 >&2; return 1; }
-  yq -r '(.result.data_array // [])[] | @tsv' "$W/st.out"
+sql() { # the statement in Q; waits for it, and reads every chunk of a large result (files of its own: runs in parallel)
+  local f id st k n; f=$(mktemp "$W/st.XXXXXX")
+  yq -n -o json '.warehouse_id = strenv(WAREHOUSE) | .wait_timeout = "50s" | .statement = strenv(Q)' > "$f.json"
+  dbx api post /api/2.0/sql/statements --json @"$f.json" > "$f"
+  id=$(yq '.statement_id' "$f"); st=$(yq '.status.state' "$f")
+  while [ "$st" = PENDING ] || [ "$st" = RUNNING ]; do sleep 5; dbx api get "/api/2.0/sql/statements/$id" > "$f"; st=$(yq '.status.state' "$f"); done
+  [ "$st" = SUCCEEDED ] || { yq '.status.state + ": " + (.status.error.message // "")' "$f" | cut -c1-300 >&2; rm -f "$f" "$f.json"; return 1; }
+  yq -r '(.result.data_array // [])[] | @tsv' "$f"
+  n=$(yq '.manifest.total_chunk_count // 1' "$f")
+  for ((k = 1; k < n; k++)); do dbx api get "/api/2.0/sql/statements/$id/result/chunks/$k" | yq -r '(.data_array // [])[] | @tsv'; done
+  rm -f "$f" "$f.json"
 }
 q() { export Q=$1; sql; }
 # src: SQL from stdin on the source, tab-separated with a header row
@@ -146,14 +171,14 @@ cleanup() {
   [ "${KEEP:-0}" = 1 ] && { echo "KEEP=1: left $CATALOG.$S, SP ${SP_NAME:-}, VM containers and $RD, to inspect:"; printf '%s\n' "${LINKS[@]}"; rm -rf "${W:?}"; return; }
   vm "$PODMAN rm -f --ignore $DBZS $SRCC >/dev/null 2>&1; $PODMAN network rm $NET >/dev/null 2>&1; $(rmc $RD)" || true
   [ -n "${SP_ID:-}" ] && dbx service-principals delete "$SP_ID" >/dev/null 2>&1
-  [ -n "${PIPELINE_ID:-}" ] && dbx pipelines delete "$PIPELINE_ID" >/dev/null 2>&1
-  [ -n "${JOB_ID:-}" ] && dbx jobs delete "$JOB_ID" >/dev/null 2>&1
+  for p in ${PIPELINE_IDS[@]+"${PIPELINE_IDS[@]}"}; do dbx pipelines delete "$p" >/dev/null 2>&1; done
+  for j in ${JOB_ID:-} ${MERGE_JOBS[@]+"${MERGE_JOBS[@]}"}; do dbx jobs delete "$j" >/dev/null 2>&1; done
   [ -n "${CONN:-}" ] && dbx connections delete "$CONN" >/dev/null 2>&1
   [ -n "${WSDIR:-}" ] && dbx workspace delete "$WSDIR" --recursive >/dev/null 2>&1
   dbx schemas delete "$CATALOG.$S" --force >/dev/null 2>&1
   left=$(vm "$PODMAN ps -a --format '{{.Names}}' | grep -c -E '^($(echo $DBZS | tr ' ' '|')|$SRCC)\$'" 2>/dev/null)
-  echo "cleanup: containers left ${left:-?}; SP ${SP_ID:+deleted}; pipeline ${PIPELINE_ID:+deleted}; connection ${CONN:+deleted}; schema dropped"
-  rm -rf "${W:?}"
+  echo "cleanup: containers left ${left:-?}; SP ${SP_ID:+deleted}; pipeline(s) ${PIPELINE_ID:+deleted}; connection ${CONN:+deleted}; schema dropped"
+  rm -rf "${W:?}"; [ -n "${MIXF:-}" ] && rm -f "$MIXF"
 }
 trap cleanup EXIT
 
@@ -171,23 +196,32 @@ fi
 (cd "$STATSCHEMA/.." && uv run -q scripts/shape.py "$MODEL_YAML" --sf "$SF" --expected "$W/expected.json" > "$W/shaped.yaml" 2>"$W/shape.err" \
   && uv run -q scripts/ddl.py "$W/shaped.yaml" --dialect "$([ "$SOURCE" = crdb ] && echo cockroachdb || echo postgres)" > "$W/ddl.sql" 2>>"$W/shape.err") \
   || { echo "model $MODEL: shape.py or ddl.py failed: $(head -c 300 "$W/shape.err")"; exit 2; }
+# EMPTY=1: no datagen tags (COMMENT ON, one line each); FKS=0: no foreign keys (ALTER TABLE ... FOREIGN KEY, one line each)
+{ [ "$EMPTY" = 1 ] && grep -v '^COMMENT ON ' || cat; } < "$W/ddl.sql" | { [ "$FKS" = 0 ] && grep -v -E '^ALTER TABLE .* FOREIGN KEY ' || cat; } > "$W/ddl.run"
+NT=$(yq '.tables | length' "$MODEL_YAML")
 fill() { # fill <host> <port> <user> <password> <schema>: lfc-source-datagen's fill.py, every table to its target
   tar -C "$DATAGEN/python" --exclude __pycache__ -cf - . | vm "umask 077; mkdir -p $RD/datagen && tar -xf - -C $RD/datagen && echo $4 > $RD/datagen.pw" || return 1
   vm "C=\$HOME/.cache/dbz-zerobus; mkdir -p \$C/pip; $PODMAN run --rm --network $NET -v $RD/datagen:/dg:ro,Z -v $RD/datagen.pw:/pw:ro,Z \
     -v \$C/pip:/root/.cache/pip:Z docker.io/library/python:3.12-slim sh -c 'pip install -q --disable-pip-version-check psycopg2-binary \
     && python /dg/fill.py pg $5 --host $1 --port $2 --user $3 --database $SRC_DB --password-file /pw'" > "$W/fill.out" 2>&1
 }
-filled() { # the rows per table, as "table=rows ..."
-  for t in $(yq -r '.tables[].name' "$MODEL_YAML"); do printf '%s=%s ' "$t" "$(echo "SELECT COUNT(*) FROM \"$t\";" | srcq | tail -1)"; done; }
+counts() { # the current source's rows per table, "table<TAB>rows" lines, in one session
+  yq -r '.tables[].name' "$MODEL_YAML" | awk '{printf "SELECT %c%s%c, COUNT(*) FROM \"%s\";\n", 39, $0, 39, $0}' | srcq | grep -v -E '^\?column\?|^table_name' \
+    | awk -F'\t' 'NF == 2 && $2 ~ /^[0-9]+$/'; }
+filled() { # the rows per table, as "table=rows ..." (more than 20 tables: how many, and their rows)
+  counts > "$W/counts-$I.tsv"
+  if [ "$NT" -le 20 ]; then awk -F'\t' '{printf "%s=%s ", $1, $2}' "$W/counts-$I.tsv"
+  else awk -F'\t' '{n++; r += $2; if ($2 == 0) z++} END {printf "%d tables, %d rows, %d empty ", n, r, z}' "$W/counts-$I.tsv"; fi; }
 if [ "$SOURCE" = crdb ]; then
   vm "$PODMAN network create $NET >/dev/null && $PODMAN run -d --name $SRCC --network $NET --network-alias cockroachdb \
     $([ "$SCHEMA_VIA" = connection ] && echo "-p $SRC_PORT:26257") $SRC_IMAGE start-single-node --insecure --advertise-addr=cockroachdb >/dev/null" || { echo "CockroachDB start failed"; exit 2; }
   for _ in $(seq 1 30); do echo 'SELECT 1;' | src >/dev/null 2>&1 && break; sleep 2; done
   echo 'SET CLUSTER SETTING kv.rangefeed.enabled = true;' | src >/dev/null || { echo "CockroachDB setup failed"; exit 2; }
   for i in $(seq 1 "$NSRC"); do use "$i"
-    echo "CREATE DATABASE $SRC_DB;" | src >/dev/null && srcq < "$W/ddl.sql" >/dev/null || { echo "CockroachDB setup of $SRC_DB failed"; exit 2; }
+    T0=$SECONDS; echo "CREATE DATABASE $SRC_DB;" | src >/dev/null && srcq < "$W/ddl.run" >/dev/null || { echo "CockroachDB setup of $SRC_DB failed"; exit 2; }
+    echo "$SRC_DB: $NT tables created in $((SECONDS - T0))s"
     # the insecure node takes any password
-    fill cockroachdb 26257 root unused public || { echo "fill of $SRC_DB failed: $(tail -3 "$W/fill.out" | tr '\n' ' ' | cut -c1-300)"; exit 2; }
+    [ "$EMPTY" = 1 ] || fill cockroachdb 26257 root unused public || { echo "fill of $SRC_DB failed: $(tail -3 "$W/fill.out" | tr '\n' ' ' | cut -c1-300)"; exit 2; }
   done
   SRC_VERSION=$(echo 'SELECT version();' | src | tail -1 | cut -c1-80)
   # T: the cluster time, after every database is filled; one for all of them. Each Debezium's changefeed starts
@@ -202,9 +236,10 @@ else
     $([ "$SCHEMA_VIA" = connection ] && echo "-p $SRC_PORT:5433") $SRC_IMAGE bin/yugabyted start --background=false --advertise_address=yugabytedb >/dev/null" || { echo "YugabyteDB start failed"; exit 2; }
   for _ in $(seq 1 60); do vm "$PODMAN exec $SRCC bin/ysqlsh -h yugabytedb -U yugabyte -c 'SELECT 1'" >/dev/null 2>&1 && break; sleep 3; done
   for i in $(seq 1 "$NSRC"); do use "$i"
-    vm "$PODMAN exec $SRCC bin/ysqlsh -h yugabytedb -U yugabyte -c 'CREATE DATABASE $SRC_DB'" >/dev/null && echo "CREATE SCHEMA $SRC_DB;" | src >/dev/null \
-      && srcq < "$W/ddl.sql" >/dev/null || { echo "YugabyteDB setup of $SRC_DB failed"; exit 2; }
-    fill yugabytedb 5433 yugabyte yugabyte "$SRC_DB" || { echo "fill of $SRC_DB failed: $(tail -3 "$W/fill.out" | tr '\n' ' ' | cut -c1-300)"; exit 2; }
+    T0=$SECONDS; vm "$PODMAN exec $SRCC bin/ysqlsh -h yugabytedb -U yugabyte -c 'CREATE DATABASE $SRC_DB'" >/dev/null && echo "CREATE SCHEMA $SRC_DB;" | src >/dev/null \
+      && srcq < "$W/ddl.run" >/dev/null || { echo "YugabyteDB setup of $SRC_DB failed"; exit 2; }
+    echo "$SRC_DB: $NT tables created in $((SECONDS - T0))s"
+    [ "$EMPTY" = 1 ] || fill yugabytedb 5433 yugabyte yugabyte "$SRC_DB" || { echo "fill of $SRC_DB failed: $(tail -3 "$W/fill.out" | tr '\n' ' ' | cut -c1-300)"; exit 2; }
     # after the fill, so only the changes from T are in it: the truth for the history check, an audit trigger writing
     # every change, in commit order, to a table not published. REPLICA IDENTITY DEFAULT (the key) on tables with a key,
     # set before the slot exists; a table without one keeps ddl.py's FULL. @S@ is the schema, @I@ the source: a
@@ -234,18 +269,26 @@ SQL
   snap_select() { printf 'SET yb_read_time TO %s;\n%s\nRESET yb_read_time;\n' "$T_US" "$(msel "$1" --side source --prefix "$SRC_DB")"; }
 fi
 FILLED=; for i in $(seq 1 "$NSRC"); do use "$i"; f=$(filled); FILLED="$FILLED${FILLED:+; }$SRC_DB: $f"
-  echo " $f" | grep -q -E ' [^ =]+=(0)? ' && { claim model-fill FAIL "a table is empty in $SRC_DB: $f"; exit 1; }
+  [ "$(wc -l < "$W/counts-$i.tsv" | tr -d ' ')" = "$NT" ] || { claim model-fill FAIL "$SRC_DB: rows counted in $(wc -l < "$W/counts-$i.tsv" | tr -d ' ') of $NT tables"; exit 1; }
+  [ "$EMPTY" = 1 ] && { awk -F'\t' '$2 != 0 {exit 1}' "$W/counts-$i.tsv" || { claim model-fill FAIL "EMPTY=1, but $SRC_DB has rows: $f"; exit 1; }; continue; }
+  awk -F'\t' '$2 == 0 {exit 1}' "$W/counts-$i.tsv" || { claim model-fill FAIL "a table is empty in $SRC_DB: $f"; exit 1; }
   # the key maxima, so the workload's new keys come after every generated one
-  msql state | src > "$W/state-$i.tsv" || { echo "key maxima in $SRC_DB failed"; exit 2; }; done
+  [ "$ROUNDS" = 0 ] || msql state | src > "$W/state-$i.tsv" || { echo "key maxima in $SRC_DB failed"; exit 2; }; done
 use 1
-claim model-fill PASS "$MODEL at SF $SF (shape.py, ddl.py, fill.py), $NSRC database(s): $FILLED"
+claim model-fill PASS "$MODEL at SF $SF (shape.py, ddl.py$([ "$EMPTY" = 1 ] && echo ', no rows' || echo ', fill.py')$([ "$FKS" = 0 ] && echo ', no foreign keys')), $NSRC database(s): $FILLED"
 # the tables: every base table in the source schema (but the audit table, the history check's truth), so nothing below
 # names one; the model decides what they are (the same in every source). CockroachDB's client connects to defaultdb, so
 # it reads <db>.information_schema; YugabyteDB's connects to the model's database
 TABLES=$(echo "SELECT table_name FROM $([ "$SOURCE" = crdb ] && echo "$SRC_DB.")information_schema.tables WHERE table_schema = '$SRC_SCHEMA' AND table_type = 'BASE TABLE' AND table_name <> 'audit' ORDER BY 1;" \
   | src | tail -n +2 | tr '\n' ' ' | sed 's/ $//')
 [ -n "$TABLES" ] || { echo "no tables in $SRC_SCHEMA"; exit 2; }
-include() { for t in $TABLES; do printf '%s.%s,' "$SRC_SCHEMA" "$t"; done | sed 's/,$//'; }   # schema.table, for the current source's connector
+# HS: the SCD type 2 tables' suffix, _history unless a source table has that name already (TPC-E's holding_history)
+HS=$(echo "$TABLES" | tr ' A-Z' '\na-z' | awk '{t[$0]} END {for (x in t) if ((x "_history") in t) {print "__history"; exit}; print "_history"}')
+# include [k]: schema.table,... for the current source's connector; with DBZ_SHARDS=K, only producer k's tables
+# (crc32(name) % K, silver's rule)
+DS=${DBZ_SHARDS:-1}; [ "$DS" -gt 1 ] && { [ "$SOURCE" = crdb ] && [ "$SINK" = zerobus ] || { echo "DBZ_SHARDS: CockroachDB with Debezium Server only (YugabyteDB would need a slot per shard)"; exit 2; }; }
+echo "$TABLES" | tr ' ' '\n' | python3 -I -c "import sys, zlib; [print(t + '\t' + str(zlib.crc32(t.encode()) % $DS)) for t in sys.stdin.read().split()]" > "$W/dbz-shard.tsv"
+include() { awk -F'\t' -v k="${1:-}" -v s="$SRC_SCHEMA" 'k == "" || $2 == k {printf "%s%s.%s", (n++ ? "," : ""), s, $1}' "$W/dbz-shard.tsv"; }
 keyed() { awk -F'\t' -v t="$1" '$1 == t && $5 == 1 {f = 1} END {exit !f}' "$W/schema.tsv"; }   # keyed <table>: has a primary key
 if [ "$PHASE" -ge 2 ]; then
   # the snapshot: every table of every source as of its T, onto the laptop, as <table>/<destination prefix>/ (the
@@ -253,29 +296,39 @@ if [ "$PHASE" -ge 2 ]; then
   # because v25.4.13 writes a DECIMAL column as BYTE_ARRAY annotated DECIMAL but filled with the number's text, so
   # readers get "21.00" as the unscaled integer 0x32312E3030 (2155734753.76). YugabyteDB: COPY ... CSV under
   # yb_read_time. Silver casts every column to its type.
-  mkdir -p "$W/snap" "$W/raw"
+  # Every table of a source in one session (one statement per table), then one copy out of the container. CockroachDB
+  # writes no file for an empty table: silver reads a table without snapshot files as empty.
+  mkdir -p "$W/snap" "$W/raw"; T0=$SECONDS
   for i in $(seq 1 "$NSRC"); do use "$i"
-    for t in $TABLES; do
-      mkdir -p "$W/snap/$t/$DEST_PREFIX"
-      if [ "$SOURCE" = crdb ]; then
-        cols=$(echo "SELECT string_agg(CASE WHEN data_type = 'numeric' THEN quote_ident(column_name) || '::STRING AS ' || quote_ident(column_name)
+    for t in $TABLES; do mkdir -p "$W/snap/$t/$DEST_PREFIX"; done
+    if [ "$SOURCE" = crdb ]; then
+      echo "SELECT table_name, string_agg(CASE WHEN data_type = 'numeric' THEN quote_ident(column_name) || '::STRING AS ' || quote_ident(column_name)
           ELSE quote_ident(column_name) END, ', ' ORDER BY ordinal_position) FROM $SRC_DB.information_schema.columns
-          WHERE table_schema = 'public' AND table_name = '$t' AND is_hidden = 'NO';" | src | tail -1)
-        echo "EXPORT INTO PARQUET 'nodelocal://self/snap/$i/$t' FROM SELECT $cols FROM $SRC_DB.\"$t\" AS OF SYSTEM TIME '$T_HLC';" | src >/dev/null \
-          || { echo "EXPORT of $SRC_DB.$t failed"; exit 2; }
-      else
-        printf 'SET yb_read_time TO %s;\nCOPY (SELECT * FROM %s."%s") TO STDOUT WITH (FORMAT csv, HEADER);\n' "$T_US" "$SRC_DB" "$t" \
-          | vm "$PODMAN exec -i $SRCC bin/ysqlsh -h yugabytedb -U yugabyte -d $SRC_DB -q -v ON_ERROR_STOP=1" > "$W/snap/$t/$DEST_PREFIX/$t.csv" 2>/dev/null \
-          || { echo "COPY of $SRC_DB.$t failed"; exit 2; }
-      fi
-    done
+          WHERE table_schema = 'public' AND table_name <> 'audit' AND is_hidden = 'NO' GROUP BY table_name;" | src | tail -n +2 \
+        | awk -F'\t' -v i="$i" -v db="$SRC_DB" -v t="$T_HLC" 'function unq(x) {if (x ~ /^".*"$/) {x = substr(x, 2, length(x) - 2); gsub(/""/, "\"", x)}; return x}   # tsv quotes a field with quotes
+          {$1 = unq($1); $2 = unq($2); printf "EXPORT INTO PARQUET %cnodelocal://self/snap/%s/%s%c FROM SELECT %s FROM %s.\"%s\" AS OF SYSTEM TIME %c%s%c;\n", 39, i, $1, 39, $2, db, $1, 39, t, 39}' \
+        > "$W/export-$i.sql"
+      [ "$(wc -l < "$W/export-$i.sql" | tr -d ' ')" = "$(echo "$TABLES" | wc -w | tr -d ' ')" ] || { echo "column lists for EXPORT in $SRC_DB: $(wc -l < "$W/export-$i.sql") of $(echo "$TABLES" | wc -w)"; exit 2; }
+      src < "$W/export-$i.sql" > "$W/export-$i.out" 2>&1 || { echo "EXPORT in $SRC_DB failed: $(grep -m1 -i error "$W/export-$i.out" | cut -c1-200)"; exit 2; }
+    else   # \o sends each COPY's output to its own file in the container
+      for t in $TABLES; do printf '\\o /tmp/snap/%s/%s.csv\nCOPY (SELECT * FROM %s."%s") TO STDOUT WITH (FORMAT csv, HEADER);\n' "$i" "$t" "$SRC_DB" "$t"; done \
+        | { printf 'SET yb_read_time TO %s;\n' "$T_US"; cat; } > "$W/export-$i.sql"
+      vm "$PODMAN exec $SRCC sh -c 'rm -rf /tmp/snap/$i; mkdir -p /tmp/snap/$i'" && vm "$PODMAN exec -i $SRCC bin/ysqlsh -h yugabytedb -U yugabyte -d $SRC_DB -q -v ON_ERROR_STOP=1" \
+        < "$W/export-$i.sql" > "$W/export-$i.out" 2>&1 || { echo "COPY in $SRC_DB failed: $(head -c 200 "$W/export-$i.out")"; exit 2; }
+    fi
   done; use 1
   if [ "$SOURCE" = crdb ]; then
-    vm "$PODMAN exec $SRCC tar -C /cockroach/cockroach-data/extern/snap -cf - ." | tar -xf - -C "$W/raw" || { echo "snapshot copy failed"; exit 2; }
-    for i in $(seq 1 "$NSRC"); do for t in $TABLES; do mv "$W/raw/$i/$t"/* "$W/snap/$t/${DESTP[$i]}/" 2>/dev/null; done; done
+    vm "$PODMAN exec $SRCC sh -c 'mkdir -p /cockroach/cockroach-data/extern/snap && tar -C /cockroach/cockroach-data/extern/snap -cf - .'" | tar -xf - -C "$W/raw" || { echo "snapshot copy failed"; exit 2; }
+    for i in $(seq 1 "$NSRC"); do for t in $TABLES; do [ -d "$W/raw/$i/$t" ] && mv "$W/raw/$i/$t"/* "$W/snap/$t/${DESTP[$i]}/"; done; done
+  else
+    vm "$PODMAN exec $SRCC tar -C /tmp/snap -cf - ." | tar -xf - -C "$W/raw" || { echo "snapshot copy failed"; exit 2; }
+    for i in $(seq 1 "$NSRC"); do for t in $TABLES; do mv "$W/raw/$i/$t.csv" "$W/snap/$t/${DESTP[$i]}/"; done; done
   fi
-  SNAP_FMT=$([ "$SOURCE" = crdb ] && echo parquet || echo csv)
+  SNAP_FMT=$([ "$SOURCE" = crdb ] && echo parquet || echo csv); SNAP_S=$((SECONDS - T0))
 fi
+# brief: the union schema, each table's columns (more than 20 tables: how many tables, columns and keyed tables)
+brief() { awk -F'\t' -v nt="$NT" '{c[$1]=c[$1] (c[$1]?", ":"") $3 " " $4 ($5==1?" key":""); n++; if ($5==1) k[$1]} END {
+  if (nt <= 20) for (t in c) printf "%s (%s); ", t, c[t]; else printf "%d tables, %d columns, %d with a primary key", length(c), n, length(k)}' "$W/schema.tsv"; }
 # tsv_of <schema.yaml>: table, ordinal, column, Databricks type, 1 for a key: for the checks
 tsv_of() {
   yq -r '.tables[] | .name as $t | .columns | to_entries[] | [$t, .key + 1, .value.name,
@@ -359,11 +412,13 @@ done
 export SP_APP ZB HOST CATALOG S
 if [ "$SINK" = zerobus ]; then
 yq -r '"debezium.sink.zerobus.client.secret=" + .secret' "$W/secret.json" > "$W/secret.line"; rm -f "$W/secret.json"
+DBZS=
 for i in $(seq 1 "$NSRC"); do use "$i"
+for k in $(seq 0 $((DS - 1))); do PK=$([ "$DS" -gt 1 ] && echo "-s$k")   # DBZ_SHARDS: one Debezium Server per table shard
 cat > "$W/application.properties" <<EOF
 $( if [ "$SOURCE" = crdb ]; then cat <<CRDB
 debezium.source.connector.class=io.debezium.connector.cockroachdb.CockroachDBConnector
-debezium.source.name=crdb$i-zerobus
+debezium.source.name=crdb$i-zerobus$PK
 debezium.source.topic.prefix=crdb$i
 debezium.source.database.hostname=cockroachdb
 debezium.source.database.port=26257
@@ -372,7 +427,7 @@ debezium.source.database.password=
 debezium.source.database.dbname=$SRC_DB
 debezium.source.database.sslmode=disable
 debezium.source.database.server.name=crdb$i
-debezium.source.table.include.list=$(include)
+debezium.source.table.include.list=$(include "$([ "$DS" -gt 1 ] && echo "$k")")
 debezium.source.cockroachdb.changefeed.cursor=$T_HLC
 debezium.source.cockroachdb.changefeed.sink.type=sinkless
 debezium.source.cockroachdb.changefeed.resolved.interval=5s
@@ -382,7 +437,7 @@ CRDB
 [ -n "${ENRICHED_PROPERTIES:-}" ] && echo "debezium.source.cockroachdb.changefeed.enriched.properties=$ENRICHED_PROPERTIES"
 else cat <<YB
 debezium.source.connector.class=${YB_CONNECTOR_CLASS:-io.debezium.connector.postgresql.PostgresConnector}
-debezium.source.name=yb$i-zerobus
+debezium.source.name=yb$i-zerobus$PK
 debezium.source.topic.prefix=yb$i
 debezium.source.database.hostname=yugabytedb
 debezium.source.database.port=5433
@@ -393,11 +448,13 @@ debezium.source.plugin.name=pgoutput
 debezium.source.slot.name=dbz_slot_$i
 debezium.source.publication.name=dbz_pub
 debezium.source.publication.autocreate.mode=disabled
-debezium.source.table.include.list=$(include)
+debezium.source.table.include.list=$(include "$([ "$DS" -gt 1 ] && echo "$k")")
 debezium.source.decimal.handling.mode=string
 YB
 fi )
 debezium.source.snapshot.mode=no_data
+debezium.source.task.management.timeout.ms=${DBZ_START_TIMEOUT_MS:-1800000}
+${DBZ_EXTRA:-}
 debezium.source.extended.headers.enabled=false
 debezium.source.tombstones.on.delete=false
 debezium.source.offset.storage=org.apache.kafka.connect.storage.FileOffsetBackingStore
@@ -421,11 +478,12 @@ debezium.sink.zerobus.json.flexible.fields.encoding=string
 debezium.sink.zerobus.max.record.bytes=10000000
 EOF
 cat "$W/secret.line" >> "$W/application.properties"
-vm "umask 077; mkdir -p $RD/src$i/data && cat > $RD/src$i/application.properties" < "$W/application.properties"; rm -f "$W/application.properties"
+vm "umask 077; mkdir -p $RD/src$i$PK/data && cat > $RD/src$i$PK/application.properties" < "$W/application.properties"; rm -f "$W/application.properties"
 # :U gives the mounted files to the container user (Debezium runs as a non-root user), so the secret stays 0600
-vm "$PODMAN run -d --name ${DBZC[$i]} --network $NET -v $RD/src$i/application.properties:/debezium/config/application.properties:ro,U \
-  -v $RD/src$i/data:/debezium/data:U $DBZ_IMAGE >/dev/null" || { echo "Debezium start for $SRC_DB failed"; exit 2; }
-done; use 1; rm -f "$W/secret.line"
+DBZS="$DBZS${DBZS:+ }${DBZC[$i]}$PK"
+vm "$PODMAN run -d --name ${DBZC[$i]}$PK --network $NET -v $RD/src$i$PK/application.properties:/debezium/config/application.properties:ro,U \
+  -v $RD/src$i$PK/data:/debezium/data:U $DBZ_IMAGE >/dev/null" || { echo "Debezium start for $SRC_DB$PK failed"; exit 2; }
+done; done; use 1; rm -f "$W/secret.line"
 else
 # --- Kafka Connect, standalone, into Zerobus's Kafka-compatible endpoint (no broker) ------------------------------------
 # The producer needs SASL OAUTHBEARER with a token minted for the tables: the login callback handler in Debezium's
@@ -507,6 +565,16 @@ vm "C=\$HOME/.cache/dbz-zerobus; $PODMAN run -d --name $DBZ --network $NET -v $R
   /cfg/worker.properties $(for i in $(seq 1 "$NSRC"); do printf '/cfg/connector%s.properties ' "$i"; done)>/dev/null" || { echo "Kafka Connect start failed"; exit 2; }
 fi
 
+producers() { # ROUNDS=0: the producers after the run: streaming (Debezium Server's engine got to POLLING_TASKS and
+  # didn't fail; with no changes, nothing else shows a dead stream), and the errors in their logs
+  local c lg t1 t2; for c in $DBZS; do
+    if [ "$SINK" = zerobus ]; then lg=$(vm "$PODMAN logs $c 2>&1 | grep -E \"Engine state has changed|Engine has failed\"" | grep -o -E '"timestamp":"[^"]*"|to .[A-Z_]+.|Engine has failed')
+      t1=$(echo "$lg" | grep -B1 "to 'STARTING_TASKS'" | grep -o -E '[0-9]{2}:[0-9]{2}:[0-9]{2}' | head -1); t2=$(echo "$lg" | grep -B1 "to 'POLLING_TASKS'" | grep -o -E '[0-9]{2}:[0-9]{2}:[0-9]{2}' | head -1)
+      if echo "$lg" | grep -q 'Engine has failed' || [ -z "$t2" ]; then claim "producer-streaming-$c" FAIL "the engine didn't get to POLLING_TASKS, or failed: $(echo "$lg" | grep -v timestamp | tr '\n' ' ')"
+      else claim "producer-streaming-$c" PASS "Debezium Server streaming over $NT table(s): its task started at $t1 and polled from $t2"; fi
+    fi
+    observe "producer-$c" "$(vm "$PODMAN inspect -f '{{.State.Status}} since {{.State.StartedAt}}' $c" 2>&1 | cut -c1-80); log lines with ERROR: $(vm "$PODMAN logs $c 2>&1 | grep -c ERROR"); the first: $(vm "$PODMAN logs $c 2>&1 | grep -m2 ERROR" | cut -c1-700 | tr '\n' ' '); last: $(vm "$PODMAN logs --tail 1 $c 2>&1" | cut -c1-300)"
+    [ -n "${OUT:-}" ] && vm "$PODMAN logs $c 2>&1" > "${OUT%.md}-$c.log" 2>&1; done; }
 # --- checks -----------------------------------------------------------------------------------------------------------
 # have: the change log's rows per destination (source and table) and operation
 have() { q "SELECT destination, operation, COUNT(*) FROM $LOGQ GROUP BY 1, 2 ORDER BY 1, 2" 2>/dev/null; }
@@ -537,7 +605,8 @@ R=$(q "SELECT COUNT(*) FROM $LOGQ WHERE operation = 'read'" 2>/dev/null)
   || claim no-snapshot-events FAIL "read events in the log: ${R:-query failed}"
 
 # round 1, from model-sql.py: per table with a key, 3 inserts of new keys, 1 update, 1 delete (of an inserted row); a
-# table without a key gets 2 inserts
+# table without a key gets 2 inserts. ROUNDS=0: none of it (the producers' state is observed instead, below)
+if [ "$ROUNDS" -ge 1 ]; then
 round 1; r=$(expect 1before)
 case $r in ok*) claim changes-1 PASS "every table's changes arrive as create/update/delete events (within ${r#ok }s): $(expected 1before)";;
   *) claim changes-1 FAIL "fewer events than expected: $r";; esac
@@ -550,25 +619,36 @@ observe variant-paths "value top-level keys: $(q "SELECT CONCAT_WS(',', SORT_ARR
 observe event-bytes "per event, average bytes (op: total value after source key position headers): $(q "SELECT operation, ROUND(AVG(LENGTH(TO_JSON(value)) + LENGTH(TO_JSON(key)) + LENGTH(COALESCE(TO_JSON(source_position),'')) + LENGTH(COALESCE(TO_JSON(headers),'')) + LENGTH(idempotency_key))), ROUND(AVG(LENGTH(TO_JSON(value)))), ROUND(AVG(LENGTH(TO_JSON(value:after)))), ROUND(AVG(LENGTH(TO_JSON(value:source)))), ROUND(AVG(LENGTH(TO_JSON(key)))), ROUND(AVG(LENGTH(COALESCE(TO_JSON(source_position),'')))), ROUND(AVG(LENGTH(COALESCE(TO_JSON(headers),'')))) FROM $LOGQ GROUP BY operation ORDER BY 1" 2>&1 | tr '\t\n' ' ;')"
 observe event-sample "one update event value: $(q "SELECT TO_JSON(value) FROM $LOGQ WHERE operation = 'update' LIMIT 1" 2>&1 | cut -c1-400)"
 observe change-log "rows by table and operation: $(have | tr '\t\n' '= ' | cut -c1-400); clustering: $(q "DESCRIBE DETAIL $LOG" 2>/dev/null | head -1 | grep -o 'destination' | head -1)"
+fi
 
 # --- phase 2: snapshot in a Volume, schema through a UC connection, silver ---------------------------------------------
 if [ "$PHASE" -ge 2 ]; then
   VOL=/Volumes/$CATALOG/$S/snapshot
   q "CREATE VOLUME $T.snapshot COMMENT 'Snapshot as of T, one folder per source table, then one per source'" >/dev/null || exit 2
   link "volume $CATALOG.$S.snapshot" "$HOST/explore/data/volumes/$CATALOG/$S/snapshot"
-  dbx fs cp -r "$W/snap" "dbfs:$VOL" --overwrite >/dev/null || { echo "snapshot upload failed"; exit 2; }
-  F=$(for t in $TABLES; do for i in $(seq 1 "$NSRC"); do printf '%s/%s=%s ' "$t" "${DESTP[$i]}" "$(dbx fs ls "dbfs:$VOL/$t/${DESTP[$i]}" -o json | SNAP_FMT=$SNAP_FMT yq '[.[] | select(.name | test(strenv(SNAP_FMT) + "$"))] | length')"; done; done)
-  echo "$F" | grep -q '=0' && claim snapshot-in-volume FAIL "$SNAP_FMT files per table and source: $F" \
-    || claim snapshot-in-volume PASS "the tables as of T ($([ "$SOURCE" = crdb ] && echo 'EXPORT INTO PARQUET ... AS OF SYSTEM TIME' || echo 'COPY ... CSV under yb_read_time')), into $VOL/<table>/<source>/: $SNAP_FMT files: $F"
+  # only folders with files (silver reads _snapshot.tsv for which tables have any): empty folders cost a call each
+  T0=$SECONDS; find "$W/snap" -mindepth 1 -type d -empty -delete
+  [ -z "$(ls -A "$W/snap")" ] || dbx fs cp -r "$W/snap" "dbfs:$VOL" --overwrite >/dev/null || { echo "snapshot upload failed"; exit 2; }
+  UP_S=$((SECONDS - T0))
+  # the files per table and source: every table with rows has some (here, and in the volume: one listing by SQL)
+  (cd "$W/snap" && find . -name "*.$SNAP_FMT" | awk -F/ '{n[$2 "/" $3]++} END {for (k in n) print k "\t" n[k]}' | sort) > "$W/snapfiles.tsv"
+  NF_LOCAL=$(awk -F'\t' '{n += $2} END {print n + 0}' "$W/snapfiles.tsv")
+  NOFILES=$(for i in $(seq 1 "$NSRC"); do awk -F'\t' -v p="${DESTP[$i]}" 'NR == FNR {f[$1]; next} $2 > 0 && !(($1 "/" p) in f) {print $1 "/" p}' "$W/snapfiles.tsv" "$W/counts-$i.tsv"; done | head -5 | tr '\n' ' ')
+  NF_VOL=0; [ "$NF_LOCAL" -gt 0 ] && NF_VOL=$(q "SELECT COUNT(*) FROM read_files('$VOL', format => 'binaryFile', recursiveFileLookup => true, pathGlobFilter => '*.$SNAP_FMT')" 2>&1)
+  if [ -z "$NOFILES" ] && [ "$NF_VOL" = "$NF_LOCAL" ]; then
+    claim snapshot-in-volume PASS "the tables as of T ($([ "$SOURCE" = crdb ] && echo 'EXPORT INTO PARQUET ... AS OF SYSTEM TIME' || echo 'COPY ... CSV under yb_read_time'), one session per source, ${SNAP_S}s), into $VOL/<table>/<source>/ (upload ${UP_S}s): $NF_LOCAL $SNAP_FMT files for $(wc -l < "$W/snapfiles.tsv" | tr -d ' ') table(s) and source(s)$([ "$NT" -le 20 ] && echo ": $(tr '\t\n' '= ' < "$W/snapfiles.tsv")"); a table with no rows may have none"
+  else claim snapshot-in-volume FAIL "tables with rows but no $SNAP_FMT file: ${NOFILES:-none}; files here $NF_LOCAL, in the volume $NF_VOL"; fi
   # the sources silver merges: each one's destination prefix, T (its snapshot's sequence) and snapshot format
   { echo "# the sources feeding this silver (debezium-zerobus.sh run $E): destination = <prefix>.<table>"
     echo "source_key: $([ "$NSRC" -gt 1 ] && echo true || echo false)"; echo "sources:"
     for i in $(seq 1 "$NSRC"); do printf '  - {prefix: "%s", t_ns: %s, format: %s, database: "%s"}\n' "${DESTP[$i]}" "${SNAPSEQ[$i]}" "$SNAP_FMT" "${SDB[$i]}"; done
   } > "$W/_sources.yaml"
-  dbx fs cp "$W/_sources.yaml" "dbfs:$VOL/_sources.yaml" --overwrite >/dev/null || { echo "sources upload failed"; exit 2; }
+  # _snapshot.tsv: table, prefix, format, files; silver reads it rather than list every table's folder
+  awk -F'\t' -v f="$SNAP_FMT" '{i = index($1, "/"); printf "%s\t%s\t%s\t%s\n", substr($1, 1, i - 1), substr($1, i + 1), f, $2}' "$W/snapfiles.tsv" > "$W/_snapshot.tsv"
+  for f in _sources.yaml _snapshot.tsv; do dbx fs cp "$W/$f" "dbfs:$VOL/$f" --overwrite >/dev/null || { echo "$f upload failed"; exit 2; }; done
 
   if [ "$SCHEMA_VIA" = volume ]; then
-  claim schema-in-volume PASS "statschema schema.yaml (ddl-to-schema.py from each source's DDL, then schema-union.py) for $VOL/_schema: $(awk -F'\t' '{c[$1]=c[$1] (c[$1]?", ":"") $3 " " $4 ($5==1?" key":"")} END {for (t in c) printf "%s (%s); ", t, c[t]}' "$W/schema.tsv")"
+  claim schema-in-volume PASS "statschema schema.yaml (ddl-to-schema.py from each source's DDL, then schema-union.py) for $VOL/_schema: $(brief)"
   else
   # the schema: columns, types and primary keys from each source's information_schema, through a UC connection
   CONN=$PREFIX-$SOURCE-dbz-$E; export CONN VM_IP SRC_PORT
@@ -594,11 +674,11 @@ if [ "$PHASE" -ge 2 ]; then
          ON tc.table_schema = c.table_schema AND tc.table_name = c.table_name AND tc.constraint_type = 'PRIMARY KEY'
        LEFT JOIN information_schema.key_column_usage k
          ON k.constraint_schema = tc.constraint_schema AND k.constraint_name = tc.constraint_name AND k.column_name = c.column_name
-       WHERE c.table_schema = '$SRC_SCHEMA' AND c.table_name IN ($(for t in $TABLES; do printf "'%s'," "$t"; done | sed 's/,$//'))$([ "$SOURCE" = crdb ] && echo " AND c.is_hidden = 'NO'")\")
+       WHERE c.table_schema = '$SRC_SCHEMA' AND c.table_name <> 'audit'$([ "$SOURCE" = crdb ] && echo " AND c.is_hidden = 'NO'")\")
      ORDER BY 1, 2" > "$W/schema-$I.tsv" 2>"$W/schema.err" && [ -s "$W/schema-$I.tsv" ] \
      && python3 -I "$HERE/schema-tsv-to-canonical.py" "$W/schema-$I.tsv" "$SRC_NAME $SRC_VERSION, $SRC_DB's information_schema through the UC connection $CONN" > "$W/schema-$I.yaml"; }
   if schemas; then
-    claim schema-from-connection PASS "remote_query on a POSTGRESQL connection, each source, then schema-union.py: $(awk -F'\t' '{c[$1]=c[$1] (c[$1]?", ":"") $3 " " $4 ($5==1?" key":"")} END {for (t in c) printf "%s (%s); ", t, c[t]}' "$W/schema.tsv")"
+    claim schema-from-connection PASS "remote_query on a POSTGRESQL connection, each source, then schema-union.py: $(brief)"
   else claim schema-from-connection FAIL "$(cut -c1-300 "$W/schema.err")"; exit 1; fi
   fi
 
@@ -615,9 +695,9 @@ if [ "$PHASE" -ge 2 ]; then
     printf 'CREATE OR REFRESH MATERIALIZED VIEW %s%s\n  COMMENT %s\nAS %s;\n' "$GOLD" "${GC:+ CLUSTER BY ($GC)}" \
       "'$(sed -n 's/^-- comment: *//p' "$GOLD_MV" | sed "s/'/''/g")'" "$(grep -v '^--' "$GOLD_MV" | sed 's/;[[:space:]]*$//')" > "$W/gold.sql"
   fi
-  WSDIR=/Users/$ME/${SOURCE}_dbz_$E; LIBS=silver-from-schema.py; cp "$HERE/silver-from-schema.py" "$HERE/fanout.py" "$W/"
+  WSDIR=/Users/$ME/${SOURCE}_dbz_$E; LIBS=silver-from-schema.py; cp "$HERE/silver-from-schema.py" "$HERE/fanout.py" "$HERE/merge-silver.py" "$W/"
   [ -n "$GOLD" ] && LIBS="$LIBS gold.sql"
-  FILES="$LIBS fanout.py"   # fanout.py: for BRONZE=fanout, and for a table moved out of the shared log
+  FILES="$LIBS fanout.py merge-silver.py"   # fanout.py: for BRONZE=fanout, and for a table moved out of the shared log
   dbx workspace mkdirs "$WSDIR" || exit 2
   link "pipeline source folder $WSDIR" "$HOST/#workspace$WSDIR"
   for f in $FILES; do dbx workspace import "$WSDIR/$f" --file "$W/$f" --format RAW >/dev/null || { echo "$f upload failed"; exit 2; }; done
@@ -647,16 +727,31 @@ if [ "$PHASE" -ge 2 ]; then
   # the bronze table each silver table reads: the shared log, the producers' per-table logs, or fanout.py's
   case $BRONZE in shared) BT=cdc_log;; per-table) BT='cdc_log_{table}';;
     fanout) BT=$([ "$BRONZE_SHARDS" -gt 0 ] && echo 'cdc_log_s{shard}' || echo 'cdc_log_{table}');; esac
-  export VOL SINK NODEDUP BT ON_DRIFT; export SHARDS=$([ "$BRONZE_SHARDS" -gt 0 ] && echo "$BRONZE_SHARDS" || echo 1)
+  export VOL SINK NODEDUP BT ON_DRIFT HS; export SHARDS=$([ "$BRONZE_SHARDS" -gt 0 ] && echo "$BRONZE_SHARDS" || echo 1)
   export WSDIR CATALOG S PIPE_NAME=$PREFIX-$SOURCE-$MODEL-dbz-silver-$E LIBS
   yq -n -o json '.name = strenv(PIPE_NAME) | .catalog = strenv(CATALOG) | .schema = strenv(S) | .serverless = true |
     .continuous = false | .development = true | .channel = "CURRENT" |
     .libraries = [strenv(LIBS) | split(" ") | .[] | {"file": {"path": strenv(WSDIR) + "/" + .}}] |
     .configuration = {"cdc.volume": strenv(VOL), "cdc.bronze": strenv(SINK), "cdc.bronze_table": strenv(BT),
-      "cdc.bronze_shards": strenv(SHARDS), "cdc.nodedup_table": strenv(NODEDUP), "cdc.on_drift": strenv(ON_DRIFT)}' > "$W/pipe.json"
-  PIPELINE_ID=$(dbx pipelines create --json @"$W/pipe.json" -o json | yq '.pipeline_id') || { echo "pipeline create failed"; exit 2; }
-  link "pipeline $PIPE_NAME (silver${GOLD:+, gold}; bronze $BT)" "$HOST/pipelines/$PIPELINE_ID"
-  for t in $TABLES; do link "silver $t" "$HOST/explore/data/$CATALOG/$S/$t"; done
+      "cdc.bronze_shards": strenv(SHARDS), "cdc.nodedup_table": strenv(NODEDUP), "cdc.history_suffix": strenv(HS), "cdc.on_drift": strenv(ON_DRIFT)}' > "$W/pipe.json"
+  # PIPES=K: K pipelines, the same files, each with cdc.shard = <k>/<K> (its own tables)
+  PIPELINE_IDS=(); MERGE_JOBS=()
+  for k in $(seq 0 $((PIPES - 1))); do
+    if [ "$SILVER" = merge ]; then   # merge-silver.py as a serverless job, shard k of K
+      export JN="$PIPE_NAME-merge$([ "$PIPES" -gt 1 ] && echo "-p$k")" MPY=$WSDIR/merge-silver.py MSH=$([ "$PIPES" -gt 1 ] && echo "$k/$PIPES") MCP="$VOL/_merge/p$k"
+      yq -n -o json '.name = strenv(JN) | .environments = [{"environment_key": "default", "spec": {"environment_version": "4", "dependencies": ["pyyaml"]}}] |
+        .tasks = [{"task_key": "silver", "environment_key": "default", "spark_python_task": {"python_file": strenv(MPY),
+          "parameters": ["--volume", strenv(VOL), "--source", "`" + strenv(CATALOG) + "`." + strenv(S) + ".cdc_log", "--target", "`" + strenv(CATALOG) + "`." + strenv(S),
+            "--checkpoint", strenv(MCP), "--bronze", strenv(SINK), "--history-suffix", strenv(HS), "--once"] + (strenv(MSH) | select(. != "") | ["--shard", .]) // []}}]' > "$W/merge-$k.json"
+      j=$(dbx jobs create --json @"$W/merge-$k.json" -o json | yq '.job_id') && [ -n "$j" ] || { echo "merge job create failed"; exit 2; }
+      MERGE_JOBS+=("$j"); link "silver job $JN (merge-silver.py${MSH:+, shard $MSH})" "$HOST/jobs/$j"; continue
+    fi
+    [ "$PIPES" -gt 1 ] && K="$k/$PIPES" PN="$PIPE_NAME-p$k" yq -p json -o json '.name = strenv(PN) | .configuration["cdc.shard"] = strenv(K)' "$W/pipe.json" > "$W/pipe-$k.json" \
+      || cp "$W/pipe.json" "$W/pipe-$k.json"
+    p=$(dbx pipelines create --json @"$W/pipe-$k.json" -o json | yq '.pipeline_id') && [ -n "$p" ] || { echo "pipeline create failed"; exit 2; }
+    PIPELINE_IDS+=("$p"); link "pipeline $(yq '.name' "$W/pipe-$k.json") (silver${GOLD:+, gold}; bronze $BT$([ "$PIPES" -gt 1 ] && echo "; cdc.shard $k/$PIPES"))" "$HOST/pipelines/$p"
+  done; PIPELINE_ID=${PIPELINE_IDS[0]:-}
+  [ "$NT" -le 20 ] && for t in $TABLES; do link "silver $t" "$HOST/explore/data/$CATALOG/$S/$t"; done
   [ -n "$GOLD" ] && link "gold $GOLD" "$HOST/explore/data/$CATALOG/$S/$GOLD"
   [ "$ON_DRIFT" = record ] && link "schema drift schema_drift" "$HOST/explore/data/$CATALOG/$S/schema_drift"
   make_fanout() { # make_fanout <target> <checkpoint> [tables]: fanout.py as a serverless job (one read of cdc_log, written
@@ -673,15 +768,40 @@ if [ "$PHASE" -ge 2 ]; then
     [ -n "${JOB_ID:-}" ] || return 0
     dbx jobs run-now "$JOB_ID" -o json 2>"$W/fanout.err" | yq '.state.result_state // "FAILED"'; }
 
-  run_silver() { # one pipeline update (extra args go to start-update), after the fan-out when there is one; its final state
-    local u st f; f=$(run_fanout); [ -n "$f" ] && [ "$f" != SUCCESS ] && { echo "fan-out $f: $(tail -c 300 "$W/fanout.err")" >&2; echo "FANOUT_$f"; return; }
-    u=$(dbx pipelines start-update "$PIPELINE_ID" "$@" -o json | yq '.update_id'); echo "$u" > "$W/update_id"
-    for _ in $(seq 1 120); do
-      st=$(dbx pipelines get-update "$PIPELINE_ID" "$u" -o json | yq '.update.state')
-      case $st in COMPLETED|FAILED|CANCELED) break;; esac; sleep 10; done
-    [ "$st" = COMPLETED ] || dbx pipelines list-pipeline-events "$PIPELINE_ID" --max-results 50 -o json \
-      | yq -r '.[] | select(.level == "ERROR") | .message' | head -3 | cut -c1-300 >&2
-    echo "$st"
+  run_merge() { # SILVER=merge: every merge job once, at once; COMPLETED when all succeeded, seconds in $W/update_s
+    local r=() st=() k t0=$SECONDS done; : > "$W/update_s"
+    for k in "${!MERGE_JOBS[@]}"; do r[$k]=$(dbx jobs run-now "${MERGE_JOBS[$k]}" --no-wait -o json | yq '.run_id'); done
+    while :; do done=1
+      for k in "${!MERGE_JOBS[@]}"; do case ${st[$k]:-} in SUCCESS|FAILED|TIMEDOUT|CANCELED|INTERNAL_ERROR) continue;; esac
+        st[$k]=$(dbx jobs get-run "${r[$k]}" -o json | yq '.state.result_state // .state.life_cycle_state')
+        case ${st[$k]} in SUCCESS|FAILED|TIMEDOUT|CANCELED|INTERNAL_ERROR) printf 'p%s=%ss ' "$k" $((SECONDS - t0)) >> "$W/update_s";; *) done=0;; esac; done
+      [ $done = 1 ] || [ $((SECONDS - t0)) -ge "$SILVER_WAIT" ] && break; sleep 15; done
+    for k in "${!MERGE_JOBS[@]}"; do [ "${st[$k]}" = SUCCESS ] && continue
+      t=$(dbx jobs get-run "${r[$k]}" -o json | yq '.tasks[0].run_id')
+      dbx jobs get-run-output "$t" -o json > "$W/merge-out.json" 2>&1
+      [ -n "${OUT:-}" ] && cp "$W/merge-out.json" "${OUT%.md}-merge-p$k-$(date +%s).json"
+      echo "job $k: ${st[$k]}: $(yq -r '.error // ""' "$W/merge-out.json" | grep -v '^\s*$' | tail -3 | tr '\n' ' ' | cut -c1-500) $(yq -r '.logs // ""' "$W/merge-out.json" | tail -3 | tr '\n' ' ' | cut -c1-300)" >&2
+      echo "${st[$k]}$([ "$PIPES" -gt 1 ] && echo " (job $k)")"; return; done
+    echo COMPLETED
+  }
+  run_silver() { # one update of every pipeline at once (extra args go to start-update), after the fan-out when there is
+    # one; their final state: COMPLETED when all completed. Each pipeline's seconds in $W/update_s (k=seconds ...)
+    [ "$SILVER" = merge ] && { run_merge; return; }
+    local u=() st=() k f t0=$SECONDS done; f=$(run_fanout); [ -n "$f" ] && [ "$f" != SUCCESS ] && { echo "fan-out $f: $(tail -c 300 "$W/fanout.err")" >&2; echo "FANOUT_$f"; return; }
+    for k in "${!PIPELINE_IDS[@]}"; do u[$k]=$(dbx pipelines start-update "${PIPELINE_IDS[$k]}" "$@" -o json | yq '.update_id'); done
+    echo "${u[0]}" > "$W/update_id"; : > "$W/update_s"; printf '%s\n' "${u[@]}" > "$W/update_ids"
+    while :; do done=1
+      for k in "${!PIPELINE_IDS[@]}"; do case ${st[$k]:-} in COMPLETED|FAILED|CANCELED) continue;; esac
+        st[$k]=$(dbx pipelines get-update "${PIPELINE_IDS[$k]}" "${u[$k]}" -o json | yq '.update.state')
+        case ${st[$k]} in COMPLETED|FAILED|CANCELED) printf 'p%s=%ss ' "$k" $((SECONDS - t0)) >> "$W/update_s";; *) done=0;; esac; done
+      [ $done = 1 ] || [ $((SECONDS - t0)) -ge "$SILVER_WAIT" ] && break; sleep 10; done
+    for k in "${!PIPELINE_IDS[@]}"; do [ "${st[$k]}" = COMPLETED ] && continue
+      echo "pipeline $k: ${st[$k]}" >&2; dbx pipelines list-pipeline-events "${PIPELINE_IDS[$k]}" --max-results 50 -o json > "$W/events.json"
+      # the full errors next to the result file (OUT): the exceptions' messages, stack traces and all
+      [ -n "${OUT:-}" ] && yq -o json '[.[] | select(.level == "ERROR")]' "$W/events.json" > "${OUT%.md}-errors-p$k-$(date +%s).json"
+      yq -r '.[] | select(.level == "ERROR") | .message + " " + ((.error.exceptions // [])[0].message // "" | split("\n") | map(select(test("^\s*(at |File )|^Traceback|^ *\\^*$") | not)) | join(" | "))' "$W/events.json" | tail -2 | rev | cut -c1-900 | rev >&2
+      echo "${st[$k]}$([ "$PIPES" -gt 1 ] && echo " (pipeline $k)")"; return; done
+    echo COMPLETED
   }
   # rows_src <table> / rows_dbx <table> [where]: the current source's rows of the table, on the source and in silver
   # (its _source rows), rendered alike by model-sql.py from that source's own schema, sorted as text (the two sides'
@@ -697,7 +817,7 @@ if [ "$PHASE" -ge 2 ]; then
   cmp_rows() { local a b; a=$(rows_src "$1"); b=$(rows_dbx "$1" "${2:-$1}" "${3:-}"); [ "$a" = "$b" ] && echo "$(echo "$a" | grep -c .) rows" || { differ "$a" "$b"; return 1; }; }
   same_hist() { # same_hist <table> <round>: the history table's current versions equal the source
     keyed "$1" || return 0
-    each "history-current-$1-$2" "the current versions in $1_history equal the source" cmp_rows "$1" "${1}_history" '__END_AT IS NULL'; }
+    each "history-current-$1-$2" "the current versions in $1$HS equal the source" cmp_rows "$1" "$1$HS" '__END_AT IS NULL'; }
   cmp_hist() { # every version of one source's keys, against that source's own history from T (feed-<i>.tsv)
     snap_select "$1" | src > "$W/snap-$I-$1.tsv"
     q "$(msel "$1" --side databricks --prefix "$T" --from "$2" --where "_source = '$DEST_PREFIX'" --order __START_AT)" > "$W/hist-$I-$2.tsv"
@@ -710,6 +830,42 @@ if [ "$PHASE" -ge 2 ]; then
     if [ "${3:-}" = observe ]; then use 1; observe "silver-$1-$2" "source vs silver ($SRC_DB): $(cmp_rows "$1" || true)"
     else each "silver-$1-$2" "silver $1 equals the source" cmp_rows "$1"; fi; }
 
+  every_table() { # ROUNDS=0: every silver table at once, against every source: the tables silver should have (<t>, and
+    # <t>$HS for a table with a key), each with the source's columns (and _source; the history: __START_AT and
+    # __END_AT) and, per source, the source's rows at T (no changes since). Row counts in UNION ALL queries of 200
+    # tables, 4 at a time.
+    local want have i k n bad
+    # SILVER=merge keeps each row's sequence, _seq, in <t> (AUTO CDC keeps it hidden)
+    awk -F'\t' -v hs="$HS" -v m="$SILVER" '{c[$1] = c[$1] "," tolower($3); if ($5 == 1) key[$1]} END {for (t in c) {print t "\t" substr(c[t], 2) ",_source" (m == "merge" && (t in key) ? ",_seq" : "");
+      if (t in key) print t hs "\t" substr(c[t], 2) ",_source,__end_at,__start_at"}}' "$W/schema.tsv" \
+      | python3 -I -c 'import sys; [print(t.lower() + "\t" + ",".join(sorted(c.split(",")))) for t, c in (l.rstrip("\n").split("\t") for l in sys.stdin)]' | LC_ALL=C sort > "$W/want.tsv"
+    q "SELECT table_name, CONCAT_WS(',', ARRAY_SORT(COLLECT_LIST(LOWER(column_name)))) FROM \`$CATALOG\`.information_schema.columns
+       WHERE table_schema = '$S' GROUP BY 1" | LC_ALL=C sort > "$W/have-cols.tsv" || { claim silver-tables FAIL "information_schema.columns failed"; return; }
+    bad=$(awk -F'\t' 'NR == FNR {h[$1] = $2; next} !($1 in h) {print "missing " $1; next} h[$1] != $2 {print $1 " has " h[$1]}' "$W/have-cols.tsv" "$W/want.tsv" | head -5 | tr '\n' ';' | cut -c1-600)
+    want=$(wc -l < "$W/want.tsv" | tr -d ' ')
+    [ -z "$bad" ] && claim silver-tables PASS "all $want silver tables for $NT source tables, each with the source's columns (information_schema.columns)" \
+      || claim silver-tables FAIL "of $want: $bad"
+    # rows per table and source, in silver; then against each source's counts
+    cut -f1 "$W/want.tsv" | split -l 200 - "$W/rc."
+    for f in "$W"/rc.*; do
+      while [ "$(jobs -r | wc -l)" -ge 4 ]; do sleep 1; done
+      ( Q=$(awk -v T="$T" '{printf "%sSELECT %c%s%c, _source, COUNT(*) FROM %s.`%s` GROUP BY _source", (NR > 1 ? " UNION ALL " : ""), 39, $1, 39, T, $1}' "$f") sql > "$f.out" 2>"$f.err" ) &
+    done; wait
+    cat "$W"/rc.*.out | LC_ALL=C sort > "$W/silver-rows.tsv"
+    n=$(cat "$W"/rc.*.err | grep -c .); [ "$n" = 0 ] || { claim silver-rows FAIL "$n row-count queries failed: $(cat "$W"/rc.*.err | head -c 300)"; return; }
+    # expected: each source's rows, for <t> and <t>$HS (a table with no rows has no _source row in silver)
+    bad=$(for i in $(seq 1 "$NSRC"); do awk -F'\t' -v p="${DESTP[$i]}" -v hs="$HS" 'NR == FNR {k[tolower($1)]; next} {print tolower($1) "\t" p "\t" $2; if ((tolower($1) hs) in k) print tolower($1) hs "\t" p "\t" $2}' "$W/want.tsv" "$W/counts-$i.tsv"; done \
+      | awk -F'\t' 'NR == FNR {h[$1 FS $2] = $3; next} (h[$1 FS $2] + 0) != $3 {print $1 " from " $2 ": " (h[$1 FS $2] + 0) " of " $3}' "$W/silver-rows.tsv" - | head -5 | tr '\n' ';')
+    n=$(awk -F'\t' '{r += $3} END {print r + 0}' "$W/silver-rows.tsv")
+    [ -z "$bad" ] && claim silver-rows PASS "every silver table has each source's rows at T ($n rows in silver, over $want tables)" || claim silver-rows FAIL "$bad"
+  }
+  phases() { # the last update's seconds in each state (INITIALIZING, SETTING_UP_TABLES, RUNNING, ...), per pipeline, from
+    # the event log's update_progress events: where the start-up goes
+    local k u r=; for k in "${!PIPELINE_IDS[@]}"; do u=$(sed -n "$((k + 1))p" "$W/update_ids")
+      r="$r p$k: $(q "SELECT CONCAT_WS(' ', COLLECT_LIST(CONCAT(st, '=', CAST(s AS STRING), 's'))) FROM (SELECT st, ROUND(UNIX_MILLIS(LEAD(timestamp) OVER (ORDER BY timestamp)) / 1000 - UNIX_MILLIS(timestamp) / 1000) AS s, timestamp
+        FROM (SELECT details:update_progress:state::STRING AS st, timestamp FROM event_log('${PIPELINE_IDS[$k]}') WHERE event_type = 'update_progress' AND origin.update_id = '$u'))
+        WHERE s IS NOT NULL" 2>&1 | cut -c1-300);"; done
+    observe update-phases "seconds per update state:$r"; }
   gold() { # gold <round>: the materialized view equals the same query on the source (on each, prefixed with it)
     [ -n "$GOLD" ] || return 0
     local a b i; a=$(if [ "$NSRC" = 1 ]; then echo "$GOLD_Q;" | srcq | tail -n +2
@@ -726,7 +882,7 @@ if [ "$PHASE" -ge 2 ]; then
   }
   [ -z "$GOLD" ] && [ "$PHASE" -ge 3 ] && observe gold "no models/$MODEL-gold$([ "$NSRC" -gt 1 ] && echo -multi).sql: no gold for this model"
   refresh_tables() { # the tables a full refresh of these source tables covers, as a JSON list
-    local t; for t in "$@"; do printf '"%s", "%s_history"%s, ' "$t" "$t" "$([ "$t" = "$NODEDUP" ] && echo ", \"${t}_history_nodedup\"")"; done | sed 's/, $//'; }
+    local t; for t in "$@"; do printf '"%s", "%s%s"%s, ' "$t" "$t" "$HS" "$([ "$t" = "$NODEDUP" ] && echo ", \"$t${HS}_nodedup\"")"; done | sed 's/, $//'; }
   drift_rows() { # drift_rows <table> <source>: what silver recorded for it, as "kind:column" lines
     q "SELECT CONCAT(kind, ':', col) FROM $T.schema_drift WHERE tbl = '$1' AND _source = '$2' ORDER BY 1" 2>/dev/null; }
   evolve() { # evolve <round> <table> <source i> <expected kind:column ...>: asynchronous schema evolution
@@ -756,7 +912,20 @@ if [ "$PHASE" -ge 2 ]; then
     st=$(run_silver); [ "$st" = COMPLETED ] || claim "silver-update-$n" FAIL "plain update after the full refresh: $st"
   }
 
-  st=$(run_silver); [ "$st" = COMPLETED ] || claim silver-update-1 FAIL "pipeline update: $st"
+  T0=$SECONDS; st=$(run_silver 2>"$W/err1"); U1_S=$((SECONDS - T0))
+  if [ "$ROUNDS" = 0 ]; then
+    [ "$st" = COMPLETED ] && claim silver-update-1 PASS "the first update of $PIPES $([ "$SILVER" = merge ] && echo 'merge-silver.py job(s)' || echo 'pipeline(s)') over $NT source table(s): ${U1_S}s ($(cat "$W/update_s"))" \
+      || { claim silver-update-1 FAIL "pipeline update: $st after ${U1_S}s: $(tr '\n' ' ' < "$W/err1" | cut -c1-600)"; }
+    [ "$st" = COMPLETED ] && every_table
+    [ "$SILVER" = pipeline ] && phases
+    # a second update with nothing new: what each update costs once the tables exist (the snapshot flows run once)
+    if [ "$st" = COMPLETED ]; then T0=$SECONDS; st=$(run_silver 2>"$W/err2"); U2_S=$((SECONDS - T0))
+      [ "$st" = COMPLETED ] && claim silver-update-2 PASS "a second update with no changes: ${U2_S}s ($(cat "$W/update_s"))" \
+        || claim silver-update-2 FAIL "second update: $st after ${U2_S}s: $(tr '\n' ' ' < "$W/err2" | cut -c1-600)"
+      [ "$SILVER" = pipeline ] && phases; fi
+    producers
+  else
+  [ "$st" = COMPLETED ] || claim silver-update-1 FAIL "pipeline update: $st $(tr '\n' ' ' < "$W/err1" | cut -c1-300)"
   for t in $TABLES; do same "$t" 1; done
   gold 1
   [ -n "$GOLD" ] && observe gold-refresh-1 "update 1: $(refresh)"
@@ -796,8 +965,8 @@ if [ "$PHASE" -ge 2 ]; then
         echo "SELECT tbl, '', '\\x' || encode(convert_to(jsonb_build_object('after', row_data, 'updated', seq::TEXT)::TEXT, 'UTF8'), 'hex') FROM $SRC_DB.audit ORDER BY seq;" | src > "$W/feed-$i.tsv"
       fi
     done; use 1
-    for t in $TABLES; do history "$t" "${t}_history" claim; same_hist "$t" 3; done
-    history "$NODEDUP" "${NODEDUP}_history_nodedup" observe
+    for t in $TABLES; do history "$t" "$t$HS" claim; same_hist "$t" 3; done
+    history "$NODEDUP" "$NODEDUP${HS}_nodedup" observe
 
     # a table moved out of the shared log while the others stay (BRONZE=shared, MOVE=1, the default there): the
     # fan-out for that table only, from the log's beginning, into cdc_log_<table>; silver's cdc.bronze_table.<table>
@@ -856,8 +1025,10 @@ if [ "$PHASE" -ge 2 ]; then
     for t in $TABLES; do same "$t" 5; same_hist "$t" 5; done
     gold 5
   fi
+  fi   # ROUNDS
 fi
 
+[ "$ROUNDS" = 0 ] && [ "$PHASE" = 1 ] && { sleep 60; producers; }
 # --- result -----------------------------------------------------------------------------------------------------------
 {
   echo "# debezium-zerobus run $E ($SRC_NAME)"; echo
