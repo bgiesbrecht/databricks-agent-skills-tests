@@ -181,6 +181,7 @@ What silver gives up, and where, so a result can be read for what it is:
 - **Own bronze on the direct route.** Debezium Server's Zerobus sink writes one table, so a table's own bronze is copied from the shared log by the fan-out: one more hop, and its changes stored twice.
 - **Silver across schemas (`SPLIT`).** Readers and gold name each table's schema.
 - **The Kafka route.** Zerobus's Kafka API takes the record value only, so the event is wrapped (`HoistField`, `StringifyField`) and nothing is dropped from it (no `DROP_FIELDS`): larger events than the direct route's.
+- **Retries.** A call that fails to connect is retried, up to 5 times with backoff: ssh to the VM when ssh itself can't connect (the input is kept, so a retry gets all of it), and the Databricks CLI when the request was never sent (DNS, refused, dial, TLS handshake). A connection lost after a request was sent isn't retried, since a create or a run-now may have gone through: the run fails there instead.
 - **Test data on CockroachDB.** For the PostgreSQL dialect the generator casts `POWER`'s arguments, and any expression plus or minus a decimal constant, to double precision (CockroachDB doesn't mix float and decimal). On plain PostgreSQL that arithmetic was NUMERIC before, so a generated value can differ in its last digits, or round to the other side of an exact `FLOOR` boundary.
 
 ## Before running

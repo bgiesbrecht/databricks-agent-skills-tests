@@ -104,12 +104,24 @@ PODMAN=${PODMAN:-podman --remote --url unix:///run/podman/podman.sock}
 # rmc <dir>: the command that removes a host directory whose files containers wrote (as root, or a container user)
 rmc() { case $1 in /*/?*) ;; *) echo "rmc: '$1' isn't an absolute path below a folder" >&2; echo false; return;; esac   # never / or empty
   echo "$PODMAN run --rm -v $(dirname "$1"):/p docker.io/library/alpine:3 rm -rf /p/$(basename "$1")"; }
-dbx() { databricks "$@" --profile "$PROFILE"; }
+# dbx: the CLI, retried when the connection fails before a request is sent (DNS, refused, dial, TLS handshake):
+# such a request never reached the workspace, so even a create or a run-now is safe to send again. A failure after
+# sending (a reset, a timeout waiting for the answer) isn't retried: the call may have gone through
+dbx() { local i rc e; e=$(mktemp "${TMPDIR:-/tmp}/dbx.XXXXXX")
+  for i in 1 2 3 4 5; do databricks "$@" --profile "$PROFILE" 2>"$e"; rc=$?
+    [ $rc -eq 0 ] || ! grep -q -i -E 'no such host|connection refused|dial tcp|TLS handshake timeout|network is unreachable' "$e" && break
+    echo "databricks $1 $2: connection failed (attempt $i of 5), retrying in $((i * 10)) s: $(head -c 200 "$e")" >&2; sleep $((i * 10)); done
+  cat "$e" >&2; rm -f "$e"; return $rc; }
 if [ -n "${LIMA:-}" ]; then   # the laptop: Podman in a Lima VM; nothing on the laptop is reachable from Databricks
   vm() { limactl shell "$LIMA" -- bash -c "$*"; }; HOSTDESC="Lima $LIMA"
 else
   SSH=(ssh -i "${SSH_KEY:-$HOME/.ssh/lfc_test_rsa}" -o BatchMode=yes "${VM_USER:-azureuser}@$VM_IP")
-  vm() { "${SSH[@]}" "$@"; }; HOSTDESC="VM $VM_IP"
+  # vm: retried when ssh can't connect (its exit code 255: a changed laptop IP at the firewall, the VM's sshd busy);
+  # the input is kept in a file first, so each try gets all of it
+  vm() { local i rc f; f=$(mktemp "${TMPDIR:-/tmp}/vm.XXXXXX"); [ -t 0 ] && : > "$f" || cat > "$f"
+    for i in 1 2 3 4 5; do "${SSH[@]}" -o ConnectTimeout=20 -o ServerAliveInterval=30 "$@" < "$f"; rc=$?; [ $rc -ne 255 ] && break
+      echo "ssh $VM_IP: connection failed (attempt $i of 5), retrying in $((i * 15)) s" >&2; sleep $((i * 15)); done
+    rm -f "$f"; return $rc; }; HOSTDESC="VM $VM_IP"
 fi
 # the schema: through a UC connection (remote_query, the source must be reachable from serverless), or as statschema's
 # canonical schema.yaml in the Volume, which the pipeline reads (the laptop)
