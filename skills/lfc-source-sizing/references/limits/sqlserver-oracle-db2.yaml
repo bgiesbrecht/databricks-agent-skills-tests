@@ -1,0 +1,137 @@
+# Documented limits: sqlserver-oracle-db2. Each quote is on its page: check with scripts/limits-check.py.
+- product: SQL Server
+  limit: Database size
+  value: 524,272 terabytes
+  kind: hard
+  url: https://learn.microsoft.com/en-us/sql/sql-server/maximum-capacity-specifications-for-sql-server
+  quote: Database size | 524,272 terabytes
+  ask: How large is the largest database to capture?
+  checked: 2026-10-22
+- product: SQL Server
+  limit: File size (data)
+  value: 16 terabytes
+  kind: hard
+  url: https://learn.microsoft.com/en-us/sql/sql-server/maximum-capacity-specifications-for-sql-server
+  quote: File size (data) | 16 terabytes
+  ask: Are data files larger than 16 TB?
+  checked: 2026-10-22
+- product: SQL Server
+  limit: File size (log)
+  value: 2 terabytes
+  kind: hard
+  url: https://learn.microsoft.com/en-us/sql/sql-server/maximum-capacity-specifications-for-sql-server
+  quote: File size (log) | 2 terabytes
+  ask: Are transaction log files larger than 2 TB?
+  checked: 2026-10-22
+- product: SQL Server
+  limit: Databases per instance
+  value: 32,767
+  kind: hard
+  url: https://learn.microsoft.com/en-us/sql/sql-server/maximum-capacity-specifications-for-sql-server
+  quote: Databases per instance of SQL Server | 32,767
+  ask: How many databases need to be captured?
+  checked: 2026-10-22
+- product: SQL Server
+  limit: Columns per table
+  value: 1,024
+  kind: hard
+  url: https://learn.microsoft.com/en-us/sql/sql-server/maximum-capacity-specifications-for-sql-server
+  quote: Columns per table | 1,024
+  ask: Any tables with more than 1,024 columns?
+  checked: 2026-10-22
+- product: SQL Server
+  limit: Bytes per row
+  value: 8,060
+  kind: hard
+  url: https://learn.microsoft.com/en-us/sql/sql-server/maximum-capacity-specifications-for-sql-server
+  quote: Bytes per row | 8,060
+  ask: Any rows wider than 8,060 bytes of fixed-length columns?
+  checked: 2026-10-22
+- product: SQL Server
+  limit: Identifier length
+  value: 128 characters
+  kind: hard
+  url: https://learn.microsoft.com/en-us/sql/sql-server/maximum-capacity-specifications-for-sql-server
+  quote: Identifier length (in characters) | 128
+  ask: Any table or column names longer than 128 characters?
+  checked: 2026-10-22
+- product: SQL Server
+  limit: Capture instances per table
+  value: '2'
+  kind: hard
+  url: https://learn.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/sys-sp-cdc-enable-table-transact-sql
+  quote: A source table can have a maximum of two capture instances
+  ask: how many capture instances are already on each table? the limit is 2
+  checked: 2026-10-22
+- product: SQL Server
+  limit: CDC available in
+  value: Enterprise, Standard editions
+  kind: behavior
+  url: https://learn.microsoft.com/en-us/sql/sql-server/editions-and-components-of-sql-server-2022
+  quote: Change data capture | Yes | Yes | No | No | No
+  ask: which SQL Server edition?
+  checked: 2026-10-22
+- product: SQL Server
+  limit: Filegroups per database
+  value: 32,767
+  kind: hard
+  url: https://learn.microsoft.com/en-us/sql/sql-server/maximum-capacity-specifications-for-sql-server
+  quote: Filegroups per database | 32,767
+  ask: How many filegroups are in the databases?
+  checked: 2026-10-22
+- product: SQL Server
+  limit: Files per database
+  value: 32,767
+  kind: hard
+  url: https://learn.microsoft.com/en-us/sql/sql-server/maximum-capacity-specifications-for-sql-server
+  quote: Files per database | 32,767
+  ask: How many data and log files are in the databases?
+  checked: 2026-10-22
+- product: Oracle Database
+  limit: Bigfile tablespace datafile size (32 KB blocks)
+  value: 128 terabytes
+  kind: hard
+  url: https://docs.oracle.com/en/database/oracle/oracle-database/21/refrn/physical-database-limits.html
+  quote: The maximum size of the single datafile or tempfile is 128 terabytes (TB) for a tablespace with 32 K blocks
+  ask: Are any tablespaces larger than the datafile size limit?
+  checked: 2026-10-22
+- product: Oracle Database
+  limit: Bigfile tablespace datafile size (8 KB blocks)
+  value: 32 terabytes
+  kind: hard
+  url: https://docs.oracle.com/en/database/oracle/oracle-database/21/refrn/physical-database-limits.html
+  quote: 32 TB for a tablespace with 8 K blocks
+  ask: Are tablespaces using 8 KB blocks larger than 32 TB?
+  checked: 2026-10-22
+- product: Oracle Database
+  limit: Smallfile tablespace datafiles per tablespace
+  value: 1,023
+  kind: hard
+  url: https://docs.oracle.com/en/database/oracle/oracle-database/21/refrn/physical-database-limits.html
+  quote: A smallfile tablespace is a traditional Oracle tablespace, which can contain 1023 datafiles or tempfiles
+  ask: Any smallfile tablespaces with more than 1,023 datafiles?
+  checked: 2026-10-22
+- product: Oracle Database
+  limit: Columns per table
+  value: 1,000
+  kind: hard
+  url: https://docs.oracle.com/en/database/oracle/oracle-database/21/refrn/logical-database-limits.html
+  quote: Columns | Maximum per table | 1000
+  ask: Any tables with more than 1,000 columns?
+  checked: 2026-10-22
+- product: Oracle Database
+  limit: Partitions per table or index
+  value: 1,048,575
+  kind: hard
+  url: https://docs.oracle.com/en/database/oracle/oracle-database/21/refrn/logical-database-limits.html
+  quote: Maximum number of partitions allowed per table or index | 1024K - 1
+  ask: Any tables or indexes with more than 1 million partitions?
+  checked: 2026-10-22
+- product: Oracle Database
+  limit: Columns per index
+  value: '32'
+  kind: hard
+  url: https://docs.oracle.com/en/database/oracle/oracle-database/21/refrn/logical-database-limits.html
+  quote: Columns | Maximum per index (or clustered index) | 32
+  ask: Any indexes with more than 32 columns?
+  checked: 2026-10-22

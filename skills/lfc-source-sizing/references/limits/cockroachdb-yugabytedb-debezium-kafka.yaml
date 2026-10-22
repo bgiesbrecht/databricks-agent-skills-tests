@@ -1,0 +1,123 @@
+# Documented limits: cockroachdb-yugabytedb-debezium-kafka. Each quote is on its page: check with scripts/limits-check.py.
+- product: CockroachDB
+  limit: row size (error threshold)
+  value: 80 MiB
+  kind: configurable
+  setting: sql.guardrails.max_row_size_err
+  url: https://www.cockroachlabs.com/docs/stable/cluster-settings
+  quote: maximum size of row (or column family if multiple column families are in use) that SQL can write to the database, above which an error is returned; use 0 to disable
+  ask: any rows over 80 MiB (large JSON, blobs)?
+  checked: 2026-10-22
+- product: CockroachDB
+  limit: row size (log threshold)
+  value: 16 MiB
+  kind: configurable
+  setting: sql.guardrails.max_row_size_log
+  url: https://www.cockroachlabs.com/docs/stable/cluster-settings
+  quote: maximum size of row (or column family if multiple column families are in use) that SQL can write to the database, above which an event is logged to SQL_PERF
+  ask: any rows over 16 MiB?
+  checked: 2026-10-22
+- product: CockroachDB
+  limit: changefeeds per cluster (recommendation)
+  value: '80'
+  kind: recommended
+  url: https://www.cockroachlabs.com/docs/stable/create-changefeed
+  quote: We recommend limiting the number of changefeeds per cluster to 80.
+  ask: 'one changefeed per producer or per shard: how many in total?'
+  checked: 2026-10-22
+- product: CockroachDB
+  limit: changefeed memory buffer
+  value: 512 MiB
+  kind: configurable
+  setting: changefeed.memory.per_changefeed_limit
+  url: https://www.cockroachlabs.com/docs/stable/create-changefeed
+  quote: adjust the changefeed.memory.per_changefeed_limit, which has a default of 512MiB. Buffering messages can quickly reach this limit
+  ask: how many tables and how busy, per changefeed?
+  checked: 2026-10-22
+- product: Debezium (every connector)
+  limit: batch size (maximum records per batch)
+  value: '2048'
+  kind: configurable
+  setting: max.batch.size
+  url: https://debezium.io/documentation/reference/stable/connectors/postgresql.html
+  quote: max.batch.size | 2048 | Positive integer value that specifies the maximum size of each batch of events that the connector processes.
+  ask: the default batch; raise it with max.batch.size for a busy source
+  checked: 2026-10-22
+- product: Debezium PostgreSQL
+  limit: queue size (maximum records in queue)
+  value: '8192'
+  kind: configurable
+  setting: max.queue.size
+  url: https://debezium.io/documentation/reference/stable/connectors/postgresql.html
+  quote: max.queue.size | 8192 | Positive integer value that specifies the maximum number of records that the blocking queue can hold. When Debezium reads events streamed from the database
+  ask: 'a busy source: max.queue.size must be larger than max.batch.size'
+  checked: 2026-10-22
+- product: Debezium PostgreSQL
+  limit: snapshot threads (parallel snapshot concurrency)
+  value: '1'
+  kind: configurable
+  setting: snapshot.max.threads
+  url: https://debezium.io/documentation/reference/stable/connectors/postgresql.html
+  quote: snapshot.max.threads | 1 | Specifies the number of threads that the connector uses when performing an initial snapshot. The value must be a positive integer greater than or equal to 1.
+  ask: 'a large initial snapshot: snapshot.max.threads reads tables in parallel'
+  checked: 2026-10-22
+- product: Debezium Server (Kafka sink)
+  limit: batch size (maximum bytes per batch)
+  value: 1048576 bytes
+  kind: configurable
+  setting: debezium.sink.kafka.producer.batch.size
+  url: https://debezium.io/documentation/reference/stable/operations/debezium-server.html
+  quote: debezium.sink.kafka.producer.batch.size | 1048576 | Specifies the maximum size, in bytes, of a single batch.
+  checked: 2026-10-22
+- product: Debezium Server (HTTP sink)
+  limit: batch size (maximum events per HTTP request)
+  value: '200'
+  kind: configurable
+  setting: debezium.sink.http.batch.max-size
+  url: https://debezium.io/documentation/reference/stable/operations/debezium-server.html
+  quote: debezium.sink.http.batch.max-size | 200 | The maximum number of events per HTTP request when batch mode is enabled.
+  checked: 2026-10-22
+- product: Debezium CockroachDB
+  limit: changefeeds per cluster (per Debezium consolidation)
+  value: '80'
+  kind: recommended
+  url: https://debezium.io/documentation/reference/stable/connectors/cockroachdb.html
+  quote: recommended limit on the number of changefeeds per CockroachDB cluster (approximately 80 at the time of writing).
+  ask: 'one changefeed per Debezium connector: how many connectors?'
+  checked: 2026-10-22
+- product: Debezium (every connector)
+  limit: queue size in bytes (volume limit)
+  value: 0 (disabled)
+  kind: configurable
+  setting: max.queue.size.in.bytes
+  url: https://debezium.io/documentation/reference/stable/connectors/postgresql.html
+  quote: max.queue.size.in.bytes | 0 | A long integer value that specifies the maximum volume of the blocking queue in bytes.
+  ask: 'large rows: cap the queue by bytes (max.queue.size.in.bytes) to bound memory'
+  checked: 2026-10-22
+- product: Debezium PostgreSQL
+  limit: poll interval (CDC poll frequency)
+  value: 500 ms
+  kind: configurable
+  setting: poll.interval.ms
+  url: https://debezium.io/documentation/reference/stable/connectors/postgresql.html
+  quote: poll.interval.ms | 500 | Positive integer value that specifies the number of milliseconds the connector should wait during each iteration for new
+  ask: how low must latency be?
+  checked: 2026-10-22
+- product: Debezium (every connector)
+  limit: incremental snapshot chunk size (rows per snapshot iteration)
+  value: '1024'
+  kind: configurable
+  setting: incremental.snapshot.chunk.size
+  url: https://debezium.io/documentation/reference/stable/connectors/postgresql.html
+  quote: incremental.snapshot.chunk.size | 1024 | The maximum number of rows that the connector fetches and reads into memory during an incremental snapshot chunk.
+  ask: 'a backfill while streaming: rows per chunk'
+  checked: 2026-10-22
+- product: Debezium Server (Zerobus sink)
+  limit: open Zerobus streams
+  value: '100'
+  kind: configurable
+  setting: debezium.sink.zerobus.max.open.streams
+  url: https://debezium.io/documentation/reference/stable/operations/debezium-server.html
+  quote: Zerobus binds each stream to a single target table, and each stream holds a connection
+  ask: 'per-table bronze over 100 tables: raise the setting or expect streams to close and reopen'
+  checked: 2026-10-22

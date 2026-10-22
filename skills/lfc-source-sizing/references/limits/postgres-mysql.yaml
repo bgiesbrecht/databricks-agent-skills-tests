@@ -1,0 +1,112 @@
+# Documented limits: postgres-mysql. Each quote is on its page: check with scripts/limits-check.py.
+- product: PostgreSQL
+  limit: database size
+  value: unlimited
+  kind: hard
+  url: https://www.postgresql.org/docs/current/limits.html
+  quote: database size | unlimited
+  ask: 'how big is the database? (no limit itself: ask about the largest table)'
+  checked: 2026-10-22
+- product: PostgreSQL
+  limit: number of databases
+  value: 4,294,950,911
+  kind: hard
+  url: https://www.postgresql.org/docs/current/limits.html
+  quote: number of databases | 4,294,950,911
+  ask: how many databases on the server?
+  checked: 2026-10-22
+- product: PostgreSQL
+  limit: relations per database
+  value: 1,431,650,303
+  kind: hard
+  url: https://www.postgresql.org/docs/current/limits.html
+  quote: relations per database | 1,431,650,303
+  ask: how many tables in the database?
+  checked: 2026-10-22
+- product: PostgreSQL
+  limit: relation (table) size
+  value: 32 TB
+  kind: hard
+  url: https://www.postgresql.org/docs/current/limits.html
+  quote: relation size | 32 TB | with the default BLCKSZ of 8192 bytes
+  ask: how big is the largest table? one table can't pass 32 TB (8 kB blocks)
+  checked: 2026-10-22
+- product: PostgreSQL
+  limit: rows per table
+  value: limited by pages (4,294,967,295)
+  kind: hard
+  url: https://www.postgresql.org/docs/current/limits.html
+  quote: rows per table | limited by the number of tuples that can fit onto 4,294,967,295 pages
+  ask: how many rows in the largest table?
+  checked: 2026-10-22
+- product: PostgreSQL
+  limit: columns per table
+  value: 1,600
+  kind: hard
+  url: https://www.postgresql.org/docs/current/limits.html
+  quote: columns per table | 1,600 | further limited by tuple size fitting on a single page
+  ask: any table wider than the engine allows?
+  checked: 2026-10-22
+- product: PostgreSQL
+  limit: field size (TOAST maximum)
+  value: 1 GB
+  kind: hard
+  url: https://www.postgresql.org/docs/current/limits.html
+  quote: field size | 1 GB
+  ask: any values over 1 GB (large JSON, bytea)?
+  checked: 2026-10-22
+- product: PostgreSQL
+  limit: identifier length (table, column, index names)
+  value: 63 bytes
+  kind: hard
+  url: https://www.postgresql.org/docs/current/limits.html
+  quote: identifier length | 63 bytes | can be increased by recompiling PostgreSQL
+  ask: any names longer than 63 bytes (truncated)?
+  checked: 2026-10-22
+- product: PostgreSQL
+  limit: maximum replication slots
+  value: 10 (default)
+  kind: configurable
+  setting: max_replication_slots
+  url: https://www.postgresql.org/docs/current/runtime-config-replication.html
+  quote: 'max_replication_slots ( integer ) # Specifies the maximum number of replication slots (see Section 26.2.6 ) that the server can support. The default is 10.'
+  ask: how many slots are in use already? each CDC reader takes one
+  checked: 2026-10-22
+- product: PostgreSQL
+  limit: maximum WAL senders
+  value: 10 (default)
+  kind: configurable
+  setting: max_wal_senders
+  url: https://www.postgresql.org/docs/current/runtime-config-replication.html
+  quote: 'max_wal_senders ( integer ) # Specifies the maximum number of concurrent connections from standby servers or streaming base backup clients (i.e., the maximum number of simultaneously running WAL
+    sender processes). The default is 10.'
+  ask: how many replication connections are in use already?
+  checked: 2026-10-22
+- product: PostgreSQL
+  limit: WAL file retention (per slot)
+  value: unlimited (default) or configurable
+  kind: configurable
+  setting: max_slot_wal_keep_size
+  url: https://www.postgresql.org/docs/current/runtime-config-replication.html
+  quote: 'max_slot_wal_keep_size ( integer ) # Specify the maximum size of WAL files that replication slots are allowed to retain in the pg_wal directory at checkpoint time. If max_slot_wal_keep_size is
+    -1 (the default), replication slots may retain an unlimited amount of WAL files.'
+  ask: is max_slot_wal_keep_size set? if not, a stopped reader's slot keeps WAL until the disk fills
+  checked: 2026-10-22
+- product: PostgreSQL
+  limit: wal_level for logical decoding (CDC)
+  value: logical
+  kind: configurable
+  setting: wal_level
+  url: https://www.postgresql.org/docs/current/runtime-config-wal.html
+  quote: logical adds information necessary to support logical decoding
+  ask: is wal_level already logical? changing it needs a server restart
+  checked: 2026-10-22
+- product: PostgreSQL
+  limit: changing wal_level
+  value: server start only
+  kind: behavior
+  setting: wal_level
+  url: https://www.postgresql.org/docs/current/runtime-config-wal.html
+  quote: This parameter can only be set at server start
+  ask: when is the next restart window?
+  checked: 2026-10-22
