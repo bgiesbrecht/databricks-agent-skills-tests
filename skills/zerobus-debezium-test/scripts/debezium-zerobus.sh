@@ -83,6 +83,8 @@ esac
 # broker), with the producer pointed at Zerobus's Kafka-compatible endpoint; for connectors that only run on Kafka Connect
 SINK=${SINK:-$([ "$SOURCE" = yb ] && echo kafka || echo zerobus)}
 [ "$BRONZE" = per-table ] && [ "$SINK" != kafka ] && { echo "BRONZE=per-table: only the Kafka route routes each table to its own bronze table so far; use BRONZE=fanout"; exit 2; }
+CRDB_CONNECTOR_VERSION=${CRDB_CONNECTOR_VERSION:-3.7.0.Final}   # SINK=kafka, SOURCE=crdb: Debezium's plugin archive (downloaded on the host)
+CRDB_CONNECTOR_URL=${CRDB_CONNECTOR_URL:-https://repo1.maven.org/maven2/io/debezium/debezium-connector-cockroachdb/$CRDB_CONNECTOR_VERSION/debezium-connector-cockroachdb-$CRDB_CONNECTOR_VERSION-plugin.tar.gz}
 YB_CONNECTOR_URL=${YB_CONNECTOR_URL:-https://github.com/yugabyte/debezium/releases/download/dz.2.5.2.yb.2026.1.2.0.1/yugabytedb-source-connector-dz.2.5.2.yb.2026.1.2.0.1-jar-with-dependencies.jar}
 CONNECT_IMAGE=${CONNECT_IMAGE:-docker.io/apache/kafka:3.7.2}
 DEST_PREFIX=${SOURCE}1.$SRC_SCHEMA   # the topic prefix and the schema: the change log's destination is <DEST_PREFIX>.<table>
@@ -298,6 +300,8 @@ HS=$(echo "$TABLES" | tr ' A-Z' '\na-z' | awk '{t[$0]} END {for (x in t) if ((x 
 DS=${DBZ_SHARDS:-1}; [ "$DS" -gt 1 ] && { [ "$SOURCE" = crdb ] && [ "$SINK" = zerobus ] || { echo "DBZ_SHARDS: CockroachDB with Debezium Server only (YugabyteDB would need a slot per shard)"; exit 2; }; }
 echo "$TABLES" | tr ' ' '\n' | python3 -I -c "import sys, zlib; [print(t + '\t' + str(zlib.crc32(t.encode()) % $DS)) for t in sys.stdin.read().split()]" > "$W/dbz-shard.tsv"
 include() { awk -F'\t' -v k="${1:-}" -v s="$SRC_SCHEMA" 'k == "" || $2 == k {printf "%s%s.%s", (n++ ? "," : ""), s, $1}' "$W/dbz-shard.tsv"; }
+ntables() { # ntables <container>: the tables that producer captures ("83 of 1000" for a shard)
+  case $1 in *-s[0-9]*) echo "$(awk -F'\t' -v k="${1##*-s}" '$2 == k' "$W/dbz-shard.tsv" | wc -l | tr -d ' ') of $NT";; *) echo "$NT";; esac; }
 keyed() { awk -F'\t' -v t="$1" '$1 == t && $5 == 1 {f = 1} END {exit !f}' "$W/schema.tsv"; }   # keyed <table>: has a primary key
 if [ "$PHASE" -ge 2 ]; then
   # the snapshot: every table of every source as of its T, onto the laptop, as <table>/<destination prefix>/ (the
@@ -383,12 +387,13 @@ LOG=$T.cdc_log
 # NORM: the change log in one shape for both sinks: destination, operation (create/update/delete/read), idempotency_key,
 # key, value, source_position, headers, _seq (orders each key's changes) and _event_ns (for the deduplication watermark).
 # Kafka Connect's records carry only the event (the Kafka API ingests the value alone): the operation comes from op, the
-# key from after or before, and the sequence from the slot's LSN, which follows commit order; the snapshot is sequence 0.
+# key from after or before, and the sequence from the slot's LSN (YugabyteDB), which follows commit order, with the
+# snapshot at sequence 0; CockroachDB's connector has no LSN: its ts_ns, as on the Debezium Server route, the snapshot at T.
 if [ "$SINK" = kafka ]; then
   NORM="SELECT destination, CASE value:op::STRING WHEN 'c' THEN 'create' WHEN 'u' THEN 'update' WHEN 'd' THEN 'delete' WHEN 'r' THEN 'read' END AS operation,
-    value:source:lsn::STRING AS idempotency_key, CASE value:op::STRING WHEN 'd' THEN value:before ELSE value:after END AS key, value, value:source AS source_position,
-    CAST(NULL AS VARIANT) AS headers, value:source:lsn::BIGINT AS _seq, value:ts_ms::BIGINT * 1000000 AS _event_ns"
-  for i in $(seq 1 "$NSRC"); do SNAPSEQ[$i]=0; done
+    COALESCE(value:source:lsn::STRING, value:ts_ns::STRING) AS idempotency_key, CASE value:op::STRING WHEN 'd' THEN value:before ELSE value:after END AS key, value, value:source AS source_position,
+    CAST(NULL AS VARIANT) AS headers, COALESCE(value:source:lsn::BIGINT, value:ts_ns::BIGINT) AS _seq, value:ts_ms::BIGINT * 1000000 AS _event_ns"
+  for i in $(seq 1 "$NSRC"); do SNAPSEQ[$i]=$([ "$SOURCE" = crdb ] && echo "${TNS[$i]}" || echo 0); done
   mklog() { q "CREATE TABLE $T.$1 (destination STRING NOT NULL, value VARIANT) CLUSTER BY (destination)
     COMMENT 'Append-only change log: one Debezium event per source change (Kafka Connect through the Zerobus Kafka API)'" >/dev/null; }
 else
@@ -492,6 +497,15 @@ vm "umask 077; mkdir -p $RD/src$i$PK/data && cat > $RD/src$i$PK/application.prop
 DBZS="$DBZS${DBZS:+ }${DBZC[$i]}$PK"
 vm "$PODMAN run -d --name ${DBZC[$i]}$PK --network $NET -v $RD/src$i$PK/application.properties:/debezium/config/application.properties:ro,U \
   -v $RD/src$i$PK/data:/debezium/data:U $DBZ_IMAGE >/dev/null" || { echo "Debezium start for $SRC_DB$PK failed"; exit 2; }
+# DBZ_SHARDS=K: one server at a time. Each must start its task within the engine's 40 s (an open question upstream
+# aside, the CockroachDB connector reads each table's metadata in that time); K JVMs starting at once on a small VM
+# took about 100 s each to start, and then too long to connect. So wait for this one to poll (or fail, or
+# DBZ_START_WAIT seconds, default 300) before starting the next.
+if [ "$DS" -gt 1 ]; then t0=$SECONDS
+  until vm "$PODMAN logs ${DBZC[$i]}$PK 2>&1 | grep -q -E \"to 'POLLING_TASKS'|Engine has failed\""; do
+    [ $((SECONDS - t0)) -ge "${DBZ_START_WAIT:-300}" ] && break; sleep 5; done
+  echo "producer ${DBZC[$i]}$PK: $(vm "$PODMAN logs ${DBZC[$i]}$PK 2>&1 | grep -o -E \"to 'POLLING_TASKS'|Engine has failed\" | head -1" || true) after $((SECONDS - t0)) s"
+fi
 done; done; use 1; rm -f "$W/secret.line"
 else
 # --- Kafka Connect, standalone, into Zerobus's Kafka-compatible endpoint (no broker) ------------------------------------
@@ -501,8 +515,9 @@ else
 # JSON text, which is how Zerobus takes a VARIANT), the source topic as "destination", and every topic routed to the one
 # table (BRONZE=per-table: to cdc_log_<table>). One worker runs every source's connector (standalone takes several
 # connector files). Jars are cached on the host in ~/.cache/dbz-zerobus.
-vm "umask 077; mkdir -p $RD/data $RD/cfg; C=\$HOME/.cache/dbz-zerobus; mkdir -p \$C/plugins/yb \$C/plugins/stringify \$C/cp \$C/src
-  [ -s \$C/plugins/yb/yb.jar ] || curl -s -L -o \$C/plugins/yb/yb.jar '$YB_CONNECTOR_URL'
+vm "umask 077; mkdir -p $RD/data $RD/cfg; C=\$HOME/.cache/dbz-zerobus; mkdir -p \$C/plugins/yb \$C/plugins/crdb \$C/plugins/stringify \$C/cp \$C/src
+  if [ $SOURCE = yb ]; then [ -s \$C/plugins/yb/yb.jar ] || curl -s -L -o \$C/plugins/yb/yb.jar '$YB_CONNECTOR_URL'
+  else ls \$C/plugins/crdb/*/debezium-connector-cockroachdb-$CRDB_CONNECTOR_VERSION.jar >/dev/null 2>&1 || { rm -rf \$C/plugins/crdb/* && curl -sfL '$CRDB_CONNECTOR_URL' | tar xz -C \$C/plugins/crdb; }; fi
   [ -s \$C/cp/zerobus-sink.jar ] || $PODMAN run --rm --entrypoint sh $DBZ_IMAGE -c 'cat /debezium/lib/debezium-server-databricks-zerobus-*.jar' > \$C/cp/zerobus-sink.jar" \
   || { echo "Kafka Connect jars failed"; exit 2; }
 # the source only when it changed, so the jar is rebuilt only then
@@ -531,14 +546,36 @@ key.converter.schemas.enable=false
 value.converter.schemas.enable=false
 offset.storage.file.filename=/data/offsets.dat
 offset.flush.interval.ms=1000
-plugin.path=/plugins
+plugin.path=/plugins/$SOURCE,/plugins/stringify
 topic.creation.enable=false
 EOF
 } > "$W/worker.properties"; unset JAAS_SECRET
 # the route: every topic (<prefix>.<schema>.<table>) to cdc_log, or to cdc_log_<table>
 [ "$BRONZE" = per-table ] && ROUTE='[^.]+\\.[^.]+\\.(.*)'"|$CATALOG.$S.cdc_log_\$1" || ROUTE=".*|$CATALOG.$S.cdc_log"
 for i in $(seq 1 "$NSRC"); do use "$i"
-cat > "$W/connector$i.properties" <<EOF
+{ if [ "$SOURCE" = crdb ]; then cat <<EOF
+name=crdb$i-zerobus
+connector.class=io.debezium.connector.cockroachdb.CockroachDBConnector
+tasks.max=1
+database.hostname=cockroachdb
+database.port=26257
+database.user=root
+database.password=
+database.dbname=$SRC_DB
+database.sslmode=disable
+database.server.name=crdb$i
+topic.prefix=crdb$i
+cockroachdb.changefeed.cursor=$T_HLC
+cockroachdb.changefeed.sink.type=sinkless
+cockroachdb.changefeed.resolved.interval=5s
+cockroachdb.changefeed.include.diff=false
+cockroachdb.changefeed.include.updated=true
+snapshot.mode=no_data
+table.include.list=$(include)
+tombstones.on.delete=false
+${DBZ_EXTRA:-}
+EOF
+else cat <<EOF
 name=yb$i-zerobus
 connector.class=io.debezium.connector.postgresql.YugabyteDBConnector
 tasks.max=1
@@ -556,6 +593,8 @@ snapshot.mode=never
 table.include.list=$(include)
 decimal.handling.mode=string
 tombstones.on.delete=false
+EOF
+fi; cat <<EOF
 transforms=hoist,dest,json,route
 transforms.hoist.type=org.apache.kafka.connect.transforms.HoistField\$Value
 transforms.hoist.field=value
@@ -567,6 +606,7 @@ transforms.route.type=org.apache.kafka.connect.transforms.RegexRouter
 transforms.route.regex=${ROUTE%%|*}
 transforms.route.replacement=${ROUTE#*|}
 EOF
+} > "$W/connector$i.properties"
 done; use 1
 for f in worker $(seq -f 'connector%g' 1 "$NSRC"); do vm "umask 077; cat > $RD/cfg/$f.properties" < "$W/$f.properties"; rm -f "$W/$f.properties"; done
 vm "C=\$HOME/.cache/dbz-zerobus; $PODMAN run -d --name $DBZ --network $NET -v $RD/cfg:/cfg:ro,U -v $RD/data:/data:U -v \$C/plugins:/plugins:ro,Z \
@@ -580,7 +620,18 @@ producers() { # ROUNDS=0: the producers after the run: streaming (Debezium Serve
     if [ "$SINK" = zerobus ]; then lg=$(vm "$PODMAN logs $c 2>&1 | grep -E \"Engine state has changed|Engine has failed\"" | grep -o -E '"timestamp":"[^"]*"|to .[A-Z_]+.|Engine has failed')
       t1=$(echo "$lg" | grep -B1 "to 'STARTING_TASKS'" | grep -o -E '[0-9]{2}:[0-9]{2}:[0-9]{2}' | head -1); t2=$(echo "$lg" | grep -B1 "to 'POLLING_TASKS'" | grep -o -E '[0-9]{2}:[0-9]{2}:[0-9]{2}' | head -1)
       if echo "$lg" | grep -q 'Engine has failed' || [ -z "$t2" ]; then claim "producer-streaming-$c" FAIL "the engine didn't get to POLLING_TASKS, or failed: $(echo "$lg" | grep -v timestamp | tr '\n' ' ')"
-      else claim "producer-streaming-$c" PASS "Debezium Server streaming over $NT table(s): its task started at $t1 and polled from $t2"; fi
+      else claim "producer-streaming-$c" PASS "Debezium Server streaming over $(ntables "$c") table(s): its task started at $t1 and polled from $t2"; fi
+    else   # Kafka Connect: each connector and its task RUNNING, from the worker's REST API (inside the container). A task
+      # starts in the background, so wait for it: up to PRODUCER_WAIT seconds (default 900), until RUNNING or FAILED
+      for i in $(seq 1 "$NSRC"); do t1="$SOURCE$i-zerobus"; t2=$SECONDS
+        while :; do lg=$(vm "$PODMAN exec $c wget -qO- localhost:8083/connectors/$t1/status" 2>&1)
+          st=$(echo "$lg" | yq -p json -r '[.connector.state, (.tasks[0].state // "none")] | join(" ")' 2>/dev/null)
+          case $st in "RUNNING RUNNING"|*FAILED*) break;; esac
+          [ $((SECONDS - t2)) -ge "${PRODUCER_WAIT:-900}" ] && break; sleep 15; done
+        case $st in
+          "RUNNING RUNNING") claim "producer-streaming-$t1" PASS "Kafka Connect: connector $t1 and its task RUNNING over $NT table(s), $((SECONDS - t2)) s after the check began";;
+          *) claim "producer-streaming-$t1" FAIL "Kafka Connect status after $((SECONDS - t2)) s: $(echo "$lg" | tr '\n' ' ' | cut -c1-500)";;
+        esac; done
     fi
     observe "producer-$c" "$(vm "$PODMAN inspect -f '{{.State.Status}} since {{.State.StartedAt}}' $c" 2>&1 | cut -c1-80); log lines with ERROR: $(vm "$PODMAN logs $c 2>&1 | grep -c ERROR"); the first: $(vm "$PODMAN logs $c 2>&1 | grep -m2 ERROR" | cut -c1-700 | tr '\n' ' '); last: $(vm "$PODMAN logs --tail 1 $c 2>&1" | cut -c1-300)"
     [ -n "${OUT:-}" ] && vm "$PODMAN logs $c 2>&1" > "${OUT%.md}-$c.log" 2>&1; done; }
@@ -1081,4 +1132,30 @@ fi
   echo; echo "| Claim | Result | Observation |"; echo "|---|---|---|"
   printf '%s\n' "${RESULTS[@]}"
 } | tee "${OUT:-/dev/null}"
+# LFC_PERF_DIR=<a perf/runs folder with record.sh one level up> (as lfc-schema-change-test's lib.sh): the run's
+# configuration and numbers there too; this public repo keeps only what was tested and the outcome
+if [ -n "${LFC_PERF_DIR:-}" ] && [ -x "$LFC_PERF_DIR/../record.sh" ]; then
+  num() { [[ ${1:-} =~ ^[0-9]+$ ]] && echo "$1" || echo null; }
+  jq -n -c --arg id "$(date -u +%F)-zb-$SOURCE-$MODEL-$E" --arg date "$(date -u +%F)" \
+    --arg scen "$([ "$ROUNDS" = 0 ] && echo zerobus-silver-scale || echo zerobus-silver-rounds)" \
+    --arg src "$SRC_NAME" --arg ver "$SRC_VERSION" --arg host "$([ -n "${LIMA:-}" ] && echo lima-podman || echo vm-podman)" \
+    --arg ws "$PROFILE" --arg cloud "${CLOUD:-}" --arg region "${REGION:-}" \
+    --arg producer "$([ "$SINK" = kafka ] && echo "Kafka Connect $CONNECT_IMAGE" || echo "Debezium Server $DBZ_IMAGE, Zerobus sink")" \
+    --arg bronze "$BRONZE" --arg silver "$SILVER" --arg model "$MODEL" --arg sf "$SF" --arg empty "$EMPTY" --arg fks "$FKS" \
+    --arg rounds "$ROUNDS" --arg pipes "$PIPES" --arg split "$SPLIT" --arg nsrc "$NSRC" --arg shards "$DS" \
+    --arg harness "debezium-zerobus.sh @ $(git -C "$HERE" rev-parse --short HEAD 2>/dev/null)$([ -n "$(git -C "$HERE" status --porcelain -- . 2>/dev/null)" ] && echo ' (uncommitted changes)')" \
+    --argjson tables "$NT" --argjson silver_tables "$(num "$([ -f "$W/want.tsv" ] && wc -l < "$W/want.tsv" | tr -d ' ')")" \
+    --argjson first "$(num "${U1_S:-}")" --argjson second "$(num "${U2_S:-}")" --argjson snap "$(num "${SNAP_S:-}")" \
+    --argjson up "$(num "${UP_S:-}")" --argjson run "$SECONDS" \
+    --argjson streaming "$(printf '%s\n' "${RESULTS[@]}" | grep -c '^| `producer-streaming-[^`]*` | PASS')" --argjson pass "$(printf '%s\n' "${RESULTS[@]}" | grep -c '| PASS |')" --argjson fail "$(printf '%s\n' "${RESULTS[@]}" | grep -c '| FAIL |')" \
+    --arg claims "$(printf '%s\n' "${RESULTS[@]}" | sed -E 's/^\| `([^`]*)` \| ([A-Z]+) \|.*/\1=\2/' | grep -v '=OBSERVED$' | paste -sd' ' -)" \
+    '{run_id:$id, date:$date, scenario:$scen,
+      config:{source:$src, source_version:$ver, host:$host, workspace:$ws, cloud:$cloud, region:$region, compute:"serverless",
+              producer:$producer, bronze:$bronze, silver:$silver, model:$model, sf:$sf, empty:$empty, fks:$fks, rounds:$rounds,
+              pipelines:$pipes, split_schemas:$split, sources:$nsrc, producers_per_source:$shards, harness:$harness},
+      metrics:({tables:$tables, silver_tables:$silver_tables, first_update_s:$first, second_update_s:$second, snapshot_s:$snap,
+                upload_s:$up, run_s:$run, claims_passed:$pass, claims_failed:$fail, producers_streaming:$streaming} | with_entries(select(.value != null))),
+      notes:$claims}' \
+    | "$LFC_PERF_DIR/../record.sh" >&2 || echo "performance record not written" >&2
+fi
 exit $FAILED

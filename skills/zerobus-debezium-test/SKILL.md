@@ -115,7 +115,7 @@ In the test:
 | `PIPES=K` | K silver pipelines (or K MERGE jobs), each with the tables of `crc32(name) % K` |
 | `SPLIT=1` | With `SILVER=merge` and `PIPES=K`: job k writes its silver tables to their own schema, `<S>_s<k>` (bronze and the volume stay in `<S>`) |
 | `SILVER=merge` | Silver without a pipeline: `scripts/merge-silver.py` as a serverless job, with MERGE instead of AUTO CDC (`BRONZE=shared` only so far) |
-| `DBZ_SHARDS=K` | K Debezium Servers per source, each with the tables of `crc32(name) % K` |
+| `DBZ_SHARDS=K` | K Debezium Servers per source, each with the tables of `crc32(name) % K`, started one at a time (each waits up to `DBZ_START_WAIT` s for the one before) |
 
 `ROUNDS=0 PHASE=1` runs the producers only.
 
@@ -147,6 +147,8 @@ Found on the way, and fixed:
 - A `once` append flow takes a batch source only, so only the AUTO CDC snapshot flows are `once`.
 
 **Producer limit.** Debezium Server 3.7.0 waits a fixed 40 s for its connector task to start, and doesn't read `task.management.timeout.ms`: the log says "Waiting max. for 40000 ms" whatever it's set to. At start, the CockroachDB connector runs the JDBC column-metadata query once per table, which is slow on CockroachDB, so one producer starts only a few hundred tables at most: 100 started, 1000 didn't, nor did 4 producers of 250 against the one node.
+
+**More producers, started one at a time.** `DBZ_SHARDS=K` splits the tables over K Debezium Servers, one changefeed each, and starts them one after another: each waits for the one before to reach `POLLING_TASKS` (or fail). Started all at once, the servers' JVMs compete for the host's CPU and spend the 40 s starting up. On the 4-vCPU test VM, 1000 tables streamed on 20 servers of about 50 tables each; 12 servers of about 83 tables, started one at a time, got only 4 to stream, and 12 started at once got none. Keep a server's tables well under what starts in 40 s, and count its changefeed against CockroachDB's recommended maximum per cluster (see lfc-source-sizing's limits).
 
 ## Before running
 

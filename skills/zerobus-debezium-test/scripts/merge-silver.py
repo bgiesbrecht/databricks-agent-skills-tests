@@ -358,7 +358,8 @@ def norm(log_df):
             F.expr("CASE value:op::STRING WHEN 'c' THEN 'create' WHEN 'u' THEN 'update' WHEN 'd' THEN 'delete' "
                    "WHEN 'r' THEN 'read' END").alias("operation"),
             F.expr("CASE value:op::STRING WHEN 'd' THEN value:before ELSE value:after END").alias("key"), "value",
-            F.expr("value:source:lsn::BIGINT").alias("_seq"), F.expr("value:source:lsn::STRING").alias("idempotency_key"))
+            F.expr("COALESCE(value:source:lsn::BIGINT, value:ts_ns::BIGINT)").alias("_seq"),
+            F.expr("COALESCE(value:source:lsn::STRING, value:ts_ns::STRING)").alias("idempotency_key"))
     else:
         out = log_df.select("destination", "operation", "key", "value", F.expr("value:ts_ns::BIGINT").alias("_seq"), "idempotency_key")
     return out.withColumn("_table", F.substring_index("destination", ".", -1))

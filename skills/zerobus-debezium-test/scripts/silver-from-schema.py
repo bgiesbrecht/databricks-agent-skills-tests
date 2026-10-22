@@ -196,9 +196,9 @@ def norm_view(bronze):
                 "destination",
                 F.expr("CASE value:op::STRING WHEN 'c' THEN 'create' WHEN 'u' THEN 'update' WHEN 'd' THEN 'delete' "
                        "WHEN 'r' THEN 'read' END").alias("operation"),
-                F.expr("value:source:lsn::STRING").alias("idempotency_key"),
+                F.expr("COALESCE(value:source:lsn::STRING, value:ts_ns::STRING)").alias("idempotency_key"),
                 F.expr("CASE value:op::STRING WHEN 'd' THEN value:before ELSE value:after END").alias("key"), "value",
-                F.expr("value:source:lsn::BIGINT").alias("_seq"), F.expr("value:ts_ms::BIGINT * 1000000").alias("_event_ns"))
+                F.expr("COALESCE(value:source:lsn::BIGINT, value:ts_ns::BIGINT)").alias("_seq"), F.expr("value:ts_ms::BIGINT * 1000000").alias("_event_ns"))
         return log.withColumn("_seq", F.expr("value:ts_ns::BIGINT")).withColumn("_event_ns", F.expr("value:ts_ns::BIGINT"))
 
     @dp.temporary_view(name=f"_dedup_{bronze}")
