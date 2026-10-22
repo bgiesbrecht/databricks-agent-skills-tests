@@ -95,7 +95,12 @@ want() { [ "$1" = p_ciideny ] && echo 12 || echo 10; }   # p_ciideny got two row
 FR=""; for t in p_noselect p_notrack p_cdcdeny p_ciideny p_locked; do [ "$(q "SELECT COUNT(*) FROM $T.$t" 2>&1)" = "$(want $t)" ] || FR+="${FR:+,}$t"; done
 if [ -n "$FR" ]; then
   update "$FR"
-  bad=""; for t in ${FR//,/ }; do [ "$(expect "$(want $t)" "SELECT COUNT(*) FROM $T.$t")" = "$(want $t)" ] || bad+=" $t($(errs_for $t | tr -d ' '))"; done
+  # standard CDC: the gateway snapshots the refreshed tables again, so the tables can arrive a few updates later
+  for _ in 1 2 3; do
+    bad=""; for t in ${FR//,/ }; do [ "$(q "SELECT COUNT(*) FROM $T.$t" 2>&1)" = "$(want $t)" ] || bad+=" $t"; done
+    [ -z "$bad" ] && break; sleep "$WAIT"; update
+  done
+  bad=""; for t in ${FR//,/ }; do r=$(q "SELECT COUNT(*) FROM $T.$t" 2>&1 | head -1 | cut -c1-40); [ "$r" = "$(want $t)" ] || bad+=" $t(rows $r; errors $(errs_for $t | tr -d ' '))"; done
   [ -z "$bad" ] && claim fix-then-refresh-recovers PASS "after fixing the source, a full refresh of $FR loads each table's source rows" \
     || claim fix-then-refresh-recovers FAIL "after fixing and refreshing $FR, still off:$bad"
 fi
