@@ -299,7 +299,8 @@ cleanup() {
 METRICS="{}"; RUN_CONF="{}"
 metric() { METRICS=$(echo "$METRICS" | K=$1 V=$2 yq -o json -I0 '.[strenv(K)] = (strenv(V) | tonumber)'); }
 conf() { RUN_CONF=$(echo "$RUN_CONF" | K=$1 V=$2 yq -o json -I0 '.[strenv(K)] = strenv(V)'); }
-# record_run <scenario>: one record per run into results/runs/<date>-lfc-schema-change.jsonl via lfc-test-results record.py
+# record_run <scenario>: one record per run into results/runs/<date>-lfc-schema-change.jsonl via lfc-test-results record.py:
+# what combination was tested and how it came out, no numbers (those go to the private store below)
 # (it refuses anything that looks internal: the repo is public). RECORD=0 skips it.
 record_run() {
   [ "${RECORD:-1}" = 1 ] || return 0
@@ -315,7 +316,7 @@ record_run() {
     --arg claims "$(printf '%s\n' "${RESULTS[@]}" | sed -E 's/^\| `([^`]*)` \| ([A-Z]+) \|.*/\1=\2/' | paste -sd' ' -)" \
     '{date:$date, run:$run, test:$test, subject:{engine:$engine, version:$ver}, outcome:$outcome, result:$res,
       workspace:{cloud:$cloud, region:$region}, setup:({scenario:$scen, mode:$mode, tool:"lfc-schema-change-test"} + $conf),
-      metrics:$metrics, notes:$claims}' | uv run "$rec" >&2 && echo "recorded: $1 ($res)" || echo "record_run: not recorded (see above)" >&2
+      notes:$claims}' | uv run "$rec" >&2 && echo "recorded: $1 ($res)" || echo "record_run: not recorded (see above)" >&2
   # LFC_PERF_DIR=<a perf/runs folder with record.sh one level up>: also keep the full config and the numbers there (a
   # private results store can hold the workspace and the source host, which this public repo can't)
   if [ -n "${LFC_PERF_DIR:-}" ] && [ -x "$LFC_PERF_DIR/../record.sh" ] && [ "$METRICS" != "{}" ]; then

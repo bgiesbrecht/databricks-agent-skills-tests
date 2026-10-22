@@ -73,7 +73,7 @@ ssh vm 'cd run && tar xzf datagen.tgz && MSSQL=$PWD/sq nohup bash copies.sh ms m
 ssh vm 'tail -1 run/build.log'                # "all done", or "finished with failures"
 ```
 
-`copies.sh` prints `done <schema> <seconds>s` per copy, reuses a schema that already has its tables and resumes a fill, so a rerun continues. Measured on the Azure VM (4 vCPUs): a TPC-C copy at SF 0.01 (9 tables, 104,992 rows) in 15 s, against 34 s from a laptop over SSH. SQL Server only for now. lfc-schema-change-test `sqlserver-scale.sh` uses it.
+`copies.sh` prints `done <schema> <seconds>s` per copy, reuses a schema that already has its tables and resumes a fill, so a rerun continues. SQL Server only for now. lfc-schema-change-test `sqlserver-scale.sh` uses it.
 
 ### Fill level by level
 
