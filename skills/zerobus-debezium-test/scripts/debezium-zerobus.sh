@@ -34,6 +34,9 @@
 #   MERGE in place of AUTO CDC; nothing is declared per table, so start-up doesn't grow with them. Through rounds 1 to
 #   5 the same checks as a pipeline's: a full refresh is --refresh <tables>, the moved table --bronze-table, and gold
 #   a materialized view made and refreshed by SQL (CREATE OR REFRESH) after each run. No _history_nodedup table.
+#   SPLIT=1 (with PIPES=K, ROUNDS=0 so far): job k writes its silver tables to their own schema, <S>_s<k>, so silver
+#   spans K schemas (Unity Catalog holds 10,000 tables a schema, and each source table makes 2); bronze, the volume
+#   and the checks stay in <S>.
 # Needs: PROFILE (Databricks CLI profile), CATALOG (with its own storage), VM_IP; optional VM_USER (azureuser),
 #   SSH_KEY (~/.ssh/lfc_test_rsa), SRC_IMAGE, DBZ_IMAGE, SRC_PORT (published for the UC connection, default 30026),
 #   WAIT (seconds to wait for rows, default 180), OUT=<file.md>, DBZ_START_TIMEOUT_MS (how long Debezium Server waits for
@@ -63,6 +66,7 @@ NSRC=${NSRC:-1}; case $NSRC in *[!0-9]*|""|0) echo "NSRC: 1 or more"; exit 2;; e
 EMPTY=${EMPTY:-0}; FKS=${FKS:-1}; ROUNDS=${ROUNDS:-5}; PIPES=${PIPES:-1}
 case $ROUNDS in 0|5) ;; *) echo "ROUNDS: 0 (no changes) or 5"; exit 2;; esac
 [ "$PIPES" -gt 1 ] && [ "$ROUNDS" != 0 ] && { echo "PIPES>1: ROUNDS=0 only so far"; exit 2; }
+SPLIT=${SPLIT:-0}; [ "$SPLIT" = 1 ] && { [ "${SILVER:-}" = merge ] && [ "$PIPES" -gt 1 ] || { echo "SPLIT=1: SILVER=merge and PIPES>1 only so far"; exit 2; }; }
 SILVER=${SILVER:-pipeline}; case $SILVER in pipeline) ;; merge) [ "${BRONZE:-shared}" = shared ] \
   || { echo "SILVER=merge: BRONZE=shared only so far"; exit 2; };; *) echo "SILVER: pipeline or merge"; exit 2;; esac
 BRONZE=${BRONZE:-shared}; BRONZE_SHARDS=${BRONZE_SHARDS:-0}; ON_DRIFT=${ON_DRIFT:-record}
@@ -180,6 +184,7 @@ cleanup() {
   [ -n "${CONN:-}" ] && dbx connections delete "$CONN" >/dev/null 2>&1
   [ -n "${WSDIR:-}" ] && dbx workspace delete "$WSDIR" --recursive >/dev/null 2>&1
   dbx schemas delete "$CATALOG.$S" --force >/dev/null 2>&1
+  for k in ${SPLIT_SCHEMAS[@]+"${SPLIT_SCHEMAS[@]}"}; do dbx schemas delete "$CATALOG.$k" --force >/dev/null 2>&1; done
   left=$(vm "$PODMAN ps -a --format '{{.Names}}' | grep -c -E '^($(echo $DBZS | tr ' ' '|')|$SRCC)\$'" 2>/dev/null)
   echo "cleanup: containers left ${left:-?}; SP ${SP_ID:+deleted}; pipeline(s) ${PIPELINE_ID:+deleted}; connection ${CONN:+deleted}; schema dropped"
   rm -rf "${W:?}"; [ -n "${MIXF:-}" ] && rm -f "$MIXF"
@@ -739,13 +744,15 @@ if [ "$PHASE" -ge 2 ]; then
     .configuration = {"cdc.volume": strenv(VOL), "cdc.bronze": strenv(SINK), "cdc.bronze_table": strenv(BT),
       "cdc.bronze_shards": strenv(SHARDS), "cdc.nodedup_table": strenv(NODEDUP), "cdc.history_suffix": strenv(HS), "cdc.on_drift": strenv(ON_DRIFT)}' > "$W/pipe.json"
   # PIPES=K: K pipelines, the same files, each with cdc.shard = <k>/<K> (its own tables)
-  PIPELINE_IDS=(); MERGE_JOBS=(); MERGE_PARAMS=(); MERGE_EXTRA=()
+  PIPELINE_IDS=(); MERGE_JOBS=(); MERGE_PARAMS=(); MERGE_EXTRA=(); SPLIT_SCHEMAS=()
   for k in $(seq 0 $((PIPES - 1))); do
     if [ "$SILVER" = merge ]; then   # merge-silver.py as a serverless job, shard k of K
-      export JN="$PIPE_NAME-merge$([ "$PIPES" -gt 1 ] && echo "-p$k")" MPY=$WSDIR/merge-silver.py MSH=$([ "$PIPES" -gt 1 ] && echo "$k/$PIPES") MCP="$VOL/_merge/p$k"
+      export JN="$PIPE_NAME-merge$([ "$PIPES" -gt 1 ] && echo "-p$k")" MPY=$WSDIR/merge-silver.py MSH=$([ "$PIPES" -gt 1 ] && echo "$k/$PIPES") MCP="$VOL/_merge/p$k" MS=$S
+      if [ "$SPLIT" = 1 ]; then MS=${S}_s$k; dbx schemas create "$MS" "$CATALOG" >/dev/null || { echo "schema $MS create failed"; exit 2; }
+        SPLIT_SCHEMAS+=("$MS"); link "silver schema $CATALOG.$MS (shard $k/$PIPES)" "$HOST/explore/data/$CATALOG/$MS"; fi
       yq -n -o json '.name = strenv(JN) | .environments = [{"environment_key": "default", "spec": {"environment_version": "4", "dependencies": ["pyyaml"]}}] |
         .tasks = [{"task_key": "silver", "environment_key": "default", "spark_python_task": {"python_file": strenv(MPY),
-          "parameters": ["--volume", strenv(VOL), "--source", "`" + strenv(CATALOG) + "`." + strenv(S) + ".cdc_log", "--target", "`" + strenv(CATALOG) + "`." + strenv(S),
+          "parameters": ["--volume", strenv(VOL), "--source", "`" + strenv(CATALOG) + "`." + strenv(S) + ".cdc_log", "--target", "`" + strenv(CATALOG) + "`." + strenv(MS),
             "--checkpoint", strenv(MCP), "--bronze", strenv(SINK), "--history-suffix", strenv(HS), "--on-drift", strenv(ON_DRIFT), "--once"] + (strenv(MSH) | select(. != "") | ["--shard", .]) // []}}]' > "$W/merge-$k.json"
       j=$(dbx jobs create --json @"$W/merge-$k.json" -o json | yq '.job_id') && [ -n "$j" ] || { echo "merge job create failed"; exit 2; }
       MERGE_JOBS+=("$j"); MERGE_PARAMS+=("$(yq -o json -I0 '.tasks[0].spark_python_task.parameters' "$W/merge-$k.json")"); link "silver job $JN (merge-silver.py${MSH:+, shard $MSH})" "$HOST/jobs/$j"; continue
@@ -853,17 +860,23 @@ if [ "$PHASE" -ge 2 ]; then
     awk -F'\t' -v hs="$HS" -v m="$SILVER" '{c[$1] = c[$1] "," tolower($3); if ($5 == 1) key[$1]} END {for (t in c) {print t "\t" substr(c[t], 2) ",_source" (m == "merge" && (t in key) ? ",_seq" : "");
       if (t in key) print t hs "\t" substr(c[t], 2) ",_source,__end_at,__start_at" (m == "merge" ? ",_idem" : "")}}' "$W/schema.tsv" \
       | python3 -I -c 'import sys; [print(t.lower() + "\t" + ",".join(sorted(c.split(",")))) for t, c in (l.rstrip("\n").split("\t") for l in sys.stdin)]' | LC_ALL=C sort > "$W/want.tsv"
+    # silver's schemas: the run's, and with SPLIT=1 its <S>_s<k> (a table's name is unique across them; the state
+    # tables, _cdc_*, are in each, and no check looks at them)
+    local sch="table_schema RLIKE '^${S}(_s[0-9]+)?\$'"
     q "SELECT table_name, CONCAT_WS(',', ARRAY_SORT(COLLECT_LIST(LOWER(column_name)))) FROM \`$CATALOG\`.information_schema.columns
-       WHERE table_schema = '$S' GROUP BY 1" | LC_ALL=C sort > "$W/have-cols.tsv" || { claim silver-tables FAIL "information_schema.columns failed"; return; }
+       WHERE $sch GROUP BY 1" | LC_ALL=C sort > "$W/have-cols.tsv" || { claim silver-tables FAIL "information_schema.columns failed"; return; }
     bad=$(awk -F'\t' 'NR == FNR {h[$1] = $2; next} !($1 in h) {print "missing " $1; next} h[$1] != $2 {print $1 " has " h[$1]}' "$W/have-cols.tsv" "$W/want.tsv" | head -5 | tr '\n' ';' | cut -c1-600)
     want=$(wc -l < "$W/want.tsv" | tr -d ' ')
     [ -z "$bad" ] && claim silver-tables PASS "all $want silver tables for $NT source tables, each with the source's columns (information_schema.columns)" \
       || claim silver-tables FAIL "of $want: $bad"
     # rows per table and source, in silver; then against each source's counts
-    cut -f1 "$W/want.tsv" | split -l 200 - "$W/rc."
+    # each table's schema (SPLIT=1: one of <S>_s<k>), from information_schema.tables
+    q "SELECT table_name, table_schema FROM \`$CATALOG\`.information_schema.tables WHERE $sch" > "$W/table-schema.tsv" \
+      || { claim silver-rows FAIL "information_schema.tables failed"; return; }
+    awk -F'\t' 'NR == FNR {if (!($1 in s)) s[$1] = $2; next} {print $1 "\t" s[$1]}' "$W/table-schema.tsv" "$W/want.tsv" | split -l 200 - "$W/rc."
     for f in "$W"/rc.*; do
       while [ "$(jobs -r | wc -l)" -ge 4 ]; do sleep 1; done
-      ( Q=$(awk -v T="$T" '{printf "%sSELECT %c%s%c, _source, COUNT(*) FROM %s.`%s` GROUP BY _source", (NR > 1 ? " UNION ALL " : ""), 39, $1, 39, T, $1}' "$f") sql > "$f.out" 2>"$f.err" ) &
+      ( Q=$(awk -F'\t' -v C="$CATALOG" '{printf "%sSELECT %c%s%c, _source, COUNT(*) FROM `%s`.%s.`%s` GROUP BY _source", (NR > 1 ? " UNION ALL " : ""), 39, $1, 39, C, $2, $1}' "$f") sql > "$f.out" 2>"$f.err" ) &
     done; wait
     cat "$W"/rc.*.out | LC_ALL=C sort > "$W/silver-rows.tsv"
     n=$(cat "$W"/rc.*.err | grep -c .); [ "$n" = 0 ] || { claim silver-rows FAIL "$n row-count queries failed: $(cat "$W"/rc.*.err | head -c 300)"; return; }

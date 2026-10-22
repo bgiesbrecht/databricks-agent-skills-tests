@@ -113,6 +113,7 @@ In the test:
 | `FKS=0` | Leaves the foreign keys out: CockroachDB takes much longer to add a foreign key than to create a table |
 | `ROUNDS=0` | No changes. The run stops after the snapshot and silver's first update, then checks every silver table at once (columns and row counts against the source), times a second update with nothing new, and checks that each producer is streaming |
 | `PIPES=K` | K silver pipelines (or K MERGE jobs), each with the tables of `crc32(name) % K` |
+| `SPLIT=1` | With `SILVER=merge` and `PIPES=K`: job k writes its silver tables to their own schema, `<S>_s<k>` (bronze and the volume stay in `<S>`) |
 | `SILVER=merge` | Silver without a pipeline: `scripts/merge-silver.py` as a serverless job, with MERGE instead of AUTO CDC (`BRONZE=shared` only so far) |
 | `DBZ_SHARDS=K` | K Debezium Servers per source, each with the tables of `crc32(name) % K` |
 
@@ -134,9 +135,10 @@ Tested on the Azure VM with empty tables, 2026-10-22 (outcomes in `results/runs/
 | Silver | Source tables that passed | Where it stopped |
 |---|---|---|
 | Pipeline (AUTO CDC) | 10, 100, and 1000 on 4 pipelines | Not tried higher: start-up grows with the tables in a pipeline |
-| MERGE job | 10, 100, 1000, 2000, 4000 | 8000: Unity Catalog's 10,000 tables per schema |
+| MERGE job | 10, 100, 1000, 2000, 4000 | 8000 in one schema: Unity Catalog's 10,000 tables per schema |
+| MERGE jobs, a schema each (`PIPES=4 SPLIT=1`) | 8000 (15,746 silver tables in 4 schemas) | Not tried higher |
 
-A pipeline declares every table, view and flow when each update starts, and resolving that graph is most of each update, even one with no changes. MERGE declares nothing per table, so a run with no changes doesn't grow with the table count. Above about 5000 source tables, silver has to span more than one schema.
+A pipeline declares every table, view and flow when each update starts, and resolving that graph is most of each update, even one with no changes. MERGE declares nothing per table, so a run with no changes doesn't grow with the table count. Above about 5000 source tables, silver has to span more than one schema (`SPLIT=1`), or the account team raises the quota (it isn't fixed).
 
 Found on the way, and fixed:
 - TPC-E has both `holding` and `holding_history`, so the history tables' suffix is a setting (`cdc.history_suffix`); the run uses `__history` when `_history` would clash with a source table.
