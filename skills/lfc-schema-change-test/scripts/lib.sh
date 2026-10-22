@@ -35,7 +35,8 @@ lfc_init() {
   local root def
   root=$(dbx catalogs get "$CATALOG" -o json | yq '.storage_root // ""')
   def=$(dbx external-locations get __databricks_managed_storage_location -o json 2>/dev/null | yq '.url // ""')
-  [ -n "$root" ] || { echo "catalog $CATALOG has no storage root"; exit 2; }
+  # no storage root of its own: the catalog uses the metastore's (e.g. main), which CDC accepts; only Default Storage fails
+  [ -n "$root" ] || echo "catalog $CATALOG has no storage root of its own: using the metastore's"
   [ -n "$def" ] && [[ "$root" == "$def"* ]] && { echo "catalog $CATALOG is on Default Storage: CDC refuses it"; exit 2; }
   local ct=SQLSERVER; [ "$ENGINE" = postgres ] && ct=POSTGRESQL
   [ "$(dbx connections get "$CONNECTION" -o json | yq '.connection_type')" = $ct ] || { echo "$CONNECTION is not $ct"; exit 2; }
@@ -258,12 +259,16 @@ settle_rows() {
   done
 }
 
+# src_owned: 1 when this run made the source database. Decided by its name (it ends in this run's epoch), not by a
+# variable src_db sets: a script that pipes into src_db (`... | src_db`) runs it in a subshell, and the variable was lost,
+# so cleanup left those databases behind while reporting none left.
+src_owned() { [[ "${DB:-}" == *"_${E:-none}" ]] && echo 1 || echo 0; }
 cleanup() {
   [ "${KEEP:-0}" = 1 ] && { echo "KEEP=1: left $DB, $GWN, $APN, $CATALOG.$S"; return; }
   [ -n "${AP:-}" ] && [ "$AP" != null ] && dbx pipelines delete "$AP"; [ -n "${GW:-}" ] && [ "$GW" != null ] && dbx pipelines delete "$GW"; sleep 15
   dbx schemas delete "$CATALOG.$S" --force 2>/dev/null; dbx schemas delete "$CATALOG.$STG" --force 2>/dev/null
   local left=0
-  if [ "${SRC_CREATED:-0}" = 1 ] && [ "$ENGINE" = postgres ]; then
+  if [ "$(src_owned)" = 1 ] && [ "$ENGINE" = postgres ]; then
     for _ in 1 2 3; do   # the slot is held while the deleted gateway's session lingers
       printf "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE slot_name = '%s' AND NOT active;\nDROP DATABASE IF EXISTS %s WITH (FORCE);\n" "$SLOT" "$DB" \
         | $SRC_SQL postgres > "$W/drop.out" 2>&1
@@ -271,9 +276,9 @@ cleanup() {
       [ "${left//[[:space:]]/}" = 0 ] && break; sleep 30
     done
     [ "${left//[[:space:]]/}" = 0 ] || { echo "source database $DB or slot $SLOT not dropped:"; tail -3 "$W/drop.out"; }
-  elif [ "${SRC_CREATED:-0}" = 1 ] && [ "${KEEP_SOURCE:-0}" = 1 ]; then
+  elif [ "$(src_owned)" = 1 ] && [ "${KEEP_SOURCE:-0}" = 1 ]; then
     echo "KEEP_SOURCE=1: source database $DB kept"
-  elif [ "${SRC_CREATED:-0}" = 1 ]; then
+  elif [ "$(src_owned)" = 1 ]; then
     for _ in 1 2 3; do   # a pipeline that was just deleted can still hold a session for a while
       # CDC off in its own call: with sqlcmd -b an error there (no CDC on the database) would skip the DROP
       echo "EXEC sys.sp_cdc_disable_db;" | $SRC_SQL "$DB" > "$W/drop.out" 2>&1
