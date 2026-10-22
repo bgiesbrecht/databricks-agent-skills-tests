@@ -115,8 +115,9 @@ obj() { echo "{\"table\":{\"source_catalog\":\"$DB\",\"source_schema\":\"lfcddem
 AFR='"auto_full_refresh_policy":{"enabled":true,"min_interval_hours":1}'
 # gateway_create: a serverless continuous gateway with its own staging schema $STG. Sets GW
 gateway_create() {
+  local pc=${PIPELINE_CONF:-'{}'}
   dbx schemas create "$STG" "$CATALOG" >/dev/null 2>&1
-  GW=$(dbx pipelines create -o json --json "{\"name\":\"$GWN\",\"catalog\":\"$CATALOG\",\"schema\":\"$STG\",\"serverless\":true,\"continuous\":true,
+  GW=$(dbx pipelines create -o json --json "{\"name\":\"$GWN\",\"catalog\":\"$CATALOG\",\"schema\":\"$STG\",\"serverless\":true,\"continuous\":true,\"configuration\":$pc,
     \"gateway_definition\":{\"connection_name\":\"$CONNECTION\",\"gateway_storage_catalog\":\"$CATALOG\",\"gateway_storage_schema\":\"$STG\",\"gateway_storage_name\":\"$GWN\"}}" | yq '.pipeline_id')
   [ -n "$GW" ] && [ "$GW" != null ] || { echo "gateway create failed"; exit 2; }
 }
@@ -132,7 +133,10 @@ pipelines_create() {
   [ "$ENGINE" = postgres ] && { echo "CREATE PUBLICATION ${SLOT}_pub FOR TABLES IN SCHEMA lfcddemo;" | src >/dev/null || { echo "publication create failed"; exit 2; }; }
   [ "$ENGINE" = postgres ] && SRCDEF+=",\"source_type\":\"POSTGRESQL\",\"source_configurations\":[{\"catalog\":{\"source_catalog\":\"$DB\",\"postgres\":{\"slot_config\":{\"slot_name\":\"$SLOT\",\"publication_name\":\"${SLOT}_pub\"}}}}]"
   # CREATE_SOFT=1: a refused create returns 1 with the error in CREATE_ERR (a test whose question is "is it refused?")
-  dbx pipelines create -o json --json "{\"name\":\"$APN\",\"catalog\":\"$CATALOG\",\"schema\":\"$S\",\"serverless\":true,
+  # PIPELINE_CONF='{"pipelines.<key>":"<value>"}': pipeline settings (a knob under test), on the gateway too; recorded with the run
+  [ -n "${PIPELINE_CONF:-}" ] && conf pipeline_conf "$PIPELINE_CONF"
+  local pc=${PIPELINE_CONF:-'{}'}
+  dbx pipelines create -o json --json "{\"name\":\"$APN\",\"catalog\":\"$CATALOG\",\"schema\":\"$S\",\"serverless\":true,\"configuration\":$pc,
     \"ingestion_definition\":{$SRCDEF,\"objects\":[$1]}}" > "$W/create.out" 2>&1
   AP=$(yq '.pipeline_id' "$W/create.out" 2>/dev/null)
   if [ -z "$AP" ] || [ "$AP" = null ]; then

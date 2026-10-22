@@ -5,6 +5,7 @@
 # the CDC staging table per table. Seen 2026-10-20: s2ct got none of A's or A2's rows until B's ADD COLUMN released
 # them, and then held B's; no error. SCD_TYPE_2 needs CDC on SQL Server.
 # Needs PROFILE, CONNECTION, CATALOG, CONN_USER, SRC_SQL (as sqlserver-add-column.sh).
+# PIPELINE_CONF (a JSON object) sets pipeline settings, e.g. a knob under test.
 # SERVER_STATE=1 grants the connection's login VIEW SERVER STATE for the run (revoked at the end): on change tracking,
 # SCD type 2 reads each change's commit time from sys.dm_tran_commit_table, which shows a login without it no rows.
 set -uo pipefail
@@ -58,7 +59,9 @@ TRACKED=$(printf "SET NOCOUNT ON; SELECT (SELECT COUNT(*) FROM sys.change_tracki
 echo "commit-time rows the login sees in sys.dm_tran_commit_table: $(printf "SET NOCOUNT ON; EXECUTE AS LOGIN = '%s'; SELECT COUNT(*) FROM sys.dm_tran_commit_table; REVERT;\n" "$CONN_USER" | $SRC_SQL "$DB" | tr -d '[:space:]')"
 dbx schemas create "$S" "$CATALOG" >/dev/null
 obj() { echo "{\"table\":{\"source_catalog\":\"$DB\",\"source_schema\":\"lfcddemo\",\"source_table\":\"$1\",\"destination_catalog\":\"$CATALOG\",\"destination_schema\":\"$S\",\"table_configuration\":{\"scd_type\":\"$2\"}}}"; }
-AP=$(dbx pipelines create -o json --json "{\"name\":\"${PREFIX}_scd2ct_$E\",\"catalog\":\"$CATALOG\",\"schema\":\"$S\",\"serverless\":true,
+# PIPELINE_CONF='{"pipelines.<key>":"<value>"}': pipeline settings (a knob under test)
+PC=${PIPELINE_CONF:-'{}'}
+AP=$(dbx pipelines create -o json --json "{\"name\":\"${PREFIX}_scd2ct_$E\",\"catalog\":\"$CATALOG\",\"schema\":\"$S\",\"serverless\":true,\"configuration\":$PC,
   \"ingestion_definition\":{\"connection_name\":\"$CONNECTION\",\"connector_type\":\"CDC\",\"objects\":[$(obj s1ct SCD_TYPE_1),$(obj s2ct SCD_TYPE_2),$(obj s2cdc SCD_TYPE_2)]}}" | yq '.pipeline_id')
 echo "pipeline $AP"
 STG="$T.__${AP//-/_}_cdc_staging_table"
