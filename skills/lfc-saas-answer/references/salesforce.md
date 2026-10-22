@@ -6,11 +6,11 @@ Parent: [lfc-saas-answer](../SKILL.md).
 
 ## 1. What does the Salesforce side need before a connection works?
 
-A Salesforce user who can authenticate the Databricks connected app. Since September 2025 Salesforce restricts uninstalled connected apps, so either a Salesforce admin installs the Databricks connected app, or the authenticating user gets heightened permissions: with API Access Control on, `Customize Application` and either `Modify All Data` or `Manage Connected Apps`; without it, `Approve Uninstalled Connected Apps`. OAuth (refresh token) and mutual TLS are supported. A refresh token that Salesforce rotates or revokes is not picked up automatically: re-authenticate the connection.
+A Salesforce user who can authenticate the Databricks connected app. Since September 2025 Salesforce restricts uninstalled connected apps, so either a Salesforce admin installs the Databricks connected app, or the authenticating user gets heightened permissions: with API Access Control on, `Customize Application` and either `Modify All Data` or `Manage Connected Apps`; without it, `Approve Uninstalled Connected Apps`. OAuth (sign in through the Databricks connected app) and mutual TLS are supported. The docs disagree on pasting a refresh token by hand: the concepts page marks "OAuth (manual refresh token)" not supported, while the limits page says the connector supports it but doesn't pick up a token Salesforce rotates or revokes. Use the sign-in flow, and re-authenticate the connection if Salesforce revokes its token.
 
 Use a dedicated integration user, and restrict objects and fields with Salesforce permissions: the pipeline ingests what that user can read.
 
-- Databricks: [connected app and permissions](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/salesforce-faq), [create a connection](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/salesforce-connection), [authentication limits](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/salesforce-limits).
+- Databricks: [authentication methods](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/salesforce-concepts), [connected app and permissions](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/salesforce-faq), [create a connection](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/salesforce-connection), [authentication limits](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/salesforce-limits).
 - Customer can check: Salesforce **Setup > Connected Apps OAuth Usage** lists the Databricks connected app after the first authentication.
 
 ## 2. Will the pipeline use up our Salesforce API limits?
