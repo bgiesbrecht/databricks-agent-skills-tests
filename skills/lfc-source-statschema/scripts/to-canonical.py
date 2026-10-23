@@ -23,6 +23,7 @@ for t in raw["tables"]:
         col = {"name": c["name"], **canon(c["data_type"], src), "not_null": not c.get("nullable", True), "native_type": c["data_type"]}
         if c["name"] in pk: col["primary_key"] = True
         if c["name"] in uniq: col["unique"] = True
+        if c.get("generated"): col["generated"] = c["generated"]   # computed by the database: stored or virtual
         cols.append(col)
         nf = c.get("null_fraction") or 0.0
         s = {"name": c["name"], "null_fraction": nf, "n_distinct": c.get("n_distinct") or 0.0}

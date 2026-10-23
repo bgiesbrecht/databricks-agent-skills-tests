@@ -9,7 +9,7 @@
      checks, indexes: ([.indexes[]? | sort_by(.[0]) | map(.[1])] | if length > 0 then . else null end),
      columns: (.columns | sort_by(.pos) | map(
        . as $c
-       | {name, data_type, nullable, null_fraction, n_distinct, min_value, max_value, histogram_buckets,
+       | {name, data_type, nullable, generated, null_fraction, n_distinct, min_value, max_value, histogram_buckets,
           most_common_values: (if .mcv_raw then (.mcv_raw | sort_by(-.f) | map({value: (if $c.keep_values == 1 or $c.keep_values == true then .v else null end), frequency: .f})) else null end),
           histogram_bounds: (if .bounds_raw then (.bounds_raw | sort_by(.[0]) | (map(.[1]) + [last[2]])) else null end)}
        | with_entries(select(.value != null))))}
