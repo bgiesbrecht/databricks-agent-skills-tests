@@ -252,14 +252,16 @@ settle() {
     q "SELECT $2 FROM $T.$1 LIMIT 0" >/dev/null 2>&1 && return
   done
 }
-# settle_rows <sql> <want>: after a source DML change, update until <sql> returns <want> or an update reports an error
-# (4 tries). SETTLED=1 when it matched.
+# settle_rows <sql> <want> [table]: after a source DML change, update until <sql> returns <want> or an update reports
+# an error (4 tries): any error, or with <table> only that table's (errs_for). SETTLED=1 when it matched; ROWS is the
+# last answer, TERRS the table's errors.
 settle_rows() {
-  SETTLED=0; local r
+  SETTLED=0; ROWS=""; TERRS=""
   for _ in 1 2 3 4; do
     sleep "$WAIT"; update
-    r=$(q "$1" 2>&1); [ "$r" = "$2" ] && { SETTLED=1; return; }
-    [ -n "${ERRS// /}" ] && return
+    ROWS=$(q "$1" 2>&1); [ -n "${3:-}" ] && TERRS=$(errs_for "$3")
+    [ "$ROWS" = "$2" ] && { SETTLED=1; return; }
+    if [ -n "${3:-}" ]; then [ -n "${TERRS// /}" ] && return; else [ -n "${ERRS// /}" ] && return; fi
   done
 }
 
