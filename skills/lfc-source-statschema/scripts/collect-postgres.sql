@@ -10,6 +10,7 @@
 \if :{?values} \else \set values none \endif
 WITH c AS (
   SELECT r.oid, r.relname, a.attnum, a.attname, format_type(a.atttypid, a.atttypmod) AS data_type, t.typcategory, a.attnotnull,
+         CASE a.attgenerated WHEN 's' THEN 'stored' WHEN 'v' THEN 'virtual' END AS generated,
          s.null_frac, s.n_distinct, s.avg_width, s.correlation,
          s.most_common_vals::text::text[] AS mcv, s.most_common_freqs AS mcf, s.histogram_bounds::text::text[] AS hist
   FROM pg_class r
@@ -20,7 +21,7 @@ WITH c AS (
   WHERE r.relkind IN ('r', 'p')
 ), col AS (
   SELECT oid, json_agg(json_strip_nulls(json_build_object(
-           'name', attname, 'data_type', data_type, 'nullable', NOT attnotnull,
+           'name', attname, 'data_type', data_type, 'nullable', NOT attnotnull, 'generated', generated,
            'null_fraction', null_frac, 'n_distinct', n_distinct, 'avg_width_bytes', avg_width, 'correlation', round(correlation::numeric, 4),
            'min_value', CASE WHEN :'values' <> 'none' AND (typcategory IN ('N', 'D') OR :'values' = 'all') THEN coalesce(hist[1], (SELECT v FROM unnest(mcv) v ORDER BY CASE WHEN typcategory = 'N' THEN v::numeric END, v LIMIT 1)) END,
            'max_value', CASE WHEN :'values' <> 'none' AND (typcategory IN ('N', 'D') OR :'values' = 'all') THEN coalesce(hist[cardinality(hist)], (SELECT v FROM unnest(mcv) v ORDER BY CASE WHEN typcategory = 'N' THEN v::numeric END DESC, v DESC LIMIT 1)) END,

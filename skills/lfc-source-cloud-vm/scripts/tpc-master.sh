@@ -17,7 +17,7 @@ set -uo pipefail
 E=$1; NAME=$2; shift 2; WL=${*:-tpcb tpcc tpch tpcds tpce tpcdi}
 DDL=${DDL:-/tmp/dg/ddl}; DG=${DG:-/tmp/dg}; DATA=${DATA:-/var/lib/containers/lfc-data}; OUT=${OUT:-/mnt/jfs/masters}
 SECRETS=${SECRETS:-/root/lfc-src}; JC=${JC:-/var/lib/containers/jfs/cache}; SESSIONS=${SESSIONS:-4}   # MySQL: MY_SESSIONS (default 2)
-M=$DATA/build-$NAME; C=build-$NAME; W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
+M=$DATA/build-$NAME; C=build-$NAME; W=$(mktemp -d); trap 'rm -rf "${W:?}"' EXIT
 # wait until a check passes, while the container is still running (else show why it stopped, and stop)
 wait_for() { until "$@" > /dev/null 2>&1; do
   [ "$(podman container inspect -f '{{.State.Running}}' $C 2>/dev/null)" = true ] || { echo "$C stopped:"; podman logs --tail 20 $C 2>&1; exit 1; }
@@ -27,7 +27,7 @@ ddl_ok() { if grep -E "^(Msg [0-9]+, Level 1[1-9]|ORA-[0-9]+|SP2-[0-9]+)" $W/ddl
 t() { local s=$(date +%s); "$@"; local r=$?; echo "  [$(( $(date +%s) - s )) s] $*" | cut -c1-120; return $r; }
 [ -f "$SECRETS/$E.env" ] || { echo "missing $SECRETS/$E.env"; exit 2; }
 [ -e "$OUT/$NAME" ] && { echo "$OUT/$NAME exists: remove it first"; exit 2; }
-podman rm -f $C > /dev/null 2>&1; rm -rf $M; mkdir -p $M
+podman rm -f $C > /dev/null 2>&1; rm -rf "${M:?}"; mkdir -p $M
 case $E in
 postgres)
   podman run -d --name $C --shm-size 4g --env-file $SECRETS/$E.env -v $M:/var/lib/postgresql/data:Z docker.io/library/postgres:16 \
@@ -93,5 +93,5 @@ echo "master on disk: $(du -sh $M | cut -f1), files $(find $M -type f | wc -l)"
 t cp -a --reflink=auto $M $OUT/$NAME || { echo "copy to $OUT/$NAME failed: the build is still in $M"; exit 1; }
 until ! find $JC -path '*rawstaging*' -type f 2>/dev/null | grep . > /dev/null; do sleep 2; done
 echo "copied to $OUT/$NAME: $(juicefs info -r $OUT/$NAME 2>/dev/null | awk '/size:/ {print $2 $3; exit}')"
-rm -rf $M
+rm -rf "${M:?}"
 echo "MASTER DONE $NAME"

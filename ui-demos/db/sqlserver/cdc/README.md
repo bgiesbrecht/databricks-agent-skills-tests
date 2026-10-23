@@ -12,8 +12,8 @@ Captured with `python -m lfc_ui.wizard sqlserver --mode cdc --launch`.
 
 ## Captured runs
 
-- **Committed: [`runs/robertlee_lfcddemo_azure_sqlserver_1792374946/png/`](runs/robertlee_lfcddemo_azure_sqlserver_1792374946/png/)** (2026-10-18, masked in the page): 27 steps in 14.8 minutes; update Stopped after 10.4 min.
-- **2026-10-18, `<name>_1792366433`:** 26 steps; the wizard took 4.2 minutes, then the update 20.8 minutes to Completed. `intpk` 4,894 rows (all), `dtix` 1,381 (see below). Job and pipeline deleted afterwards.
+- **Committed: [`runs/robertlee_lfcddemo_azure_sqlserver_1792374946/png/`](runs/robertlee_lfcddemo_azure_sqlserver_1792374946/png/)** (2026-10-18, masked in the page): 27 steps; the update was stopped before smart closure ended it.
+- **2026-10-18, `<name>_1792366433`:** 26 steps; then the update ran to Completed. `intpk` 4,894 rows (all), `dtix` 1,381 (see below). Job and pipeline deleted afterwards.
 
 ## What the wizard does (seen 2026-10-18)
 
@@ -22,4 +22,4 @@ Captured with `python -m lfc_ui.wizard sqlserver --mode cdc --launch`.
 - **Database setup** (new step): **Validate** checks the source. Here it gave 2 warnings: the database's Lakeflow utility and DDL-support objects are version 1.5 and 1.7 is expected, and change-tracking DDL objects that aren't needed. "Complete configuration" shows the scripts to run on the source (it runs nothing). Warnings don't block Next; ingestion worked without the upgrade.
 - **Schedules:** Pipeline schedule *Continuous* or *Schedule*; the hourly job `<name> job` already exists (rename it). **Save and run pipeline**.
 - **A keyless table is deduplicated.** `dtix` has one column and no key: SCD type 1 keeps one row per distinct row, 1,381 of the source's 5,494 (its distinct `dt` values). `APPEND_ONLY` isn't allowed for CDC: "APPEND_ONLY can only be used for incremental ingestion of query based connector. The cursor_columns must be set in such cases."
-- **The update runs about 20 minutes** even for a 10k-row snapshot: smart closure ends it once the change lag converges (two runs: 21 and 20.8 minutes, the snapshot itself under a minute).
+- **The update keeps running well after a small snapshot is done:** smart closure ends it once the change lag converges, not when the snapshot finishes. Wait for it, or stop it, rather than reading a long update as a stuck one.

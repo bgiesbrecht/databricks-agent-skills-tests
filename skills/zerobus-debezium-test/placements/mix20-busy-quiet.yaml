@@ -1,0 +1,13 @@
+# A composite placement for MIX=20 (placement.py): two busy tables on their own producer, their own bronze and the
+# AUTO CDC pipeline; the other 18 on two producers, the shared log and a MERGE job.
+groups:
+  - name: busy
+    tables: [tpcb001_branch, tpcc001_customer]
+    producer: {servers: 1}
+    bronze: own
+    silver: {mode: pipeline}
+  - name: quiet
+    match: ".*"
+    producer: {servers: 2}
+    bronze: shared
+    silver: {mode: merge, jobs: 1}

@@ -1,0 +1,30 @@
+# Mautic 7.2.1's tables by role, checked against its code (static reading of the Doctrine entities, the models that
+# write each table, and the cron commands; paths under app/bundles/ of github.com/mautic/mautic at 7.2.1). Only tables
+# whose writes were traced are listed: the rest stay as classify.py guesses them.
+# Where the measured activity (traffic.sh, collect-activity-mysql.sql) disagreed with the reading, the measure wins.
+# log = append-only; queue = inserted, then deleted when processed.
+leads: dimension                       # LeadBundle/Entity/Lead.php; updated by every contact change
+companies: dimension                   # LeadBundle/Entity/Company.php
+companies_leads: bridge                # (company_id, lead_id): LeadBundle/Entity/CompanyLead.php
+lead_lists: dimension                  # segments: LeadBundle/Entity/LeadList.php
+lead_lists_leads: bridge               # segment membership, rebuilt by mautic:segments:update (UpdateLeadListsCommand.php)
+lead_fields: dimension                 # custom field definitions; saving one ALTERs leads (Field/CustomFieldColumn.php)
+campaigns: dimension                   # CampaignBundle/Entity/Campaign.php
+campaign_events: dimension             # a campaign's steps, referenced by the event log
+campaign_leads: bridge                 # (campaign_id, lead_id) membership: CampaignBundle/Entity/Lead.php
+campaign_lead_event_log: fact          # inserted, then updated (is_scheduled, date_triggered): CampaignBundle/Entity/LeadEventLog.php
+campaign_lead_event_failed_log: fact   # 1:1 with the event log; inserted and deleted: FailedLeadEventLog.php
+emails: dimension                      # EmailBundle/Entity/Email.php
+email_stats: fact                      # inserted on send, updated on read and open: EmailBundle/Entity/Stat.php
+email_stats_devices: log               # inserted per open: EmailBundle/Entity/StatDevice.php
+page_hits: fact                        # inserted per hit, then updated once (measured: 40 inserts, 40 updates in 2 traffic rounds); the code reading said append
+lead_event_log: log                    # the contact timeline, inserted only: LeadBundle/Entity/LeadEventLog.php
+lead_points_change_log: log            # LeadBundle/Entity/PointsChangeLog.php
+form_submissions: log                  # FormBundle/Entity/Submission.php, inserted per post
+audit_log: log                         # CoreBundle/Entity/AuditLog.php
+webhook_queue: queue                   # WebhookBundle/Entity/WebhookQueue.php: queued, then deleted when sent
+message_queue: queue                   # ChannelBundle/Entity/MessageQueue.php: inserted, updated, deleted by mautic:messages:send
+lead_donotcontact: fact                # LeadBundle/Entity/DoNotContact.php: inserted and deleted
+point_lead_action_log: log             # PointBundle/Entity/LeadPointLog.php
+stage_lead_action_log: log             # StageBundle/Entity/LeadStageLog.php
+dynamic_content_stats: fact            # DynamicContentBundle/Entity/Stat.php: inserted, then updated

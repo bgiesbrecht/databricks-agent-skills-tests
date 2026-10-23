@@ -13,7 +13,10 @@
 # 2. zerobus-workspace-setup/scripts/check.sh: the Zerobus previews, and TCP to the endpoint from where the producer runs.
 # 3. debezium-zerobus.sh for every source in SOURCES, in parallel, each on its own port (crdb 30026, yb 30031), each
 #    cleaning up after itself. SOURCES defaults to "crdb yb" on a VM, "crdb" on the laptop (its schema dump, through
-#    the volume, is CockroachDB only so far).
+#    the volume, is CockroachDB only so far). MODEL (default shop) and SF go to every run: the source's schema, a
+#    canonical schema.yaml (models/<MODEL>.yaml, or lfc-source-statschema's schemas/<MODEL>.yaml, e.g. tpcb).
+#    NSRC, BRONZE (shared, fanout, per-table), BRONZE_SHARDS and ON_DRIFT go to every run too (debezium-zerobus.sh),
+#    and for the many-tables test MIX, EMPTY, FKS, ROUNDS and PIPES.
 # 4. The results in RESULTS (default ~/.lfc-test/results/zerobus-<UTC time>): check.txt, <source>.md (the run's result
 #    table), <source>.log, summary.md. When everything passed and RECORD=1 (the default), one row per source goes into
 #    docs/lakeflow-connect-zerobus.md, "Successful runs": commit that change with the run. Exit 0 only when all passed.
@@ -29,7 +32,7 @@ cd "$REPO" || exit 2
 
 # --- 1. pre-flight
 COMMIT=$(git rev-parse --short HEAD)
-DIRTY=$(git status --porcelain -- skills/zerobus-debezium-test skills/zerobus-workspace-setup skills/lfc-source-statschema skills/lfc-source-podman skills/lfc-source-cloud-vm/scripts/cloud-links.sh)
+DIRTY=$(git status --porcelain -- skills/zerobus-debezium-test skills/zerobus-workspace-setup skills/lfc-source-statschema skills/lfc-source-datagen skills/lfc-source-podman skills/lfc-source-cloud-vm/scripts/cloud-links.sh)
 if [ -n "$DIRTY" ] && [ "${ALLOW_DIRTY:-0}" != 1 ]; then
   echo "uncommitted changes in the skills; commit them, or run from a clean checkout (git worktree add <dir> HEAD):"; echo "$DIRTY"; exit 2; fi
 if [ -n "${LIMA:-}" ]; then
@@ -67,6 +70,7 @@ route() { case $1 in yb) echo "Kafka Connect → Zerobus Kafka endpoint";; *) ec
 version() { case $1 in crdb) echo "CockroachDB $(grep -m1 '^- Source:' "$RESULTS/$1.md" | grep -o -E 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)";;
   yb) echo "YugabyteDB $(grep -m1 '^- Source:' "$RESULTS/$1.md" | grep -o -E 'YB-[0-9.]+' | head -1 | cut -c4- | sed 's/\.$//')";; *) echo "$1";; esac; }
 { echo "# Zerobus CDC test, $(date -u +%F)"; echo
+  echo "- Model: \`$([ -n "${MIX:-}" ] && echo "mix$MIX" || echo "${MODEL:-shop}")\`${SF:+ at SF $SF}$([ "${EMPTY:-0}" = 1 ] && echo ', empty tables')$([ "${FKS:-1}" = 0 ] && echo ', no foreign keys'); sources per host: ${NSRC:-1}; bronze: ${BRONZE:-shared}${BRONZE_SHARDS:+ ($BRONZE_SHARDS shards)}; drift: ${ON_DRIFT:-record}; rounds: ${ROUNDS:-5}; silver: ${SILVER:-pipeline} x ${PIPES:-1}$([ "${SPLIT:-0}" = 1 ] && echo ", a schema each")"
   echo "- Commit: \`$COMMIT\`${DIRTY:+ (with uncommitted changes)} of the tests repo; profile \`$PROFILE\`, catalog \`$CATALOG\`, ${LIMA:+Lima \`$LIMA\`}${VM_IP:+VM \`$VM_IP\`}"
   echo "- Workspace check: $([ $CHECK = 0 ] && echo PASS || echo FAIL) ($(grep -c '^PASS' "$RESULTS/check.txt") passed, $(grep -c '^FAIL' "$RESULTS/check.txt") failed)"; echo
   echo "| Source | Claims passed | Claims failed | Run | Exit |"; echo "|---|---|---|---|---|"
@@ -76,7 +80,7 @@ version() { case $1 in crdb) echo "CockroachDB $(grep -m1 '^- Source:' "$RESULTS
     [ "$f" = 0 ] && [ "$x" = 0 ] || FAILED=1
     echo "| $s | $p | $f | $r | $x |"
     host=$(grep -m1 '^- Host:' "$RESULTS/$s.md" 2>/dev/null | sed 's/^- Host: //'); dest=$(grep -m1 '^- Destination:' "$RESULTS/$s.md" 2>/dev/null | grep -o -E 'in [a-z]+ [a-z0-9-]+' | cut -c4-)
-    ROWS="$ROWS| $(date -u +%F) | \`$COMMIT\` | $(version $s) | $(route $s) | $WHERE_HOST ($host) → $dest serverless | $p of $((p + f)) | $r, [run-all.sh](../skills/zerobus-debezium-test/scripts/run-all.sh) |
+    ROWS="$ROWS| $(date -u +%F) | \`$COMMIT\` | $(version $s), model \`${MODEL:-shop}\` | $(route $s) | $WHERE_HOST ($host) → $dest serverless | $p of $((p + f)) | $r, [run-all.sh](../skills/zerobus-debezium-test/scripts/run-all.sh) |
 "; done
   for s in $SOURCES; do f=$(grep '^FAIL' "$RESULTS/$s.log"); [ -n "$f" ] && { echo; echo "## $s failures"; echo; echo "$f" | cut -c1-300 | sed 's/^/- /'; }; done
   if grep -q '^LINK' "$RESULTS/cloud-links.txt" 2>/dev/null; then echo; echo "## Cloud resources"; echo; grep '^LINK' "$RESULTS/cloud-links.txt" | sed -E 's/^LINK ([^:]*): (.*)/- \1: <\2>/'; fi

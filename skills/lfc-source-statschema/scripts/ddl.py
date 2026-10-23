@@ -6,7 +6,8 @@
 # A statschema schema.yaml (canonical, from shape.py or any source) -> DDL for any dialect sqlglot knows (postgres, mysql,
 # tsql, oracle, databricks, snowflake, bigquery, duckdb, ...): CREATE TABLE with types, NOT NULL, defaults, identity,
 # primary and unique keys, checks; comments (the lfc tags: table comment from lfc_tags, column comments); foreign keys and indexes
-# after every table exists; on Postgres, REPLICA IDENTITY FULL for a table without a primary key (CDC needs it); on MySQL,
+# after every table exists; on Postgres, REPLICA IDENTITY FULL for a table without a primary key (CDC needs it; not with
+# --dialect cockroachdb, which is Postgres otherwise: CockroachDB has no REPLICA IDENTITY); on MySQL,
 # tags longer than a comment holds go to lfc_seed.tags, which the MySQL planners read with the comments; on SQL Server
 # (lfc_seed.tags) and Oracle (lfc_tags in the schema) every tag goes to a side table, since a column comment there is an
 # extended property or 4,000 bytes at most.
@@ -28,6 +29,8 @@ ap = argparse.ArgumentParser(); ap.add_argument("schema"); ap.add_argument("--di
 ap.add_argument("--source-dialect", help="keep native_type when the target is the dialect the schema was collected from")
 a = ap.parse_args()
 D = {"postgresql": "postgres", "sqlserver": "tsql", "mssql": "tsql"}.get(a.dialect, a.dialect)
+CRDB = D in ("cockroachdb", "crdb")                              # CockroachDB: Postgres, without REPLICA IDENTITY
+if CRDB: D = "postgres"
 R = "postgres" if D in ("db2", "informix") else D                # the dialect sqlglot renders: Db2 and Informix as Postgres
 QUOTE = D not in ("oracle", "db2", "informix")                   # names unquoted: the engine folds them to its own case
 SRC = {"postgresql": "postgres", "sqlserver": "tsql", "mssql": "tsql"}.get(a.source_dialect, a.source_dialect)
@@ -107,6 +110,15 @@ def rewrite(n, ints):                                           # one node of a 
             d = inner.args.get("default")
             return exp.Case(ifs=[exp.If(this=i.this, true=pick(i.args["true"])) for i in inner.args["ifs"]],
                             default=pick(d) if d is not None else n.args.get("default"))
+    if D == "postgres" and isinstance(n, (exp.Add, exp.Sub)) and isinstance(n.expression, exp.Literal) \
+            and not n.expression.is_string and "." in n.expression.this and not isinstance(n.this, exp.Literal):
+        # <int> + 0.5 (a unit draw) is DECIMAL on CockroachDB, which won't multiply a float by it (normal, zipf):
+        # make it double precision, as it is on PostgreSQL once a float joins in
+        return node(f"(CAST({sql(n.this)} AS DOUBLE PRECISION) {'+' if isinstance(n, exp.Add) else '-'} {sql(n.expression)})")
+    if D == "postgres" and isinstance(n, exp.Pow):   # CockroachDB has POWER(float, float) and (decimal, decimal), no mixed
+        # forms, and no float * decimal: the formulas around POWER (zipf) are double precision, so POWER is too. On
+        # PostgreSQL a POWER(int, numeric) was numeric before; as a double, a FLOOR at an exact boundary may round otherwise
+        return node(f"POWER(CAST({sql(n.this)} AS DOUBLE PRECISION), CAST({sql(n.expression)} AS DOUBLE PRECISION))")
     if D == "tsql":
         if isinstance(n, exp.Round) and n.args.get("decimals") is None: n.set("decimals", exp.Literal.number(0))  # 2 arguments
         if isinstance(n, exp.Pow):                             # POWER returns its base's type: an int base truncates
@@ -199,7 +211,7 @@ for t in tables:
     creates.append(exp.Create(this=exp.Schema(this=table(t["name"]), expressions=defs), kind="TABLE", properties=props))
     if tc and ON: comments.append(exp.Comment(this=table(t["name"]), kind="TABLE", expression=exp.Literal.string(tc)))
     if tc and not INLINE and not ON and not SIDE: comments.append(f"-- {t['name']}: {tc}")
-    if D == "postgres" and not pk: after.append(f"ALTER TABLE {table(t['name']).sql(D)} REPLICA IDENTITY FULL")
+    if D == "postgres" and not pk and not CRDB: after.append(f"ALTER TABLE {table(t['name']).sql(D)} REPLICA IDENTITY FULL")
     seen = [pk]
     for i in t.get("lfc_indexes") or []:
         if D == "informix" and list(i["columns"]) in seen: continue   # Informix refuses a second index on the same columns

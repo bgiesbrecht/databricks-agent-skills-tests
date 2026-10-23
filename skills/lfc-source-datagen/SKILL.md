@@ -60,6 +60,21 @@ A typical request: *"Create 100 tables, rows uniformly distributed up to 1 milli
 6. **Report** the status: each table's min, max, rows, and the total. Run the **audit** on the source too: it should show 0 bad rows.
 7. **After the pipeline has run** (snapshot and CDC), audit the target the same way: decode each plain-block column from the key. The checks are in each engine's `cast` file (`lfc_check` / `chk`); the target's Databricks SQL forms depend on how Lakeflow Connect maps each type and aren't written yet.
 
+### Portable: build many copies where the database is
+
+To build many copies of a model (100 copies of TPC-C, each in its own schema `<model>_NNNN`), run the generator next to the database rather than over a network that can drop. [`scripts/bundle.sh`](scripts/bundle.sh) packs [`scripts/copies.sh`](scripts/copies.sh), `fill.sh` and every engine's planner files into one file. It needs only bash and the engine's SQL client on the target; no Python, nothing to install. The model's DDL comes from **lfc-source-statschema** (`shape.py`, `ddl.py`) on any machine with uv.
+
+```bash
+uv run ../lfc-source-statschema/scripts/shape.py ../lfc-source-statschema/schemas/tpcc.yaml --sf 0.01 > tpcc.yaml
+uv run ../lfc-source-statschema/scripts/ddl.py tpcc.yaml --dialect tsql > model.sql
+bash scripts/bundle.sh /tmp/datagen.tgz
+scp /tmp/datagen.tgz model.sql sq vm:run/     # sq: SQL on stdin, connected to the target database, sqlcmd -y 0
+ssh vm 'cd run && tar xzf datagen.tgz && MSSQL=$PWD/sq nohup bash copies.sh ms model.sql tpcc 1 100 4 > build.log 2>&1 &'
+ssh vm 'tail -1 run/build.log'                # "all done", or "finished with failures"
+```
+
+`copies.sh` prints `done <schema> <seconds>s` per copy, reuses a schema that already has its tables and resumes a fill, so a rerun continues. SQL Server only for now. lfc-schema-change-test `sqlserver-scale.sh` uses it.
+
 ### Fill level by level
 
 When columns have formulas that point at a parent (`lfc:v`), the parent must be complete before its children start. `fill.sh` fills one level at a time and moves on only when every table of the level is at its target; it re-plans every round, so a rerun resumes. It reads the planner files from `DIR` (`scripts/postgres`, `scripts/mysql`, `scripts/sqlserver`, or `scripts/oracle`), and stops if a round adds no rows.

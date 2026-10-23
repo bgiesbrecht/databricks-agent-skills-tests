@@ -45,7 +45,7 @@ DEFINE lob_len = $LOB_LEN"
   status() { { echo "$OH"; cat "$DIR/cast.sql" "$DIR/plan-status.sql"; } | $SQL | { echo "$HEAD"; cat; } | $SQL | grep '|'; } ;;
 *) echo "engine: pg, my, ms, or ora" >&2; exit 2 ;;
 esac
-W=$(mktemp -d); trap 'rm -rf "$W"' EXIT              # scratch files
+W=$(mktemp -d); trap 'rm -rf "${W:?}"' EXIT              # scratch files
 # one statement per record: a statement starts at its '/* lfc level N */' line; continuation lines join it with \001
 records() { awk '/^\/\* lfc level [0-9]+ \*\// { if (s != "") print s; s = $0; next } s != "" { s = s "\001" $0 } END { if (s != "") print s }'; }
 levels=$(plan | tee "$W/plan.out" | grep -o '^/\* lfc level [0-9]*' | awk '{ print $4 }' | sort -un)

@@ -14,12 +14,175 @@ This isn't Lakeflow Connect. It's for sources Lakeflow Connect doesn't cover, or
 
 | Where | What |
 |---|---|
-| Workspace | Schema `<prefix>_<source>_<model>_dbz_<epoch>` in `CATALOG` (for example `robertlee_crdb_shop_dbz_<epoch>`; `MODEL` is `shop` for this test's own `customers` and `orders`, or the TPC model from **lfc-source-statschema** a run uses: `tpcb`, `tpcc`, `tpch`, `tpcds`, `tpce`, `tpcdi`), with the bronze table `cdc_log`: `target_table`, `operation` (`create`, `update`, `delete`), `idempotency_key`, and `key`, `value` (the Debezium event: `after`, `op`, `ts_ns` with the default `DROP_FIELDS`), `source_position` and `headers` as `VARIANT`. `CLUSTER BY (destination)`, the source table's topic (`target_table` is always the log itself) |
-| Workspace (phase 2) | In the same schema: Volume `snapshot`, one folder per source table, and for traceability `_schema/` (the canonical `schema.yaml` the views were built from: `schema-at-T.yaml`, the current `schema.yaml`, and `history/<step>-schema.yaml` for each regeneration, each checked with statschema's `validate.py`) and `_pipeline/<step>/` (the pipeline files built from it); silver streaming tables `customers` and `orders` (SCD type 1), `customers_history` and `orders_history` (SCD type 2, replays removed), `customers_history_nodedup` (SCD type 2 without that), and the gold materialized view `customer_orders`, made by the serverless pipeline `<prefix>-<source>-<model>-dbz-silver-<epoch>` from `silver-from-schema.py` and `gold.sql` in a workspace folder `<source>_dbz_<epoch>` in your home; UC connection `<prefix>-<source>-dbz-<epoch>` (POSTGRESQL, to the VM's `SRC_PORT`, or the next free port up to 30063) |
+| Workspace | Schema `<prefix>_<source>_<model>_dbz_<epoch>` in `CATALOG` (for example `robertlee_crdb_shop_dbz_<epoch>`; `MODEL` is `shop` for this test's own `customers` and `orders`, or the TPC model from **lfc-source-statschema** a run uses: `tpcb`, `tpcc`, `tpch`, `tpcds`, `tpce`, `tpcdi`; see [Models](#models)), with the bronze table `cdc_log`: `target_table`, `operation` (`create`, `update`, `delete`), `idempotency_key`, and `key`, `value` (the Debezium event: `after`, `op`, `ts_ns` with the default `DROP_FIELDS`), `source_position` and `headers` as `VARIANT`. `CLUSTER BY (destination)`, the source table's topic (`target_table` is always the log itself) |
+| Workspace (phase 2) | In the same schema: Volume `snapshot`, one folder per source table, and for traceability `_schema/` (the canonical `schema.yaml` the views were built from: `schema-at-T.yaml`, the current `schema.yaml`, and `history/<step>-schema.yaml` for each regeneration, each checked with statschema's `validate.py`) and `_pipeline/<step>/` (the pipeline files built from it); silver streaming tables `<table>` for every source table (SCD type 1; append-only for a table without a key), `<table>_history` (SCD type 2, replays removed), `<first table with a key>_history_nodedup` (SCD type 2 without that), and the model's gold materialized view (`customer_orders` for `shop`), made by the serverless pipeline `<prefix>-<source>-<model>-dbz-silver-<epoch>` from `silver-from-schema.py` and `gold.sql` in a workspace folder `<source>_dbz_<epoch>` in your home; UC connection `<prefix>-<source>-dbz-<epoch>` (POSTGRESQL, to the VM's `SRC_PORT`, or the next free port up to 30063) |
 | Workspace | Service principal `<prefix>-zerobus-dbz-<epoch>` with an OAuth secret, granted `USE CATALOG`, `USE SCHEMA`, `SELECT` and `MODIFY` on `cdc_log`. Zerobus writes as it |
 | VM | Podman network `crdb-dbz-<epoch>`, containers `<prefix>-crdb-<epoch>` (CockroachDB, single node, insecure, published on `CRDB_PORT`, default 30026) and `<prefix>-debezium-<epoch>` |
 
 The OAuth secret is never printed. It goes from the CLI's response into Debezium's `application.properties` in 0600 temp files, on the laptop and on the VM, which are deleted when the run ends. `KEEP=1` keeps everything for a look afterwards.
+
+## Models
+
+One canonical `schema.yaml` per model (statschema's format, **lfc-source-statschema**) drives the whole run, and no script names a table or a column. `MODEL=<name>` reads [models/](models/)`<name>.yaml`, or **lfc-source-statschema**'s `schemas/<name>.yaml` (`tpcb`, `tpcc`, `tpch`, `tpcds`, `tpce`, `tpcdi`). `shop`, the default, is [models/shop.yaml](models/shop.yaml). `SF` (default 0.001) scales the TPC models' `row_count_per_sf`.
+
+| Step | Script |
+|---|---|
+| Size it, and tag each column for the data generator | **lfc-source-statschema** `shape.py --sf $SF` |
+| The DDL | **lfc-source-statschema** `ddl.py --dialect cockroachdb` or `postgres` |
+| Fill it, before T | **lfc-source-datagen** `fill.py pg`, in a container on the run's Podman network |
+| The changes of rounds 1 to 3, the schema changes of rounds 4 and 5, and the queries every check compares | [scripts/model-sql.py](scripts/model-sql.py) |
+| Silver | [scripts/silver-from-schema.py](scripts/silver-from-schema.py), from the canonical schema read back from the source |
+| Gold | `models/<name>-gold.sql`, when there is one: `-- name:`, `-- cluster_by:`, `-- comment:` header lines and a query on the model's tables. No file, no gold claims |
+
+`model-sql.py`'s workload, the same for every model:
+
+- **Tables with a key** get inserts of new keys (after each key column's maximum), updates of one column that isn't a key, a foreign key or unique, and deletes only of rows the workload inserted, so a foreign key never blocks one. A foreign key column takes the parent's first row.
+  - Round 1: 3 inserts, 1 update, 1 delete.
+  - Round 2: two updates of one row, a delete and reinsert, and a reinsert of the key deleted in round 1.
+  - Round 3: an insert and two updates, then, after the producer restarts, one more update.
+- **Tables whose key is all foreign keys** get the updates only.
+- **Tables without a key** (TPC-B's `history`) get inserts only. Silver keeps them append-only and compares them as a multiset.
+- **Round 4** adds `lfc_r4 VARCHAR(20) NOT NULL DEFAULT 'none'` to the first table with a key.
+- **Round 5** retypes that model's first non-key decimal column (two more digits; else an integer becomes `BIGINT`, but not on CockroachDB, where `INT` is already 8 bytes). It drops another column that isn't a key, a foreign key or named in the gold file.
+
+A manifest per round lists every table's expected events, which the change-log claims wait for. Both sides render each value alike: NULL as `<null>`, timestamps in UTC to the microsecond, `char` without its padding, booleans as `true`/`false`. The rows are compared sorted, since the two sides' collations differ.
+
+## Many sources, bronze layouts, schema drift
+
+The common case: N identical tables on many hosts, merged into one silver table per table. The design aims at 10,000s of source tables and many hosts, without a schema change stopping anything upstream.
+
+**Many sources (`NSRC=N`).** The test runs N databases with the model, `<MODEL>1` to `<MODEL>N`, side by side on one host.
+- **Producers:** each database has its own producer (a Debezium Server each; on the Kafka route, every source's connector runs in one worker). Each producer's destination prefix is `<SOURCE><i>.<schema>`.
+- **Volume:** [`_sources.yaml`](scripts/silver-from-schema.py) lists each source's prefix, T and snapshot format. Snapshots go to `<table>/<prefix>/`, so the folder names the source.
+- **Silver:** every row carries `_source`. With more than one source the key is (`_source`, primary key), so identical keys from different hosts stay apart, and each key's changes are ordered within its own source.
+- **Gold:** with more than one source, gold is `models/<MODEL>-gold-multi.sql` (the same query, grouped by `_source` too). It's checked against the single-source query run on each source.
+
+**Bronze (`BRONZE`).** Only where silver reads from changes; silver, gold and the schema don't.
+
+| `BRONZE` | Producers write | Silver reads | When |
+|---|---|---|---|
+| `shared` (default) | `cdc_log` | `cdc_log`, filtered by table | Few tables or low volume: each table's flows re-read the whole log |
+| `fanout` | `cdc_log` | `cdc_log_<table>`, or `cdc_log_s<k>` with `BRONZE_SHARDS=K`, written by [scripts/fanout.py](scripts/fanout.py) | Many tables or high volume. The shared log needs no DDL for a new table or column, and the fan-out creates a table's bronze table on its first events, so nothing upstream stops. `{table}` suits up to hundreds of tables; for 10,000s, `{shard}` with K about the number of silver pipelines |
+| `per-table` | `cdc_log_<table>` (Kafka route only) | its own | Lakeflow Connect's layout. A new source table first needs its bronze table, its grant and the producer's routing, so shipping waits on setup |
+
+**The likely path:**
+1. Start with `shared`.
+2. Move a table out when its volume starts slowing the others. In `shared`, every table's flows read every other table's events, so the hot tables go first.
+3. Route a table at the source (`per-table`) when it's known in advance, high-volume and latency-sensitive, or needs its own bronze retention or access.
+
+Moving a table:
+- the fan-out runs for that table only (`fanout.py --tables <t>`), from the log's beginning, into `cdc_log_<t>`;
+- silver's `cdc.bronze_table.<t>` points that table at it;
+- a full refresh of that table rebuilds it.
+
+It needs `cdc_log` kept back to T, and the other tables don't stop. In the test, `BRONZE=shared` moves the first table with a key after round 3 (`MOVE=0` to skip, `MOVE_TABLE` to choose another). The claim is `move-<table>`, and rounds 4 and 5 then run with that table on its own bronze.
+
+The fan-out runs as a serverless job before each silver update in the test. Without `--once` it runs continuously. Each micro-batch writes each target with `txnAppId` and `txnVersion`, so a retried batch writes nothing twice. `cdc.shard=i/n` splits silver's tables over n pipelines, past the number of flows one pipeline holds.
+
+**Schema drift (`ON_DRIFT=record`, the default).** Silver keeps flowing on the columns it knows:
+- a value that doesn't fit its type becomes NULL;
+- a dropped column gets its default, or NULL;
+- a new column waits.
+
+Each drift is recorded once per table, source, kind (`type`, `missing`, `new`) and column in `schema_drift`, with the last position and a sample row. `cdc.drift_sample=n` checks one event in n, for high volume.
+
+Evolution is asynchronous and per table:
+1. read every source's schema again;
+2. merge them with [scripts/schema-union.py](scripts/schema-union.py), which widens types (integer < long < decimal < string) and refuses tables whose primary keys differ;
+3. write each changed table to `_schema/tables/<table>.yaml`;
+4. full-refresh only those tables, which replays them from the append-only change log.
+
+The other tables never stop. `ON_DRIFT=fail` casts strictly instead, and an update stops at the first value that doesn't fit.
+
+In the test:
+- **Round 4** adds `lfc_r4` on source 1 only.
+- **Round 5** drops and retypes on source N only.
+- **Claims:**
+  - `drift-flows-on-<n>`: the update with the old schema completes;
+  - `drift-recorded-<n>`: `schema_drift` has the expected rows;
+  - `evolve-<n>`: the union changed only that table;
+  - then silver equals each source on that source's own columns.
+
+## Many tables: silver by pipeline or by MERGE
+
+`MIX=N` builds N tables from copies of the TPC models (`scripts/mix-models.py`: `tpcb001_branch` ... `tpcdi085_DimMessage`, 95 tables a copy). The settings for this test:
+
+| Setting | What it does |
+|---|---|
+| `EMPTY=1` | Creates the tables with no rows (no fill.py, and the datagen tags are left out of the DDL) |
+| `FKS=0` | Leaves the foreign keys out: CockroachDB takes much longer to add a foreign key than to create a table |
+| `ROUNDS=0` | No changes. The run stops after the snapshot and silver's first update, then checks every silver table at once (columns and row counts against the source), times a second update with nothing new, and checks that each producer is streaming |
+| `PIPES=K` | K silver pipelines (or K MERGE jobs), each with the tables of `crc32(name) % K` |
+| `SPLIT=1` | With `SILVER=merge` and `PIPES=K`: job k writes its silver tables to their own schema, `<S>_s<k>` (bronze and the volume stay in `<S>`) |
+| `SILVER=merge` | Silver without a pipeline: `scripts/merge-silver.py` as a serverless job, with MERGE instead of AUTO CDC (`BRONZE=shared` only so far) |
+| `DBZ_SHARDS=K` | K Debezium Servers per source, each with the tables of `crc32(name) % K`, started one at a time (each waits up to `DBZ_START_WAIT` s for the one before) |
+
+`ROUNDS=0 PHASE=1` runs the producers only.
+
+`merge-silver.py` reads the same volume as the pipeline: `_sources.yaml`, `_schema/` and `_snapshot.tsv`. One stream reads the change log, and each micro-batch MERGEs only the tables it has events for:
+- **Current rows** take each key's newest change, applied only when it's newer than the row.
+- **Deletes** leave a row in `_cdc_tombstones`, so a replayed older change can't bring the row back.
+- **History:** each version ends at its key's next change (the next version or a delete), recomputed for the keys a batch touches, so a version that arrives late still lands in order.
+- **Producer replays:** after a restart, Debezium resends events under a new sequence. Each change carries a fingerprint of its event (`_idem`: idempotency key, operation, row image), and a replay of one already applied is dropped, as the pipeline's dedup view does.
+- **Schema drift** is recorded in `schema_drift`, as by the pipeline. A full refresh is `--refresh <tables>`: those tables are replaced with the schema in the volume, loaded from their snapshot, then from every event in their change log.
+- **A moved table** reads its own log (`--bronze-table t=cdc_log_t`), in a stream of its own.
+- **Gold** is the same materialized view, made and refreshed by SQL after each run. Tables have row tracking and deletion vectors on, so it refreshes incrementally (`GROUP_AGGREGATE` after round 2).
+
+Through rounds 1 to 5 (`SILVER=merge` on `shop`), MERGE silver passes the same checks as the pipeline: changes, producer restart and history, the moved table, an added column, a dropped and a retyped one, and gold. There's no `_history_nodedup` table.
+
+Tested on the Azure VM with empty tables, 2026-10-22 (outcomes in `results/runs/2026-10-22-zerobus-scale.jsonl`):
+
+| Silver | Source tables that passed | Where it stopped |
+|---|---|---|
+| Pipeline (AUTO CDC) | 10, 100, and 1000 on 4 pipelines | Not tried higher: start-up grows with the tables in a pipeline |
+| MERGE job | 10, 100, 1000, 2000, 4000 | 8000 in one schema: Unity Catalog's 10,000 tables per schema |
+| MERGE jobs, a schema each (`PIPES=4 SPLIT=1`) | 8000 (15,746 silver tables in 4 schemas) | Not tried higher |
+
+A pipeline declares every table, view and flow when each update starts, and resolving that graph is most of each update, even one with no changes. MERGE declares nothing per table, so a run with no changes doesn't grow with the table count. Above about 5000 source tables, silver has to span more than one schema (`SPLIT=1`), or the account team raises the quota (it isn't fixed).
+
+Found on the way, and fixed:
+- TPC-E has both `holding` and `holding_history`, so the history tables' suffix is a setting (`cdc.history_suffix`); the run uses `__history` when `_history` would clash with a source table.
+- On a VARIANT column a bracketed field follows a colon: `key:['SK_TimeID']`.
+- An append-only table with a `TIMESTAMP_NTZ` column needs the `timestampNtz` table feature turned on.
+- A `once` append flow takes a batch source only, so only the AUTO CDC snapshot flows are `once`.
+
+**Producer limit.** Debezium Server 3.7.0 waits a fixed 40 s for its connector task to start, and doesn't read `task.management.timeout.ms`: the log says "Waiting max. for 40000 ms" whatever it's set to. At start, the CockroachDB connector runs the JDBC column-metadata query once per table, which is slow on CockroachDB, so one producer starts only a few hundred tables at most: 100 started, 1000 didn't, nor did 4 producers of 250 against the one node.
+
+**More producers, started one at a time.** `DBZ_SHARDS=K` splits the tables over K Debezium Servers, one changefeed each, and starts them one after another: each waits for the one before to reach `POLLING_TASKS` (or fail). Started all at once, the servers' JVMs compete for the host's CPU and spend the 40 s starting up. On the 4-vCPU test VM, 1000 tables streamed on 20 servers of about 50 tables each; 12 servers of about 83 tables, started one at a time, got only 4 to stream, and 12 started at once got none. Keep a server's tables well under what starts in 40 s, and count its changefeed against CockroachDB's recommended maximum per cluster (see lfc-source-sizing's limits).
+
+## Composite: a placement per table group
+
+`PLACEMENT=<placement.yaml>` replaces the global `BRONZE`, `SILVER`, `PIPES` and `DBZ_SHARDS` with one choice per table group ([scripts/placement.py](scripts/placement.py); an example: [placements/mix20-busy-quiet.yaml](placements/mix20-busy-quiet.yaml)). Each group lists its tables or a pattern, and says:
+- its producers: how many Debezium Servers, started one at a time;
+- its bronze: `own` (`cdc_log_<table>`, written by the fan-out from `cdc_log`) or `shared` (`cdc_log`);
+- its silver: `pipeline` (AUTO CDC, one pipeline for the group) or `merge` (`merge-silver.py` jobs).
+
+The run writes `_placement.tsv` (one row per table) to the volume; the pipeline (`cdc.placement_group`) and each MERGE job (`--placement-group`) read their tables from it. Each silver update runs the fan-out once, then the pipelines and the MERGE jobs; a full refresh goes to whichever builds the table. A MERGE group records drift in `schema_drift_<group>` (the pipeline owns `schema_drift`), and keeps its own state tables (`_cdc_tombstones_<group>`, ...). One pipeline group so far, and gold is made by SQL after both silvers, over both. A producer server the placement gives no tables isn't started. With `ROUNDS=5`, `BRONZE=shared`; no table move.
+
+## Trade-offs
+
+What silver gives up, and where, so a result can be read for what it is:
+
+- **Replays and identical changes.** A producer resends changes after a restart, under a new sequence. Silver drops a change as a replay when it has the same event (destination, key, operation, row image, and idempotency key where the producer gives one) within 10 minutes of one already applied (the pipeline's dedup watermark; `merge-silver.py`'s `REPLAY_NS`). So:
+  - in the history (SCD type 2), a real update that sets a row to the same values within 10 minutes counts once; the history check counts consecutive identical versions once on both sides;
+  - in a table without a key (append-only), two identical rows inserted within 10 minutes count as one;
+  - current rows (SCD type 1) keep every change: a replay comes in order with a newer sequence and converges.
+  - the history checks pass a key whose versions, with consecutive identical ones counted once, are the source's, as long as silver has no more versions than the source (a replay it failed to drop is one more);
+  CockroachDB's connector on the Kafka route gives no idempotency key, so there replays are matched on the row image alone: a key deleted, reinserted and deleted again within 10 minutes has its second delete taken for a replay in the history (the reinserted version stays open). Current rows and the tombstones keep every delete. Debezium Server's key isn't unique per change either ([Round 3](#round-3-debezium-killed-and-restarted)), so it's never used on its own.
+- **Sequence.** CockroachDB's connector drops the commit time, so silver orders by `ts_ns`, when Debezium processed the change. Each key's changes stay in order, and the snapshot (sequenced by T, the database's clock) compares correctly only while the two clocks agree.
+- **Timestamps as numbers.** A timestamp column without a declared precision is read as microseconds (6 digits, PostgreSQL's and CockroachDB's default). A producer that sends milliseconds for such a column (Debezium's `time.precision.mode=connect`) would be read wrong.
+- **Schema drift on record.** Until a table is evolved and refreshed, a value its column type can't hold is NULL, a dropped column gets its default, and a new column waits. A refresh rebuilds the table from its snapshot and every change since T, so the change log has to be kept back to T.
+- **MERGE in place of AUTO CDC.**
+  - Every delete is kept (`_cdc_tombstones`), as is every appended fingerprint (`_cdc_appended`): they grow with the deletes and inserts. AUTO CDC drops its tombstones after a set time.
+  - Silver tables carry `_seq` (current rows) and `_idem` (history), which AUTO CDC keeps hidden.
+  - A batch rewrites the end of every version of each key it touches, from that key's whole history: more work for keys with long histories.
+  - There's no `_history_nodedup` table.
+- **Producers sharded.** Each Debezium Server has its own changefeed (CockroachDB recommends a maximum per cluster: lfc-source-sizing's limits), the servers start one after another (start-up grows with their number), and commit order holds per key, not across servers.
+- **Own bronze on the direct route.** Debezium Server's Zerobus sink writes one table, so a table's own bronze is copied from the shared log by the fan-out: one more hop, and its changes stored twice.
+- **Silver across schemas (`SPLIT`).** Readers and gold name each table's schema.
+- **The Kafka route.** Zerobus's Kafka API takes the record value only, so the event is wrapped (`HoistField`, `StringifyField`) and nothing is dropped from it (no `DROP_FIELDS`): larger events than the direct route's.
+- **Retries.** A call that fails to connect is retried, up to 5 times with backoff: ssh to the VM when ssh itself can't connect (the input is kept, so a retry gets all of it), and the Databricks CLI when the request was never sent (DNS, refused, dial, TLS handshake). A connection lost after a request was sent isn't retried, since a create or a run-now may have gone through: the run fails there instead.
+- **Test data on CockroachDB.** For the PostgreSQL dialect the generator casts `POWER`'s arguments, and any expression plus or minus a decimal constant, to double precision (CockroachDB doesn't mix float and decimal). On plain PostgreSQL that arithmetic was NUMERIC before, so a generated value can differ in its last digits, or round to the other side of an exact `FLOOR` boundary.
 
 ## Before running
 
@@ -56,7 +219,7 @@ PROFILE=<cli-profile> CATALOG=<catalog> VM_IP=<vm-ip> bash skills/zerobus-debezi
 
 On the laptop, with no cloud VM or storage: `PROFILE=... CATALOG=... LIMA=<instance> SP_CLIENT_ID=<application id> SP_SECRET_FILE=<file> bash skills/zerobus-debezium-test/scripts/run-all.sh` (CockroachDB only so far).
 
-1. **Pre-flight.** It refuses to run with uncommitted changes in `zerobus-debezium-test`, `zerobus-workspace-setup`, `lfc-source-statschema` or `lfc-source-podman`: commit them, or run from a clean checkout (`git worktree add <dir> HEAD`). `ALLOW_DIRTY=1` runs anyway and marks it in the summary. It also checks SSH to the VM first. When the laptop's public IP changes, the VM's firewall drops SSH, every source query comes back empty, and every claim fails. It runs **lfc-source-podman**'s `ensure-podman-socket.sh` on the VM (on the laptop, `ensure-lima-podman.sh`, which runs it inside Lima). So every container runs rootful through the root Podman socket (`$PODMAN`, default `podman --remote --url unix:///run/podman/podman.sock`), in the same store as the database sources, and with no `sudo` anywhere in the test. Files that containers write are removed from a container. `PODMAN=podman` runs rootless, on a host with no rootful store. `SWEEP=1` first removes what earlier runs left behind ([`sweep.sh`](scripts/sweep.sh) below).
+1. **Pre-flight.** It refuses to run with uncommitted changes in `zerobus-debezium-test`, `zerobus-workspace-setup`, `lfc-source-statschema`, `lfc-source-datagen` or `lfc-source-podman`: commit them, or run from a clean checkout (`git worktree add <dir> HEAD`). `ALLOW_DIRTY=1` runs anyway and marks it in the summary. It also checks SSH to the VM first. When the laptop's public IP changes, the VM's firewall drops SSH, every source query comes back empty, and every claim fails. It runs **lfc-source-podman**'s `ensure-podman-socket.sh` on the VM (on the laptop, `ensure-lima-podman.sh`, which runs it inside Lima). So every container runs rootful through the root Podman socket (`$PODMAN`, default `podman --remote --url unix:///run/podman/podman.sock`), in the same store as the database sources, and with no `sudo` anywhere in the test. Files that containers write are removed from a container. `PODMAN=podman` runs rootless, on a host with no rootful store. `SWEEP=1` first removes what earlier runs left behind ([`sweep.sh`](scripts/sweep.sh) below).
 2. **The workspace.** **zerobus-workspace-setup** `check.sh`: the Zerobus previews, and TCP 443 and 9092 from the VM to the endpoint.
 3. **Every source**, `SOURCES="crdb yb"` by default, in parallel on their own ports (CockroachDB 30026, YugabyteDB 30031). Each run cleans up after itself.
 4. **The results**, in `~/.lfc-test/results/zerobus-<UTC time>/`: `check.txt`, `<source>.md` (the result table, with images and digests), `<source>.log`, and `summary.md` (the commit, claims passed and failed per source). The exit code is 0 only when everything passed. When everything passed, it also writes one row per source into the "Successful runs" table of [docs/lakeflow-connect-zerobus.md](../../docs/lakeflow-connect-zerobus.md), newest first (`RECORD=0` to skip): commit that change with the run.
@@ -233,4 +396,4 @@ So silver can't sequence by the commit time. What's left is the top-level `ts_ns
 
 ## After running
 
-Add the result table and the environment lines (images with digests, the CockroachDB version, the host) to the run record. Compare the per-op counts with the workload: 5 snapshot rows per table, then `customers` 2 inserts, 1 update, 1 delete, and `orders` 1 insert, 2 updates, 1 delete.
+Add the result table and the environment lines (images with digests, the CockroachDB version, the host) to the run record. Compare the per-op counts with the workload: the claims `changes-1` to `changes-3` list what each round's manifest expected, per table.

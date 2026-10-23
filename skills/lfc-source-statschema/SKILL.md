@@ -17,6 +17,7 @@ The format is [statschema](https://github.com/rsleedbx/statschema)'s: **`schema.
 | Step | Where | Script | Output |
 |---|---|---|---|
 | 1. Collect schema and statistics | the customer's database | [`collect-postgres.sql`](scripts/collect-postgres.sql), [`collect-mysql.sql`](scripts/collect-mysql.sql) + [`mysql-normalize.jq`](scripts/mysql-normalize.jq) | `raw.json` |
+| 1a. Collect each table's inserts, updates and deletes | the customer's database, after real traffic | [`collect-activity-postgres.sql`](scripts/collect-activity-postgres.sql), [`collect-activity-mysql.sql`](scripts/collect-activity-mysql.sql) | `activity.json` (for **cdc-table-plan**) |
 | 2. To the canonical format | anywhere | [`to-canonical.py`](scripts/to-canonical.py) | `schema.yaml`, `stats.yaml` |
 | 2a. Or import existing DDL | anywhere | [`ddl-to-schema.py`](scripts/ddl-to-schema.py) `--dialect <source>` (any sqlglot dialect; keeps lfc tags in comments, and checks) | `schema.yaml` |
 | 3. Collect the top queries and their plans | the customer's database | [`collect-queries-postgres.sql`](scripts/collect-queries-postgres.sql), [`collect-queries-mysql.sql`](scripts/collect-queries-mysql.sql) | `queries.json` |

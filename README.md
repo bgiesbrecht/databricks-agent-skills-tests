@@ -26,6 +26,26 @@ Every ✅ ran end to end in a real workspace: source database, UC connection, pi
 | PostgreSQL 16 | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | not offered | not enabled on any test workspace |
 | SQL Server 2022 | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure | ✅ AWS, Azure (serverless gateway) |
 
+## Tested end to end: schema changes and table lifecycle, by database
+
+Each ✅ ran on a fresh source database and real pipelines, with the destination checked against the source; the test then recovered the table (full refresh or `auto_full_refresh_policy`) and checked the next change arrived. Scripts: [skills/lfc-schema-change-test](skills/lfc-schema-change-test/SKILL.md).
+
+| Scenario | SQL Server, standard CDC | SQL Server, integrated CDC | PostgreSQL 16, standard CDC |
+|---|---|---|---|
+| ADD COLUMN (nullable, default, identity, computed; keyed and keyless) | ✅ | ✅ | ✅ |
+| Type change, DROP COLUMN, rename, primary key change | ✅ | | ✅ |
+| `auto_full_refresh_policy` recovers a stopped table | ✅ | | ✅ |
+| DELETE every row + INSERT | ✅ | ✅ | |
+| TRUNCATE (CDC and change tracking) | ✅ | ✅ | ✅ |
+| DROP and recreate a table | ✅ | ✅ | |
+| Add a table to a running pipeline | ✅ | ✅ | |
+| Replica identity DEFAULT / FULL / NOTHING, TOAST-able columns | | | ✅ |
+| Permissions missing, table not tracked; the other tables keep loading | ✅ | | |
+| SCD type 2 on change tracking and CDC | ✅ | ✅ | |
+| Change data feed on the destination (`table_changes`) | ✅ | | |
+| Move between integrated CDC and a gateway | ✅ | ✅ | |
+| Many tables in one pipeline (90, 270, 900; TPC-C copies, one schema each) | ✅ | | |
+
 ## Tested end to end: Lakeflow Connect Zerobus, by database
 
 Database changes through Zerobus Ingest into bronze, silver (current rows and every version) and gold, each checked against the source after five rounds of changes, a producer restart and schema changes included. The runs, and how to repeat them: [docs/lakeflow-connect-zerobus.md](docs/lakeflow-connect-zerobus.md).
