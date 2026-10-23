@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # sqlserver-table-lifecycle.sh: what a SQL Server source table's lifecycle does to a Lakeflow Connect pipeline, for a
-# change-tracking and a CDC table each. Answers lfc-faq #3, #4, #5 and #6:
+# change-tracking and a CDC table each. Answers four field questions:
 #   #3  is change data feed on for the destination streaming tables, and can table_changes() read it?
 #   #6  DELETE every row + INSERT again: applied incrementally?
 #   #4  add a table to the ingestion definition: does it need a full refresh, and are the other tables reset?

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # sqlserver-migrate.sh: can a SQL Server pipeline move between integrated CDC and the gateway model and keep its
-# destination tables? Answers lfc-faq #2. In place: the same ingestion pipeline gets a new source, so its tables stay.
+# destination tables? Answers a field question. In place: the same ingestion pipeline gets a new source, so its tables stay.
 #
 #   PART=A  created as integrated CDC -> a new gateway (the case the question asks; no earlier gateway to go back to)
 #   PART=B  created on a gateway -> integrated CDC -> back to the same gateway (the path the product's own migration tests run)

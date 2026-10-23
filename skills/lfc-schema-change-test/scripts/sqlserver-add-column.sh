@@ -191,7 +191,6 @@ EXEC dbo.lakeflowSetupChangeTracking @Tables = 'lfcddemo.afrpk', @User = '$CONN_
 EXEC dbo.lakeflowSetupChangeDataCapture @Tables = 'lfcddemo.dtix', @User = '$CONN_USER';
 EXEC dbo.lakeflowSetupChangeDataCapture @Tables = 'lfcddemo.cdcpk', @User = '$CONN_USER';
 -- SCD_TYPE_2 needs CDC on SQL Server; on change tracking integrated CDC applies none of the table's changes, silently
--- (lfc-faq #23)
 EXEC dbo.lakeflowSetupChangeDataCapture @Tables = 'lfcddemo.scd2pk', @User = '$CONN_USER';
 EXEC dbo.lakeflowFixPermissions @User = '$CONN_USER', @Tables = 'SCHEMAS:lfcddemo';
 EOF

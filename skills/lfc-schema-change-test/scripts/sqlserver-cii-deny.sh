@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # sqlserver-cii-deny.sh: on a CDC table, does a column added after the first load need the login's UPDATE on the
-# utility objects' lakeflowCaptureInstanceInfo table? Answers lfc-faq #8 (a cause listed for
+# utility objects' lakeflowCaptureInstanceInfo table? Answers a field question (a cause listed for
 # TABLE_METADATA_NOT_READY_INTERNAL_ERROR). One CDC table, 10 rows; after the load a row, then ADD COLUMN and a row.
 # Prints the destination rows and columns after each step, the source's capture instances and the info table's row
 # (old/new capture instance, committedCursor: what the gateway writes when it moves to the new capture instance).
@@ -40,7 +40,7 @@ fi
 echo "ALTER TABLE lfcddemo.p_cii ADD c INT NULL;" | src >/dev/null
 echo "INSERT INTO lfcddemo.p_cii (id, v, c) VALUES (12, 'ddl', 1);" | src >/dev/null
 # the expected answer depends on the mode: with UPDATE granted the row arrives; denied, the gateway can't move to the
-# new capture instance and the row doesn't arrive, with no error (lfc-faq #8). Denied, the claim passes only when the
+# new capture instance and the row doesn't arrive, with no error. Denied, the claim passes only when the
 # gateway is alive (column c arrived), the table has no error and committedCursor is still NULL: a stall for another
 # reason, or an error instead of the silent stop, fails it
 if step 12 column-after-load; then arrived=1; else arrived=0; fi

@@ -1,6 +1,6 @@
 """Redact known digit secrets in PNGs, keeping the last four digits visible.
 
-Copied from the lfc-faq notes (scripts/lfc_image_redact.py, e9db42b), unchanged apart from this note.
+Copied from an earlier demo, unchanged apart from this note.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # sqlserver-ddl-afr.sh: which SQL Server DDL needs a full refresh, and does auto_full_refresh_policy do it on its own?
-# Answers lfc-faq #12 for SQL Server. For each DDL below there are three tables: CDC without the policy (<op>_off),
+# Answers a field question for SQL Server. For each DDL below there are three tables: CDC without the policy (<op>_off),
 # CDC with it (<op>_on) and change tracking without it (<op>_ct; not for pk, as SQL Server won't drop the primary key
 # of a change-tracked table). Each gets the DDL and one new row; then the run reads each table's error, lets the policy
 # work on the _on tables, and full-refreshes the others that asked for it.

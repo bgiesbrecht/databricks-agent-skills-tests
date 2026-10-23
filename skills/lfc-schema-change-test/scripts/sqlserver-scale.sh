@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sqlserver-scale.sh: many tables in one pipeline. Answers lfc-faq #7 (INGESTION_GATEWAY_OPERATION_TIMEOUT.REINITIALIZATION:
+# sqlserver-scale.sh: many tables in one pipeline. Answers a field question (INGESTION_GATEWAY_OPERATION_TIMEOUT.REINITIALIZATION:
 # when does a pipeline with many tables hit it?). COPIES copies of a TPC model (MODEL, default tpcc: 9 tables) in source
 # schemas <model>_0001 .. <model>_NNNN, generated inside SQL Server by lfc-source-statschema (shape.py, ddl.py) and
 # lfc-source-datagen (fill.sh); change tracking on keyed tables and CDC on keyless ones; then one pipeline over all of it.
