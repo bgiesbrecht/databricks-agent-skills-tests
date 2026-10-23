@@ -16,6 +16,7 @@ A limits file is a YAML list of rows:
     quote: "relation size | 32 TB | with the default BLCKSZ of 8192 bytes"
     ask: "the biggest table's size: one table can't pass 32 TB"   # optional: the question it raises
     checked: 2026-10-22
+    text_url: ""                   # optional: where the page's text is when url renders it with JavaScript
 
 Each page is fetched once (curl; --cache keeps them) and turned into text: tags dropped, a table's cells joined
 with " | ", whitespace collapsed. A quote passes when it appears in that text, compared without case, with quotes,
@@ -24,6 +25,7 @@ failed; --markdown prints the passing rows as a table instead.
 """
 import hashlib
 import html
+import json
 import os
 import re
 import subprocess
@@ -33,6 +35,11 @@ import yaml
 
 
 def text_of(page):
+    if page.lstrip().startswith("{"):   # a docs API that wraps the page's HTML in JSON: {"content": "<h1>..."}
+        try:
+            page = json.loads(page).get("content", page)
+        except ValueError:
+            pass
     page = re.sub(r"(?is)<(script|style|noscript|svg)\b.*?</\1>", " ", page)
     page = re.sub(r"(?is)</t[dh]\s*>", " | ", page)
     page = re.sub(r"(?is)<br\s*/?>|</(tr|p|li|h[1-6]|div|pre|dt|dd)\s*>", "\n", page)
@@ -55,8 +62,10 @@ def fetch(url, cache):
     path = os.path.join(cache, hashlib.sha1(url.encode()).hexdigest() + ".html") if cache else None
     if path and os.path.exists(path):
         return open(path, encoding="utf-8", errors="replace").read()
-    r = subprocess.run(["curl", "-sSL", "--max-time", "60", "-A", "Mozilla/5.0 (limits-check)", url],
-                       capture_output=True, check=False)
+    curl = ["curl", "-sSLf", "--max-time", "60"]
+    r = subprocess.run(curl + ["-A", "Mozilla/5.0 (limits-check)", url], capture_output=True, check=False)
+    if r.returncode in (22, 56):   # HTTP 4xx/5xx (56 over HTTP/2): Salesforce docs refuse any agent but curl's
+        r = subprocess.run(curl + [url], capture_output=True, check=False)
     if r.returncode != 0:
         raise RuntimeError(r.stderr.decode(errors="replace").strip()[:200])
     page = r.stdout.decode("utf-8", errors="replace")
@@ -91,9 +100,10 @@ def main():
     for r in rows:
         url, quote = r.get("url", ""), str(r.get("quote", ""))
         try:
-            if url not in texts:
-                texts[url] = text_of(fetch(url, cache))
-            t = texts[url]
+            src = r.get("text_url") or url
+            if src not in texts:
+                texts[src] = text_of(fetch(src, cache))
+            t = texts[src]
             ok = bool(quote.strip()) and (norm(quote) in norm(t) or norm(quote, False) in norm(t, False))
             why = "" if ok else "quote not on the page"
         except Exception as e:   # noqa: BLE001

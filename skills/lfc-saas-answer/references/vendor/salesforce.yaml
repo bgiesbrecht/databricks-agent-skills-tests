@@ -1,0 +1,131 @@
+# Salesforce facts from Salesforce's public docs that Lakeflow Connect Salesforce behavior rests on (API allocations, deletes, timestamps).
+# Each quote is on its page: check with ../../../lfc-source-sizing/scripts/limits-check.py salesforce.yaml.
+# Salesforce's doc pages render with JavaScript; text_url is the same page's text (a JSON docs API).
+- product: Salesforce
+  limit: daily API requests (Enterprise Edition)
+  value: 100,000 + 1,000 per Salesforce license, per 24 hours
+  kind: soft
+  note: shared by every integration in the org; the connector's REST calls count against it
+  url: https://developer.salesforce.com/docs/atlas.en-us.salesforce_app_limits_cheatsheet.meta/salesforce_app_limits_cheatsheet/salesforce_app_limits_platform_api.htm
+  text_url: https://developer.salesforce.com/docs/get_document_content/salesforce_app_limits_cheatsheet/salesforce_app_limits_platform_api.htm/en-us/258.0
+  quote: For an Enterprise Edition org with 15 Salesforce licenses, the request limit is 115,000 requests (100,000 plus 15 licenses x 1,000 calls).
+  ask: what else in the org uses the daily API allocation, and how often will the pipeline run?
+  checked: 2026-10-22
+- product: Salesforce
+  limit: daily API requests (Developer Edition)
+  value: 15,000 per 24 hours
+  kind: hard
+  url: https://developer.salesforce.com/docs/atlas.en-us.salesforce_app_limits_cheatsheet.meta/salesforce_app_limits_cheatsheet/salesforce_app_limits_platform_api.htm
+  text_url: https://developer.salesforce.com/docs/get_document_content/salesforce_app_limits_cheatsheet/salesforce_app_limits_platform_api.htm/en-us/258.0
+  quote: Developer Edition | N/A | 15,000
+  ask: is the test org a Developer Edition? Frequent runs over many objects can use up 15,000 calls a day
+  checked: 2026-10-22
+- product: Salesforce
+  limit: concurrent long-running API requests (20 s or longer)
+  value: 25 (production and sandboxes), 5 (Developer Edition and trials)
+  kind: hard
+  url: https://developer.salesforce.com/docs/atlas.en-us.salesforce_app_limits_cheatsheet.meta/salesforce_app_limits_cheatsheet/salesforce_app_limits_platform_api.htm
+  text_url: https://developer.salesforce.com/docs/get_document_content/salesforce_app_limits_cheatsheet/salesforce_app_limits_platform_api.htm/en-us/258.0
+  quote: If the number of long running requests exceeds the limit, the API returns a REQUEST_LIMIT_EXCEEDED exception code.
+  ask: how many pipelines and other tools read this org at the same time?
+  checked: 2026-10-22
+- product: Salesforce
+  limit: Bulk API 2.0 query jobs per 24-hour rolling window
+  value: 10,000
+  kind: hard
+  note: large initial loads and very active objects go through Bulk API 2.0 (Databricks Salesforce FAQ)
+  url: https://developer.salesforce.com/docs/atlas.en-us.salesforce_app_limits_cheatsheet.meta/salesforce_app_limits_cheatsheet/salesforce_app_limits_platform_bulkapi.htm
+  text_url: https://developer.salesforce.com/docs/get_document_content/salesforce_app_limits_cheatsheet/salesforce_app_limits_platform_bulkapi.htm/en-us/258.0
+  quote: 10,000 The current number can be seen in the DailyBulkV2QueryJobs value in the response to the
+  ask: how many objects, how often, and which other tools submit Bulk API 2.0 query jobs?
+  checked: 2026-10-22
+- product: Salesforce
+  limit: Bulk API 2.0 query results per 24-hour rolling window
+  value: 1 TB
+  kind: hard
+  url: https://developer.salesforce.com/docs/atlas.en-us.salesforce_app_limits_cheatsheet.meta/salesforce_app_limits_cheatsheet/salesforce_app_limits_platform_bulkapi.htm
+  text_url: https://developer.salesforce.com/docs/get_document_content/salesforce_app_limits_cheatsheet/salesforce_app_limits_platform_bulkapi.htm/en-us/258.0
+  quote: Total query results that can be generated per 24 hour rolling window N/A 1 TB
+  ask: how large is the initial load across all objects? Over 1 TB, spread it across days or pipelines
+  checked: 2026-10-22
+- product: Salesforce
+  limit: Bulk API job retention
+  value: 7 days after a terminal state
+  kind: behavior
+  url: https://developer.salesforce.com/docs/atlas.en-us.salesforce_app_limits_cheatsheet.meta/salesforce_app_limits_cheatsheet/salesforce_app_limits_platform_bulkapi.htm
+  text_url: https://developer.salesforce.com/docs/get_document_content/salesforce_app_limits_cheatsheet/salesforce_app_limits_platform_bulkapi.htm/en-us/258.0
+  quote: Jobs in a terminal state (completed, aborted, or failed) that are older than seven days are deleted.
+  checked: 2026-10-22
+- product: Salesforce
+  limit: API usage on every REST response
+  value: Sforce-Limit-Info header, api-usage=<used>/<limit>
+  kind: behavior
+  note: a customer can watch usage without extra calls; Setup > System Overview shows it too
+  url: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/headers_api_usage.htm
+  text_url: https://developer.salesforce.com/docs/get_document_content/api_rest/headers_api_usage.htm/en-us/258.0
+  quote: The first number is the number of API calls used, and the second number is the API limit for the organization.
+  ask: how close to the daily limit is the org before the pipeline starts?
+  checked: 2026-10-22
+- product: Salesforce
+  limit: remaining allocations on demand
+  value: /limits resource (DailyApiRequests, DailyBulkV2QueryJobs)
+  kind: behavior
+  url: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/resources_limits.htm
+  text_url: https://developer.salesforce.com/docs/get_document_content/api_rest/resources_limits.htm/en-us/258.0
+  quote: DailyBulkV2QueryJobs Daily number of query jobs in Bulk API 2.0. This limit is available in API version 47.0 and later.
+  checked: 2026-10-22
+- product: Salesforce
+  limit: soft-deleted records readable
+  value: until purged from the Recycle Bin
+  kind: behavior
+  note: why the Databricks docs say deletes purged before the next run are missed (full refresh recovers them)
+  url: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/resources_queryall.htm
+  text_url: https://developer.salesforce.com/docs/get_document_content/api_rest/resources_queryall.htm/en-us/258.0
+  quote: Unlike the Query resource, QueryAll returns records that are soft deleted due to a merge or delete. After these records are permanently removed from the recycle bin, you can no longer query them.
+  ask: how often does the org empty its Recycle Bin, and how long can the pipeline go without a run?
+  checked: 2026-10-22
+- product: Salesforce
+  limit: delete log lookback
+  value: 15 days (less if the Recycle Bin was purged)
+  kind: hard
+  url: https://developer.salesforce.com/docs/atlas.en-us.api.meta/api/sforce_api_calls_getdeleted.htm
+  text_url: https://developer.salesforce.com/docs/get_document_content/api/sforce_api_calls_getdeleted.htm/en-us/258.0
+  quote: Results are returned for no more than 15 days previous to the day the call is executed (or earlier if an administrator has purged the Recycle Bin).
+  ask: will the pipeline ever stay stopped for more than about two weeks?
+  checked: 2026-10-22
+- product: Salesforce
+  limit: records per QueryAll response
+  value: up to 2,000
+  kind: behavior
+  url: https://developer.salesforce.com/docs/atlas.en-us.api_rest.meta/api_rest/resources_queryall.htm
+  text_url: https://developer.salesforce.com/docs/get_document_content/api_rest/resources_queryall.htm/en-us/258.0
+  quote: When a QueryAll request is executed, up to 2,000 records can be returned at a time in a synchronous request.
+  ask: each 2,000 changed rows read by REST is at least one API call
+  checked: 2026-10-22
+- product: Salesforce
+  limit: SystemModstamp scope
+  value: changes by users and automated processes
+  kind: behavior
+  note: the connector's first-choice cursor column (Databricks Salesforce FAQ)
+  url: https://developer.salesforce.com/docs/atlas.en-us.object_reference.meta/object_reference/system_fields.htm
+  text_url: https://developer.salesforce.com/docs/get_document_content/object_reference/system_fields.htm/en-us/258.0
+  quote: SystemModstamp dateTime Date and time when a user or automated process (such as a trigger) last modified this record.
+  checked: 2026-10-22
+- product: Salesforce
+  limit: SystemModstamp misses some changes
+  value: values derived from another record
+  kind: behavior
+  note: why formula fields are fully re-read by default unless incremental formula ingestion is turned on
+  url: https://developer.salesforce.com/docs/atlas.en-us.object_reference.meta/object_reference/system_fields.htm
+  text_url: https://developer.salesforce.com/docs/get_document_content/object_reference/system_fields.htm/en-us/258.0
+  quote: However, in certain cases, SystemModstamp doesn't capture every field change.
+  ask: which objects have formula fields that read other objects?
+  checked: 2026-10-22
+- product: Salesforce
+  limit: LastModifiedDate scope
+  value: changes by users only
+  kind: behavior
+  url: https://developer.salesforce.com/docs/atlas.en-us.object_reference.meta/object_reference/system_fields.htm
+  text_url: https://developer.salesforce.com/docs/get_document_content/object_reference/system_fields.htm/en-us/258.0
+  quote: LastModifiedDate dateTime Date and time when a user last modified this record.
+  checked: 2026-10-22
