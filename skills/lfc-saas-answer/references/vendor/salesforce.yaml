@@ -1,4 +1,4 @@
-# Salesforce facts from Salesforce's public docs that answer Lakeflow Connect Salesforce questions.
+# Salesforce facts from Salesforce's public docs that Lakeflow Connect Salesforce behavior rests on (API allocations, deletes, timestamps).
 # Each quote is on its page: check with ../../../lfc-source-sizing/scripts/limits-check.py salesforce.yaml.
 # Salesforce's doc pages render with JavaScript; text_url is the same page's text (a JSON docs API).
 - product: Salesforce
