@@ -11,6 +11,7 @@
 #   The source database is kept for the next run (KEEP_SOURCE=0 drops it): SOURCE_DB, default
 #   <prefix>_scale_<model>_x<copies>_sf<sf>. A run reuses it when every table is there and tracked, else restores it from
 #   the backup the first build wrote (/var/opt/mssql/backup/<db>.bak in the container), else builds it.
+#   DISK_MBPS  the source disk limit the run is under (vm-throttle.sh <MB/s> --cold before, off after): recorded only
 #   Needs and options: as sqlserver-add-column.sh (PROFILE CONNECTION CATALOG SRC_SQL CONN_USER; SRC_ENV, MODE, KEEP, OUT),
 #   and uv (for the statschema scripts).
 #
@@ -152,6 +153,7 @@ ELAPSED=$(( $(date +%s) - T0 ))
 metric tables $((NT * COPIES)); metric first_load_s "$ELAPSED"; metric first_load_updates "$round"
 metric s_per_table "$(awk "BEGIN { printf \"%.2f\", $ELAPSED / ($NT * $COPIES) }")"
 conf model "$MODEL"; conf sf "$SF"; conf copies "$COPIES"; conf objects "$OBJECTS"
+[ -n "${DISK_MBPS:-}" ] && conf disk_mbps "$DISK_MBPS"   # set when the run is under vm-throttle.sh <MB/s>
 ALLERRS=$(echo $ALLERRS | tr ' ' '\n' | sort -u | grep -v '^$' | paste -sd' ' -)
 [ "$M" = $((NT * COPIES)) ] && claim first-load-complete PASS "$M tables at their source row counts after ${ELAPSED}s ($round update rounds); errors seen: ${ALLERRS:-none}" \
   || claim first-load-complete FAIL "$M of $((NT * COPIES)) tables match after ${ELAPSED}s; errors: ${ALLERRS:-none}"
