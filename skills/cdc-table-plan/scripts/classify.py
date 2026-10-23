@@ -3,7 +3,7 @@
 # ///
 """classify.py: a first guess at each table's role and silver, from a canonical schema.yaml, for the customer to check.
 
-    classify.py <schema.yaml> [--stats stats.yaml] [--activity activity.yaml] [--sf 1] > plan.yaml
+    classify.py <schema.yaml> [--activity activity.yaml] [--sf 1] > plan.yaml
     classify.py <schema.yaml> --truth <truth.yaml>        # compare the guess with known roles (exit 1 if any differ)
     classify.py <schema.yaml> --review <review.yaml>      # the guess, corrected where a review says otherwise
 
@@ -83,7 +83,8 @@ def features(schema, sf, activity):
     for n, t in tables.items():
         pk = [c["name"] for c in t["columns"] if c.get("primary_key")]
         fixed = scaled and t.get("row_count") is not None and t.get("row_count_per_sf") is None
-        rows = t.get("row_count") if fixed else (t.get("row_count_per_sf") or 0) * sf
+        # a scaled model: the growing tables' size per SF times --sf; a collected schema: its row_count as it is
+        rows = t.get("row_count") if fixed or not scaled else (t.get("row_count_per_sf") or 0) * sf
         fkcols = {c for cols, _ in fks[n] for c in cols}
         parents = sorted({p for _, p in fks[n] if p != n})
         measures = [c["name"] for c in t["columns"] if c.get("type") in ("decimal", "double", "float", "real", "numeric")
@@ -183,7 +184,6 @@ def refine(n, f, role, silver, conf, why, ask):
     if not a or not a.get("inserts") and not a.get("updates") and not a.get("deletes"):
         return role, silver, conf, why, ask
     ins, upd, dele = a.get("inserts", 0), a.get("updates", 0), a.get("deletes", 0)
-    why = why + [f"activity: {ins} inserts, {upd} updates, {dele} deletes"]
     if role in ("fact", "log", "queue") and ins and dele >= 0.5 * ins and upd <= ins and not f["children"]:
         return "queue", ["scd1"], "high", why + ["rows are inserted, then deleted"], None
     # inserts only, and nothing references it: appended. A fact others reference (an e-mail sent, later opened) can be
@@ -213,7 +213,7 @@ def plan(schema, sf, activity, model):
     for n in feats:
         role, silver, conf, why, ask = classify(n, feats[n], feats, roles)
         role, silver, conf, why, ask = refine(n, feats[n], role, silver, conf, why, ask)
-        out[n] = {"role": role, "silver": silver, "confidence": conf, "decided_by": "relations", "why": "; ".join(why)}
+        out[n] = {"role": role, "silver": list(silver), "confidence": conf, "decided_by": "relations", "why": "; ".join(why)}
         if ask and conf != "high":
             out[n]["ask"] = ask
     return {"version": 1, "model": model, "tables": out}
@@ -221,7 +221,7 @@ def plan(schema, sf, activity, model):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("schema"); ap.add_argument("--stats"); ap.add_argument("--activity"); ap.add_argument("--sf", type=float, default=1)
+    ap.add_argument("schema"); ap.add_argument("--activity"); ap.add_argument("--sf", type=float, default=1)
     ap.add_argument("--truth"); ap.add_argument("--review"); ap.add_argument("--model")
     a = ap.parse_args()
     schema = load(a.schema)
@@ -234,10 +234,12 @@ def main():
             t = p["tables"].get(n)
             if t is None:
                 print(f"review: no table {n} in the schema", file=sys.stderr); continue
-            silver = r.get("silver") or SILVER[r["role"]]
+            if r.get("role") not in SILVER:
+                print(f"review: {n}: role {r.get('role')!r} isn't one of {', '.join(SILVER)}; skipped", file=sys.stderr); continue
+            silver = list(r.get("silver") or SILVER[r["role"]])
             if (t["role"], t["silver"]) != (r["role"], silver):
                 t.update(guessed=f"{t['role']} {'+'.join(t['silver'])}", role=r["role"], silver=silver, confidence="high",
-                         decided_by="docs", cite=r.get("cite", "")); t.pop("ask", None)
+                         decided_by="docs", cite=r.get("cite") or a.review.rsplit("/", 1)[-1]); t.pop("ask", None)
     if a.truth:
         truth = load(a.truth)
         bad = 0
@@ -250,7 +252,11 @@ def main():
         sys.exit(1 if bad else 0)
     sys.stdout.write("# The first guess at each table's role and silver (classify.py). Check it and edit role or silver;\n"
                      "# the pipeline builds what silver says. silver: scd1 (current rows), scd2 (history), append (inserts only).\n")
-    yaml.safe_dump(p, sys.stdout, sort_keys=False, width=140, default_flow_style=None)
+    # no anchors and aliases (*id001) for the lists tables share: every reader, yq too, sees each table's own
+    class Plain(yaml.SafeDumper):
+        def ignore_aliases(self, data):
+            return True
+    yaml.dump(p, sys.stdout, Dumper=Plain, sort_keys=False, width=140, default_flow_style=None)
 
 
 if __name__ == "__main__":

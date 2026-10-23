@@ -32,18 +32,30 @@ step() {   # <rows wanted> <name>: up to 4 updates until the rows arrive or the 
 }
 observe after-load "rows $(q "SELECT COUNT(*) FROM $T.p_cii" 2>&1); columns $(cols); source: $(info)"
 echo "INSERT INTO lfcddemo.p_cii (id, v) VALUES (11, 'after');" | src >/dev/null
-step 11 row-after-load
+# the precondition: a plain change after the load arrives; else a missing row later says nothing about the deny
+if ! step 11 row-after-load; then
+  claim row-after-load FAIL "a plain row after the load didn't arrive (rows $ROWS; errors ${TERRS:-none}): the ADD COLUMN step can't be judged"
+  result_md "sqlserver-cii-deny (CII_DENY=$CII_DENY)"; exit $FAILED
+fi
 echo "ALTER TABLE lfcddemo.p_cii ADD c INT NULL;" | src >/dev/null
 echo "INSERT INTO lfcddemo.p_cii (id, v, c) VALUES (12, 'ddl', 1);" | src >/dev/null
 # the expected answer depends on the mode: with UPDATE granted the row arrives; denied, the gateway can't move to the
-# new capture instance and the row doesn't arrive (lfc-faq #8). A denied run where the row arrives means that changed
+# new capture instance and the row doesn't arrive, with no error (lfc-faq #8). Denied, the claim passes only when the
+# gateway is alive (column c arrived), the table has no error and committedCursor is still NULL: a stall for another
+# reason, or an error instead of the silent stop, fails it
 if step 12 column-after-load; then arrived=1; else arrived=0; fi
+C=$(cols); I=$(info)
 if [ "$CII_DENY" = 0 ]; then
   [ $arrived = 1 ] && claim column-row-arrives PASS "after ADD COLUMN the new row arrived (UPDATE on $CII granted)" \
-    || claim column-row-arrives FAIL "after ADD COLUMN the new row didn't arrive in 4 updates (UPDATE on $CII granted); source: $(info)"
+    || claim column-row-arrives FAIL "after ADD COLUMN the new row didn't arrive in 4 updates (UPDATE on $CII granted); errors ${TERRS:-none}; source: $I"
+elif [ $arrived = 1 ]; then
+  claim column-row-stops-when-denied FAIL "after ADD COLUMN the new row arrived although UPDATE on $CII is denied: the documented behavior changed"
+elif [ -n "${TERRS// /}" ]; then
+  claim column-row-stops-when-denied FAIL "the row didn't arrive, but with an error on p_cii ($TERRS): no longer silent; $(msgs_for p_cii | head -1 | cut -c1-200)"
+elif [[ ",$C," != *,c,* ]] || [[ "$I" != *"committedCursor NULL"* ]]; then
+  claim column-row-stops-when-denied FAIL "the row didn't arrive, but not the documented way (columns $C; source: $I): the stop is another cause"
 else
-  [ $arrived = 0 ] && claim column-row-stops-when-denied PASS "after ADD COLUMN the new row didn't arrive in 4 updates (UPDATE on $CII denied), as documented; source: $(info)" \
-    || claim column-row-stops-when-denied FAIL "after ADD COLUMN the new row arrived although UPDATE on $CII is denied: the documented behavior changed"
+  claim column-row-stops-when-denied PASS "after ADD COLUMN column c arrived but the new row didn't (4 updates), no error, committedCursor NULL (UPDATE on $CII denied), as documented; source: $I"
 fi
 result_md "sqlserver-cii-deny (CII_DENY=$CII_DENY)"
 exit $FAILED

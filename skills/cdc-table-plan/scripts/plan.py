@@ -45,6 +45,11 @@ def diff(cur, des, keyed, activity):
         if t not in ct:
             acts.append(("refuse", t, "", f"{t} is new: its producer must capture it, and its snapshot be taken, first"))
             continue
+        if t not in dt:   # only in current: every target it had is dropped
+            for k, tgt in sorted(targets(t, a).items()):
+                acts.append(("drop", t, tgt, f"{t} is no longer in the plan: {tgt} goes" +
+                             (", and its history with it" if k == "scd2" else "")))
+            continue
         if sorted(a) == sorted(b):
             continue
         if not b or set(b) - {"scd1", "scd2", "append"} or "append" in b and len(b) > 1:
@@ -54,7 +59,7 @@ def diff(cur, des, keyed, activity):
             acts.append(("refuse", t, "", "no primary key: scd1 and scd2 need one; append only"))
             continue
         ta, tb = targets(t, a), targets(t, b)
-        if ("scd1" in ta) != ("scd1" in tb) and ("append" in ta) != ("append" in tb) and t in dt:
+        if ("scd1" in ta) != ("scd1" in tb) and ("append" in ta) != ("append" in tb):
             acts.append(("rebuild", t, t, f"{'+'.join(a)} -> {'+'.join(b)}: {t} changes kind, a full refresh of it alone"))
         else:
             for k in ("scd1", "append"):

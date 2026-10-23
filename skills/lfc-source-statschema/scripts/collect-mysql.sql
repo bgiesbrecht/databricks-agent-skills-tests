@@ -34,7 +34,7 @@ WITH h AS (                                                -- histograms: one ro
   SELECT c.table_name,
          JSON_ARRAYAGG(JSON_OBJECT(
            'pos', c.ordinal_position, 'name', c.column_name, 'data_type', c.column_type, 'nullable', c.is_nullable = 'YES',
-           'generated', IF(c.extra LIKE '%GENERATED%', IF(c.extra LIKE '%STORED%', 'stored', 'virtual'), NULL),
+           'generated', CASE WHEN c.extra LIKE '%STORED GENERATED%' THEN 'stored' WHEN c.extra LIKE '%VIRTUAL GENERATED%' THEN 'virtual' END,  -- not DEFAULT_GENERATED (an expression default)
            'null_fraction', hc.null_frac, 'n_distinct', COALESCE(hc.n_distinct, ix.card),
            'min_value', IF(@vals = 'all' OR (@vals = 'ranges' AND c.data_type IN ('tinyint', 'smallint', 'mediumint', 'int', 'bigint', 'decimal',
                            'float', 'double', 'date', 'datetime', 'timestamp', 'time', 'year')), hc.lo, NULL),
