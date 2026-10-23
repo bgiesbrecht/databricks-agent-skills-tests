@@ -358,8 +358,24 @@ record_run() {
 }
 
 # result_md <title>: the runtime each pipeline ran on, the source, and the claim table; to stdout and $OUT
+# src_shape: the common setup every run records, whatever it tests: the captured tables (SQL Server: with change tracking
+# or CDC; PostgreSQL: the test schema's) and their columns in all
+# (row counts and the DML rate depend on what a test is for, so each script records its own). Sets SHAPE_TABLES,
+# SHAPE_COLUMNS and the run's conf src_tables, src_columns.
+src_shape() {
+  local r
+  if [ "$ENGINE" = postgres ]; then
+    r=$(printf "SELECT COUNT(DISTINCT table_name) || ' ' || COUNT(*) FROM information_schema.columns WHERE table_schema = 'lfcddemo';\n" | src 2>/dev/null | head -1)
+  else
+    r=$(printf "SET NOCOUNT ON; SELECT CONCAT(COUNT(DISTINCT c.object_id), ' ', COUNT(*)) FROM sys.columns c JOIN sys.tables t ON t.object_id = c.object_id WHERE SCHEMA_NAME(t.schema_id) = 'lfcddemo' AND (t.is_tracked_by_cdc = 1 OR t.object_id IN (SELECT object_id FROM sys.change_tracking_tables));\n" | src 2>/dev/null | head -1)
+  fi
+  read -r SHAPE_TABLES SHAPE_COLUMNS <<< "$r"
+  [ -n "${SHAPE_TABLES:-}" ] && { conf src_tables "$SHAPE_TABLES"; conf src_columns "$SHAPE_COLUMNS"; }
+}
+
 result_md() {
   local rt=${LFC_RUNTIME:-$LIB/../../../bin/lfc-runtime.sh} runtime   # set LFC_RUNTIME when running a copy
+  [ "$(src_owned)" = 1 ] && src_shape
   "$rt" "$PROFILE" "$AP" >&2 || true
   runtime="- Ingestion pipeline: $("$rt" --summary "$PROFILE" "$AP" 2>/dev/null | sed 's/^Lakeflow runtime: //')"
   [ -n "${GW:-}" ] && runtime+=$'\n'"- Gateway: $("$rt" --summary "$PROFILE" "$GW" 2>/dev/null | sed 's/^Lakeflow runtime: //')"
@@ -370,6 +386,7 @@ result_md() {
     [ "$MODE" = standard ] && echo "- Mode: standard CDC, serverless gateway and ingestion pipeline" || echo "- Mode: integrated CDC, one serverless pipeline"
     echo "$runtime"
     [ -n "${SRC_ENV:-}" ] && $SRC_ENV | sed 's/^/- /'
+    [ -n "${SHAPE_TABLES:-}" ] && echo "- Test schema: $SHAPE_TABLES tables, $SHAPE_COLUMNS columns in all"
     if [ "$ENGINE" = postgres ]; then echo "- Source: $(echo 'SELECT version();' | $SRC_SQL postgres | head -1 | cut -d, -f1)"; else
     echo "- Source: $(printf "SET NOCOUNT ON; SELECT CONCAT('SQL Server ', CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(64)), ' ', CAST(SERVERPROPERTY('ProductUpdateLevel') AS nvarchar(64)), ' ', CAST(SERVERPROPERTY('ProductUpdateReference') AS nvarchar(64)), ', ', CAST(SERVERPROPERTY('Edition') AS nvarchar(128)));\n" | $SRC_SQL master | head -1); utility objects ${UTIL:-?}"; fi
     echo

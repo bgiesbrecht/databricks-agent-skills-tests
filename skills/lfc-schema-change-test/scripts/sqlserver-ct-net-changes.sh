@@ -74,7 +74,7 @@ metric ct_max_gap_rounds "$maxgap"; metric ct_max_gap_s "$(echo "$maxgap * $roun
 # one version (f5) everywhere; with 202, one round over all tables outlasted a read and tables kept 2 or 3 of f1..f5
 fgap=$(printf "SET NOCOUNT ON; SELECT DATEDIFF(MILLISECOND, MIN(t), MAX(t)) / 4 FROM lfcddemo.burst_log WHERE id = 2;\n" | src | tr -d '[:space:]')
 metric back_to_back_gap_ms "${fgap:-0}"
-if [ "${fgap:-0}" -lt 500 ]; then
+if [ "${fgap:-0}" -lt 100 ]; then
   [ "$fone" = "$nct" ] && claim ct-back-to-back-one-version PASS "on all $nct change-tracking SCD type 2 tables the 5 updates of id 2 (${fgap} ms apart) arrived as one version (f5)" \
     || claim ct-back-to-back-one-version FAIL "$fone of $nct change-tracking tables kept exactly one of f1..f5 (${fgap} ms apart)"
 else
