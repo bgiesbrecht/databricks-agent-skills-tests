@@ -106,7 +106,11 @@ publisher's page didn't open); Romero and Abelló survey the methods, data-drive
 
 1. **The queries** (`collect-queries-*.sql` output into `classify.py --queries`): summed columns make facts, grouped-by
    tables dimensions. It's the one signal that sees how the customer uses the tables.
-2. **Integer quantities as measures** (rule 5 and 9, after Phipps & Davis), checked against the TPC and Mautic truth.
+2. ~~Integer quantities as measures~~ (after Phipps & Davis): tried, no gain. Counting integer columns named like
+   quantities (qty, count, amount, price, total, balance, points) as measures changed nothing alone, because rule 5
+   takes a link with one column of its own first. Letting a measure override rule 5 made TPC-E `holding_summary` a
+   fact (right) and `customer_taxrate` one too (wrong: a link whose one column is a rate): 27 of 32 either way. One
+   numeric column doesn't tell a fact's quantity from a link's attribute; the queries (1) or the activity can.
 3. **Foreign key fan-out from statistics** (distinct count of the foreign key column against rows): 1:1 extensions and
    facts apart.
 4. **`pg_stats.correlation` and `UPDATE_TIME`** where the collectors can get them, for append and quiet tables
