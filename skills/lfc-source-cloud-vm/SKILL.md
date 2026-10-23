@@ -171,6 +171,10 @@ For complex engines or multiple database versions:
 2. Install Podman and run the containers with `sudo` (rootful), so images and volumes are stored on the XFS disk: see `references/install-podman.md` for container examples (Oracle, DB2, Informix, MySQL, PostgreSQL, SQL Server).
 3. **Large test databases:** don't populate one per person. Pull a shared master from object storage once, then clone it per test with XFS reflinks (instant), and throw the clone away or save it back: see `references/master-snapshots.md`. To leave the master in object storage and branch it in place (no full pull, a small local cache), use JuiceFS: `references/juicefs-branches.md`. Per-engine owners, clean stops and measured times: `references/engine-masters.md`.
 
+### More SQL Server containers for parallel tests
+
+[scripts/add-mssql-container.sh](scripts/add-mssql-container.sh) `<port>` starts one more SQL Server container on the VM (2 CPUs, 4 GB, SQL Server Agent on), creates the test login from a private password file through standard input, creates its Unity Catalog connection and checks it with `remote_query`. Run half as many containers as the VM has vCPUs, each on its own port in the firewall range; lfc-schema-change-test `scripts/parallel.sh` then spreads test runs over them. The new container's sa password is generated on the VM and stays there. Tested by hand, step by step, on 2026-10-23 (the script itself not yet end to end).
+
 ## Configure for Lakeflow Connect
 
 After the database is running, see the parent skill **lfc-source-setup** for engine-specific configuration:

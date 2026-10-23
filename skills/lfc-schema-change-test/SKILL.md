@@ -23,7 +23,7 @@ Never point these at a shared source: the DDL forces a full refresh on everyone'
 | [scripts/sqlserver-ddl-afr.sh](scripts/sqlserver-ddl-afr.sh) | Which DDL needs a full refresh (widen, narrow, rename, drop column, primary key change), on CDC and change tracking, and does `auto_full_refresh_policy` do it on its own | About 40 minutes |
 | [scripts/sqlserver-permissions.sh](scripts/sqlserver-permissions.sh) | What the pipeline reports when the login can't read a table or its CDC change table, or the table isn't tracked; do the other tables keep loading; does fixing the source and a full refresh recover | About 30 minutes |
 | [scripts/sqlserver-cii-deny.sh](scripts/sqlserver-cii-deny.sh) | On a CDC table, does a column added after the first load need the login's UPDATE on the utility objects' `lakeflowCaptureInstanceInfo`? A row, then ADD COLUMN and a row, with the info table's row and the capture instances printed; `CII_DENY=0` is the control | About 30 minutes |
-| [scripts/sqlserver-ct-net-changes.sh](scripts/sqlserver-ct-net-changes.sh) | With a gateway that runs all the time, does a change-tracking table get every update of a row, and is every table read on every poll? `TABLES_N` change-tracking SCD type 2 tables and a CDC control, one row updated every `BURST_GAP` seconds for `BURST_N` rounds, then 5 updates back to back; the kept versions show how often each table was read | About 25 minutes for 22 tables, longer for 200 |
+| [scripts/sqlserver-ct-net-changes.sh](scripts/sqlserver-ct-net-changes.sh) | With a gateway that runs all the time, does a change-tracking table get every update of a row, and is every table read on every poll? `TABLES_N` change-tracking SCD type 2 tables and a CDC control, one row updated every `BURST_GAP` seconds for `BURST_N` rounds on `BUSY_PCT`% of the tables, then 5 updates back to back; the kept versions and the gateway's staging files show how often each table was read | About 25 minutes for 22 tables, longer for 200 |
 | [scripts/sqlserver-scale.sh](scripts/sqlserver-scale.sh) | Many tables in one pipeline (lfc-faq #7): `COPIES` copies of a TPC model, one schema each, kept and reused between runs; `MODE`, `OBJECTS=schema\|table`, `SF`. With [scripts/vm-throttle.sh](scripts/vm-throttle.sh) `<MiB/s> --cold` before (and `off` after) and `DISK_MBPS`, the same run on a slow source disk | 10 minutes to over an hour, by table count |
 | [scripts/sqlserver-migrate.sh](scripts/sqlserver-migrate.sh) | Can a pipeline move between integrated CDC and a gateway and keep its tables: `PART=A` integrated → new gateway, `PART=B` gateway → integrated → back, `PART=C` a second pipeline on the same tables | 10–20 minutes each |
 | [scripts/postgres-ddl.sh](scripts/postgres-ddl.sh) | PostgreSQL DDL (`ENGINE=postgres`): nullable and default ADD COLUMN, TOAST-able columns and replica identity, DROP, type changes, rename, primary key, TRUNCATE, parse failures, with and without `auto_full_refresh_policy` | About 40 minutes |
@@ -44,6 +44,25 @@ export SRC_SQL="$PWD/scripts/vm-mssql.sh" SRC_ENV="$PWD/scripts/vm-mssql.sh --en
 OUT=/tmp/addcol-result.md scripts/sqlserver-add-column.sh
 MODE=integrated OUT=/tmp/addcol-result-integrated.md scripts/sqlserver-add-column.sh   # the same on integrated CDC
 ```
+
+### Several runs at once
+
+Most of these tests are low volume, so run them side by side, each on its own source: one SQL Server container per two vCPUs of the VM (check `nproc`, `free -g`, `podman stats --no-stream` and the other sessions' containers first; `vm-mssql.sh --env` gives the disk's IOPS and MB/s). A separate source per run keeps one run's reads from slowing another's, which matters for tests that time the gateway. Make another container and its connection with [lfc-source-cloud-vm `add-mssql-container.sh`](../lfc-source-cloud-vm/scripts/add-mssql-container.sh), then queue the runs:
+
+```bash
+cat > slots <<'EOF2'
+<connection-1> <container-1>
+<connection-2> <container-2>
+EOF2
+cat > jobs <<'EOF2'
+ct22   sqlserver-ct-net-changes.sh
+ct200  sqlserver-ct-net-changes.sh TABLES_N=200 BURST_N=30
+ct20pc sqlserver-ct-net-changes.sh TABLES_N=200 BURST_N=30 BUSY_PCT=20
+EOF2
+RUNS=/tmp/ct-runs scripts/parallel.sh slots jobs     # PROFILE, CATALOG, CONN_USER, VM_IP exported as above
+```
+
+[scripts/parallel.sh](scripts/parallel.sh) starts each job on the next free source, from its own copy of the scripts, with that source's `CONNECTION`, `MSSQL_CONTAINER` and `SRC_SQL`, and prints a line as each starts and ends. It needs bash 4 or later.
 
 It exits 0 when every claim passed, 1 when one failed, 2 when a prerequisite is missing (nothing is left behind in either case).
 
@@ -92,6 +111,7 @@ It exits 0 when every claim passed, 1 when one failed, 2 when a prerequisite is 
 - **A bigger TPC-C SF isn't always a bigger table.** `item` is fixed at 100 K rows and there's one warehouse up to SF 1, so SF 0.1 is only 1.5x SF 0.01 per copy; count the source rows before calling a run "large".
 - **A disk limit only shows when the reads outlast it.** Divide the source database's size by the limit: if that read time is small next to the load, the limit changes nothing, so lower it until reads dominate. Drop SQL Server's clean buffers first (`vm-throttle.sh <MiB/s> --cold`), or the reads come from memory. After `off`, `io.max` is empty: that's no limit. The numbers stay in the private results store.
 - **Many tables: one setup call, not one per table.** `track` sets up change tracking or CDC on all of a script's tables in one call and checks them in one query; one call per table took about 3 SSH connections a table, and one of 200 tables came out untracked with no error.
+- **Test the busy-table mix, not only "all busy".** In real databases a few tables are hot and the hot set moves with the time of day (OLTP by day, batch at night; lfc-source-statschema "When each table is busy"). `sqlserver-ct-net-changes.sh` `BUSY_PCT=20` updates every fifth table and leaves the rest idle; with all tables busy, one table of 202 was read far less often than the rest and its updates between reads merged.
 - **An expected answer can be wrong; the data decides.** On 22 change-tracking tables updated every 2 seconds, every update arrived as its own SCD type 2 version, where the expectation was that some would merge. The claim was turned into an observation.
 - **Print what a claim rests on.** A row count suggested which rows arrived, but only printing the ids showed it. Print the ids (or the staging counts) whenever a count alone could be read two ways.
 
