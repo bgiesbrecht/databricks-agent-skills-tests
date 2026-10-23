@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # postgres-ddl.sh: what each PostgreSQL DDL does to Lakeflow Connect CDC: applied in place, or which error, and does a
-# full refresh (asked for, or by auto_full_refresh_policy) recover the table? Answers lfc-faq #10, #11, #12 (Postgres)
+# full refresh (asked for, or by auto_full_refresh_policy) recover the table? Answers three field questions (Postgres)
 # and #13. One table per case, each gets its DDL and then one new row (Postgres sends a table's new shape with its next
 # change). Every table has a primary key and REPLICA IDENTITY DEFAULT unless the case says otherwise.
 #

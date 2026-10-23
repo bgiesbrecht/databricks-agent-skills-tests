@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# external-reads.sh: who else can read a Lakeflow Connect destination streaming table? Answers lfc-faq #3 (dbt and
+# external-reads.sh: who else can read a Lakeflow Connect destination streaming table? Answers a field question (dbt and
 # external engines). Runs against a destination table a test kept (KEEP=1, e.g. sqlserver-cdf.sh):
 #
 #   dbt             dbt-databricks on a SQL warehouse: a table model and an incremental model from the streaming table

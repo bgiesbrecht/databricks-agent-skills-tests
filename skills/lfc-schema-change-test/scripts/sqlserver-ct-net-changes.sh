@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # sqlserver-ct-net-changes.sh: with a gateway that runs all the time, does a change-tracking table get every update of a
-# row, and is every table read on every poll? (lfc-faq #39: rows updated every minute, the gateway polls every few
+# row, and is every table read on every poll? (the field question: rows updated every minute, the gateway polls every few
 # seconds, not every update shows.) Change tracking keeps which rows changed, not each value: a read returns the row's
 # value at that moment, so the updates between two reads of a table arrive as one.
 #
@@ -13,7 +13,7 @@
 # kept rounds show how often the gateway read that table.
 #
 #   TABLES_N (20) change-tracking SCD type 2 tables; BURST_N (60) rounds, BURST_GAP (2) seconds apart.
-#   The connection's login gets VIEW SERVER STATE for the run (SCD type 2 on change tracking needs it, lfc-faq #23).
+#   The connection's login gets VIEW SERVER STATE for the run (SCD type 2 on change tracking needs it).
 #   Needs and options: as sqlserver-add-column.sh (PROFILE CONNECTION CATALOG SRC_SQL CONN_USER; SRC_ENV, KEEP, OUT)
 set -uo pipefail
 MODE=standard
@@ -83,7 +83,7 @@ fi
 # one value per read of the table: all rounds kept means every table was read at least once a round (seen with 22
 # tables and 2 s rounds); fewer means some rounds fell between two reads and merged
 observe ct-kept-rounds "change-tracking SCD type 2 tables kept $kmin to $kmax (median $kmed) of $BURST_N rounds"
-# missed data: a table kept more than 2 values fewer than the median table (lfc-faq #41: the highest-id table kept 2-21
+# missed data: a table kept more than 2 values fewer than the median table (a field question: the highest-id table kept 2-21
 # of 30 while the others kept 29-30); the gap alone misses a mild case (165 tables: 6 s gap, 9 values lost)
 low=$(sort -t$'\t' -k2,2n "$W/ct.tsv" | head -1 | cut -f1)
 if [ $((kmed - kmin)) -gt 2 ]; then
@@ -97,7 +97,7 @@ v1=$(q "SELECT v FROM $T.ct1 WHERE id = 1" 2>&1); v2=$(q "SELECT v FROM $T.ct1 W
   || claim ct-scd1-final-values FAIL "ct1 (SCD type 1) has $v1 / $v2, the source $last / f5"
 
 # what the gateway captured: its staging files, per table: updates staged, reads (distinct read times), the gap between
-# reads, and the values (lfc-faq #39: with 202 tables, one table was read far less often than the rest)
+# reads, and the values (the field question: with 202 tables, one table was read far less often than the rest)
 V=$(stg_cdc); SLOW=""
 if [ -n "$V" ]; then
   C="WITH c AS (SELECT table_id.name t, regexp_extract(to_json(data), '\"([if][0-9]+)\"', 1) v, cursor.timestamp ts, cursor.extractionTimestamp ex FROM read_files('$V', format => 'json') WHERE operation = 'UPDATE'), g AS (SELECT t, v, ts, ex, ex - LAG(ex) OVER (PARTITION BY t ORDER BY ex) gap FROM c)"
@@ -111,7 +111,7 @@ else
   observe gateway-reads "no gateway staging volume found in $STG"
 fi
 
-# each case as one line: the values that went in, what came out (lfc-faq #39 asked for this form)
+# each case as one line: the values that went in, what came out (the form the field question asked for)
 staged() { [ -n "$V" ] && q "$C SELECT COUNT(*) FROM c WHERE t = '$1' AND v LIKE '$2%'" || echo "?"; }
 observe example "id 1 set to i0, i1 ... i$((BURST_N - 1)), $round s apart -> CDC SCD type 2 (c2) kept $ck versions; change-tracking SCD type 2 kept $kmin to $kmax (median $kmed)"
 observe example "the same on ct1 (change tracking, SCD type 1) -> the gateway staged $(staged ct1 i) of $BURST_N values; the destination shows $v1 (the latest, as of the ingestion update)"

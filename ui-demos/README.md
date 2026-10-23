@@ -16,7 +16,7 @@ Screenshots of the Lakeflow Connect UI for database sources, one folder per data
 
 Planned, one at a time: QBC for Oracle; then integrated CDC (gateway) and QBC through a foreign catalog for each.
 
-`lfc_ui/` holds the shared helpers: `capture.py` (after the screenshots: the time between screenshots in `metrics.yaml`, GIFs, and redacted copies of hand captures) and `image_redact.py` (redacted copies: known digit IDs, such as account and workspace IDs, are masked with the last four digits kept; names and hosts stay readable). Both come from the lfc-faq notes' Google Ads demo.
+`lfc_ui/` holds the shared helpers: `capture.py` (after the screenshots: the time between screenshots in `metrics.yaml`, GIFs, and redacted copies of hand captures) and `image_redact.py` (redacted copies: known digit IDs, such as account and workspace IDs, are masked with the last four digits kept; names and hosts stay readable). Both come from an earlier Google Ads demo.
 
 ## Setup (once)
 

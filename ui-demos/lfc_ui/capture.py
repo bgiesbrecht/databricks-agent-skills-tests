@@ -4,7 +4,7 @@ lfc_ui.wizard saves runs/<name>/png/NNN_<step>.png, already masked in the page, 
 taken by hand with the Chrome DevTools tools go to runs/<name>/clear/; finish those from the demo's folder:
     python -m lfc_ui.capture runs/<name> --secret <account-id> --secret <workspace-id>
 
-Adapted from the lfc-faq notes (scripts/lfc_playwright/capture.py, e9db42b): the GIF writer is theirs.
+Adapted from an earlier demo's capture script: the GIF writer is from there.
 """
 
 from __future__ import annotations

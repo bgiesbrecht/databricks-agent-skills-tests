@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # sqlserver-permissions.sh: what does the pipeline report when the gateway can't read a table's data or its change
-# metadata? Answers lfc-faq #8 (TABLE_METADATA_NOT_READY_INTERNAL_ERROR: which source problems lead to it) and shows
+# metadata? Answers a field question (TABLE_METADATA_NOT_READY_INTERNAL_ERROR: which source problems lead to it) and shows
 # #14's per-table stop: one table fails, the others keep loading.
 #
 #   p_ok        change tracking, the login can read it          (control)
