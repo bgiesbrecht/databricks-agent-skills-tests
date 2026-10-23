@@ -55,6 +55,8 @@ Tested: a Postgres table with 2,000,000 rows whose statistics said 1,000,000 (ha
 
 ## Is it possible? Documented limits
 
+**Which tables are busy, and when.** A change-capture source is rarely all busy at once: a few tables are hot, and the hot set moves with the time of day (OLTP transactions by day, a batch at night). [references/workload-patterns.md](references/workload-patterns.md) gives the TPC-C, TPC-E, TPC-H and TPC-DS mixes and the tables each transaction or maintenance step writes, quoted from the specifications, with a day and a batch hot set per model. For the customer's own database, read it from the change journal (lfc-source-statschema "When each table is busy").
+
 Before planning a test or a pipeline around a stated size or table count, check it against the documented limits in [references/limits.md](references/limits.md): the engines, the managed services, Debezium, and Databricks itself. Each row has its kind (hard, soft: raised on request, configurable, recommended, behavior) and the question it raises. For example:
 
 - "100 TB on RDS for PostgreSQL" can't be one instance (RDS caps PostgreSQL and MySQL at 64 TiB): ask whether it's Aurora (128 TiB a cluster), self-managed, or several instances. Self-managed PostgreSQL has no database size limit, but one table can't pass 32 TB: ask for the largest table.

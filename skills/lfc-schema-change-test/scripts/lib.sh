@@ -28,6 +28,19 @@ dbx() { databricks "$@" --profile "$PROFILE"; }
 RESULTS=(); FAILED=0
 claim() { RESULTS+=("| \`$1\` | $2 | $3 |"); [ "$2" = PASS ] || FAILED=1; echo "$2 $1: $3"; }
 observe() { RESULTS+=("| \`$1\` | OBSERVED | $2 |"); echo "OBSERVED $1: $2"; }   # no expected answer yet
+# example <title> <source columns> <source query> <destination columns> <destination query>: what went in and what came
+# out, side by side in the result. Lakeflow Connect is tested as a process whose behavior we don't assume: change the
+# input, read the output, and show both, so a reader sees the behavior in the data, not only in a claim. Columns are
+# "a|b|c"; the source query (run with src) returns tab-separated rows (CONCAT_WS(CHAR(9), ...) on SQL Server), the
+# destination query (run with q) its columns. Keep each to a few rows: the ones that show the behavior.
+EXAMPLES=()
+md_rows() { awk -F'\t' '{printf "|"; for (i = 1; i <= NF; i++) printf " %s |", $i; print ""}'; }
+md_head() { echo "| ${1//|/ | } |"; echo "|$(echo "$1" | tr -cd '|' | sed 's/|/---|/g')---|"; }
+example() {
+  local in out; in=$(printf 'SET NOCOUNT ON; %s\n' "$3" | src 2>&1 | md_rows); out=$(q "$5" 2>&1 | md_rows)
+  EXAMPLES+=("### $1" "" "Input (source):" "" "$(md_head "$2")" "$in" "" "Output (destination):" "" "$(md_head "$4")" "$out" "")
+  printf 'EXAMPLE %s\n%s\n%s\n' "$1" "$in" "$out"
+}
 
 lfc_init() {
   ME=$(dbx current-user me -o json | yq '.userName')
@@ -87,22 +100,22 @@ src_util() {
   UTIL=$(printf 'SET NOCOUNT ON; SELECT dbo.lakeflowUtilityVersion();\n' | src | head -1 | tr -d '[:space:]')
 }
 # track <ct|cdc> <table> [table...]: change tracking or CDC on lfcddemo.<table>, with the connection login's grants
-# Each table is checked afterwards (sys.tables.is_tracked_by_cdc, sys.change_tracking_tables), and set up again up to
-# 3 times: enabling CDC in several databases at once (parallel runs) can fail, and a table left untracked fails the
-# run later with INGESTION_GATEWAY_CDC_NOT_ENABLED, which looks like a product result.
+# All tables in one setup call (a comma list), then one query lists the ones not tracked (sys.tables.is_tracked_by_cdc,
+# sys.change_tracking_tables), which are set up again, up to 3 times: enabling CDC in several databases at once
+# (parallel runs) can fail, and a table left untracked fails the run later with INGESTION_GATEWAY_CDC_NOT_ENABLED,
+# which looks like a product result. One call per table made ~3 SSH calls a table and lost one of 200 (2026-10-23).
 track() {
-  local kind=$1 t n ok; shift
-  for t in "$@"; do
-    for n in 1 2 3; do
-      if [ "$kind" = ct ]; then echo "EXEC dbo.lakeflowSetupChangeTracking @Tables = 'lfcddemo.$t', @User = '$CONN_USER';"
-      else echo "EXEC dbo.lakeflowSetupChangeDataCapture @Tables = 'lfcddemo.$t', @User = '$CONN_USER';"; fi | src > "$W/track.out" 2>&1
-      if [ "$kind" = ct ]; then ok=$(echo "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.change_tracking_tables WHERE object_id = OBJECT_ID('lfcddemo.$t');" | src)
-      else ok=$(echo "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.tables WHERE object_id = OBJECT_ID('lfcddemo.$t') AND is_tracked_by_cdc = 1;" | src); fi
-      [ "${ok//[[:space:]]/}" = 1 ] && break
-      echo "track $kind $t: not tracked after try $n: $(grep -i -m1 -E 'error|msg [0-9]' "$W/track.out" | cut -c1-160)" >&2; sleep 10
-    done
-    [ "${ok//[[:space:]]/}" = 1 ] || { echo "could not set up $kind on lfcddemo.$t"; exit 2; }
+  local kind=$1 n left proc=lakeflowSetupChangeDataCapture tv="(SELECT object_id FROM sys.tables WHERE is_tracked_by_cdc = 1)"; shift
+  [ "$kind" = ct ] && { proc=lakeflowSetupChangeTracking; tv="(SELECT object_id FROM sys.change_tracking_tables)"; }
+  untracked() { printf "SET NOCOUNT ON; SELECT STRING_AGG(n, ' ') FROM (VALUES %s) v(n) WHERE OBJECT_ID('lfcddemo.' + n) IS NULL OR OBJECT_ID('lfcddemo.' + n) NOT IN %s;\n" \
+    "$(printf "('%s')," "$@" | sed 's/,$//')" "$tv" | src | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//; s/^NULL$//'; }
+  left="$*"
+  for n in 1 2 3; do
+    echo "EXEC dbo.$proc @Tables = '$(printf 'lfcddemo.%s,' $left | sed 's/,$//')', @User = '$CONN_USER';" | src > "$W/track.out" 2>&1
+    left=$(untracked "$@"); [ -z "$left" ] && break
+    echo "track $kind: not tracked after try $n: $left ($(grep -i -m1 -E 'error|msg [0-9]' "$W/track.out" | cut -c1-160))" >&2; sleep 10
   done
+  [ -z "$left" ] || { echo "could not set up $kind on lfcddemo: $left"; exit 2; }
   echo "EXEC dbo.lakeflowFixPermissions @User = '$CONN_USER', @Tables = 'SCHEMAS:lfcddemo';" | src >/dev/null
 }
 # fill <table> <n> [first id]: n rows (id, v='before')
@@ -152,6 +165,15 @@ pipelines_create() {
 set_objects() {
   dbx pipelines get "$AP" -o json | O="[$1]" yq -o json '.spec | .ingestion_definition.objects = (strenv(O) | from_json)' > "$W/spec.json"
   dbx pipelines update "$AP" --json @"$W/spec.json" >/dev/null
+}
+
+# stg_cdc: (standard CDC) the gateway's change files in its staging volume, one JSON line per change: table_id.name,
+# operation, data (the row, columns under generated names), cursor.timestamp (source commit, ms) and
+# cursor.extractionTimestamp (when the gateway read it, ms). Read with read_files(..., format => 'json'). They show what
+# the gateway captured and when it read each table, before the ingestion pipeline applies it.
+stg_cdc() {
+  local v; v=$(dbx volumes list "$CATALOG" "$STG" -o json | yq -r '.[].name | select(test("^__databricks_ingestion_gateway_staging_data-"))' | head -1)
+  [ -n "$v" ] && echo "/Volumes/$CATALOG/$STG/$v/${v#__databricks_ingestion_gateway_staging_data-}/cdc/"
 }
 
 # --- updates --------------------------------------------------------------------------------------------------------
@@ -336,8 +358,24 @@ record_run() {
 }
 
 # result_md <title>: the runtime each pipeline ran on, the source, and the claim table; to stdout and $OUT
+# src_shape: the common setup every run records, whatever it tests: the captured tables (SQL Server: with change tracking
+# or CDC; PostgreSQL: the test schema's) and their columns in all
+# (row counts and the DML rate depend on what a test is for, so each script records its own). Sets SHAPE_TABLES,
+# SHAPE_COLUMNS and the run's conf src_tables, src_columns.
+src_shape() {
+  local r
+  if [ "$ENGINE" = postgres ]; then
+    r=$(printf "SELECT COUNT(DISTINCT table_name) || ' ' || COUNT(*) FROM information_schema.columns WHERE table_schema = 'lfcddemo';\n" | src 2>/dev/null | head -1)
+  else
+    r=$(printf "SET NOCOUNT ON; SELECT CONCAT(COUNT(DISTINCT c.object_id), ' ', COUNT(*)) FROM sys.columns c JOIN sys.tables t ON t.object_id = c.object_id WHERE SCHEMA_NAME(t.schema_id) = 'lfcddemo' AND (t.is_tracked_by_cdc = 1 OR t.object_id IN (SELECT object_id FROM sys.change_tracking_tables));\n" | src 2>/dev/null | head -1)
+  fi
+  read -r SHAPE_TABLES SHAPE_COLUMNS <<< "$r"
+  [ -n "${SHAPE_TABLES:-}" ] && { conf src_tables "$SHAPE_TABLES"; conf src_columns "$SHAPE_COLUMNS"; }
+}
+
 result_md() {
   local rt=${LFC_RUNTIME:-$LIB/../../../bin/lfc-runtime.sh} runtime   # set LFC_RUNTIME when running a copy
+  [ "$(src_owned)" = 1 ] && src_shape
   "$rt" "$PROFILE" "$AP" >&2 || true
   runtime="- Ingestion pipeline: $("$rt" --summary "$PROFILE" "$AP" 2>/dev/null | sed 's/^Lakeflow runtime: //')"
   [ -n "${GW:-}" ] && runtime+=$'\n'"- Gateway: $("$rt" --summary "$PROFILE" "$GW" 2>/dev/null | sed 's/^Lakeflow runtime: //')"
@@ -348,12 +386,14 @@ result_md() {
     [ "$MODE" = standard ] && echo "- Mode: standard CDC, serverless gateway and ingestion pipeline" || echo "- Mode: integrated CDC, one serverless pipeline"
     echo "$runtime"
     [ -n "${SRC_ENV:-}" ] && $SRC_ENV | sed 's/^/- /'
+    [ -n "${SHAPE_TABLES:-}" ] && echo "- Test schema: $SHAPE_TABLES tables, $SHAPE_COLUMNS columns in all"
     if [ "$ENGINE" = postgres ]; then echo "- Source: $(echo 'SELECT version();' | $SRC_SQL postgres | head -1 | cut -d, -f1)"; else
     echo "- Source: $(printf "SET NOCOUNT ON; SELECT CONCAT('SQL Server ', CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(64)), ' ', CAST(SERVERPROPERTY('ProductUpdateLevel') AS nvarchar(64)), ' ', CAST(SERVERPROPERTY('ProductUpdateReference') AS nvarchar(64)), ', ', CAST(SERVERPROPERTY('Edition') AS nvarchar(128)));\n" | $SRC_SQL master | head -1); utility objects ${UTIL:-?}"; fi
     echo
     echo "| Claim | Result | Observation |"
     echo "|---|---|---|"
     printf '%s\n' "${RESULTS[@]}"
+    [ ${#EXAMPLES[@]} -gt 0 ] && { echo; echo "## Input and output"; echo; printf '%s\n' "${EXAMPLES[@]}"; }
   } | tee "${OUT:-/dev/null}"
   record_run "${SCENARIO:-$(basename "$0" .sh)}"
 }

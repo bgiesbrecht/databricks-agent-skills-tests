@@ -18,6 +18,7 @@ The format is [statschema](https://github.com/rsleedbx/statschema)'s: **`schema.
 |---|---|---|---|
 | 1. Collect schema and statistics | the customer's database | [`collect-postgres.sql`](scripts/collect-postgres.sql), [`collect-mysql.sql`](scripts/collect-mysql.sql) + [`mysql-normalize.jq`](scripts/mysql-normalize.jq) | `raw.json` |
 | 1a. Collect each table's inserts, updates and deletes | the customer's database, after real traffic | [`collect-activity-postgres.sql`](scripts/collect-activity-postgres.sql), [`collect-activity-mysql.sql`](scripts/collect-activity-mysql.sql) | `activity.json` (for **cdc-table-plan**) |
+| 1b. When each table is busy: changes per table per hour | the customer's database, from its change journal | [`collect-activity-hourly-sqlserver.sql`](scripts/collect-activity-hourly-sqlserver.sql) (SQL Server, tables with change tracking or CDC); others below | `activity-hourly.psv` |
 | 2. To the canonical format | anywhere | [`to-canonical.py`](scripts/to-canonical.py) | `schema.yaml`, `stats.yaml` |
 | 2a. Or import existing DDL | anywhere | [`ddl-to-schema.py`](scripts/ddl-to-schema.py) `--dialect <source>` (any sqlglot dialect; keeps lfc tags in comments, and checks) | `schema.yaml` |
 | 3. Collect the top queries and their plans | the customer's database | [`collect-queries-postgres.sql`](scripts/collect-queries-postgres.sql), [`collect-queries-mysql.sql`](scripts/collect-queries-mysql.sql) | `queries.json` |
@@ -26,6 +27,20 @@ The format is [statschema](https://github.com/rsleedbx/statschema)'s: **`schema.
 | 6. Fill | the test database | **lfc-source-datagen** `scripts/fill.sh` | rows |
 | 7. Check the statistics | test side | the step 1 collector on the copy, then [`compare.sql`](scripts/compare.sql) (DuckDB) | what's off |
 | 8. Replay the queries | the test database | [`replay.py`](scripts/replay.py) `explain`, then `compare` | plan differences |
+
+## When each table is busy
+
+Step 1a gives totals; it doesn't say *when*. The busy tables change with the time of day: an OLTP database has its order and payment tables hot by day, and a nightly batch (aggregation, loads, purges) hits a different set. A change-capture test or sizing that assumes one busy set misses the other, so read the hours from the database's own change journal, over the window it still holds:
+
+| Source | Journal | How |
+|---|---|---|
+| SQL Server | change tracking, CDC | [`collect-activity-hourly-sqlserver.sql`](scripts/collect-activity-hourly-sqlserver.sql): change tracking per changed key (net: a key changed twice in an hour counts once) with `sys.dm_tran_commit_table` times; CDC per change with `cdc.lsn_time_mapping`. Needs `VIEW SERVER STATE`. Tested 2026-10-23 on SQL Server 2022 |
+| SQL Server, no CDC/CT | none kept | sample `sys.dm_db_index_usage_stats.user_updates` per table every hour and take the differences (cumulative since the last restart) |
+| MySQL | binary log | `mysqlbinlog --base64-output=DECODE-ROWS -v <binlog file>`: each event's `#yymmdd hh:mm:ss` line and its `Table_map: \`db\`.\`table\`` give changes per table per hour (not run yet) |
+| PostgreSQL | WAL | no per-table history is kept beyond the WAL; sample `pg_stat_user_tables` (`n_tup_ins`, `n_tup_upd`, `n_tup_del`) every hour with step 1a's collector and take the differences (not run yet) |
+| Oracle | redo | LogMiner `V$LOGMNR_CONTENTS` grouped by `SEG_NAME` and the hour of `TIMESTAMP` (not run yet) |
+
+Without the customer's database, the TPC workloads give the usual shapes: which tables each transaction writes, and which a batch maintains ([lfc-source-sizing references/workload-patterns.md](../lfc-source-sizing/references/workload-patterns.md)). Use both phases in a test: a few hot tables, then a different hot set (lfc-schema-change-test `sqlserver-ct-net-changes.sh` `BUSY_PCT`).
 
 [`validate.py`](scripts/validate.py) loads any of the YAML files with statschema's own model, to confirm a file is still its format. For a TPC benchmark, skip steps 1–3 and start at step 4 with a schema from [`schemas/`](schemas/).
 

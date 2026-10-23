@@ -8,6 +8,8 @@ parent: lfc-source-setup
 
 Each script answers one schema-evolution question by running it: it creates a **fresh database** on a source you control, standard CDC pipelines on serverless, makes the source change, reads back the pipeline's state, error class and destination rows, and prints one PASS or FAIL row per claim. It deletes the pipelines, the schemas and the source database at the end, also on failure (`KEEP=1` keeps them).
 
+**Test it as a black box.** Treat Lakeflow Connect as a process whose behavior isn't known: change the input (rows and DDL on the source, with known values), read the output (the destination rows; the gateway's staging files in between), and compare. Expectations from the docs or the code are what a run checks, not what it assumes. **State each case as a one-line example of input and output**, not as a description: "`id = 1` set to `i0`, `i1` … `i59`, 2 s apart → SCD type 2 kept all 60 versions; SCD type 1: the gateway staged all 60, the destination shows `i59` (one ingestion update applied them all)". A script prints these as `EXAMPLE` observations. Row-by-row tables (`example` in [scripts/lib.sh](scripts/lib.sh), the result's *Input and output* section) are backing evidence, shown only when the line isn't enough (a gap, an order, a timing).
+
 Never point these at a shared source: the DDL forces a full refresh on everyone's pipelines that read the table.
 
 | Script | Question | Time |
@@ -21,6 +23,8 @@ Never point these at a shared source: the DDL forces a full refresh on everyone'
 | [scripts/sqlserver-ddl-afr.sh](scripts/sqlserver-ddl-afr.sh) | Which DDL needs a full refresh (widen, narrow, rename, drop column, primary key change), on CDC and change tracking, and does `auto_full_refresh_policy` do it on its own | About 40 minutes |
 | [scripts/sqlserver-permissions.sh](scripts/sqlserver-permissions.sh) | What the pipeline reports when the login can't read a table or its CDC change table, or the table isn't tracked; do the other tables keep loading; does fixing the source and a full refresh recover | About 30 minutes |
 | [scripts/sqlserver-cii-deny.sh](scripts/sqlserver-cii-deny.sh) | On a CDC table, does a column added after the first load need the login's UPDATE on the utility objects' `lakeflowCaptureInstanceInfo`? A row, then ADD COLUMN and a row, with the info table's row and the capture instances printed; `CII_DENY=0` is the control | About 30 minutes |
+| [scripts/sqlserver-ct-net-changes.sh](scripts/sqlserver-ct-net-changes.sh) | With a gateway that runs all the time, does a change-tracking table get every update of a row, and is every table read on every poll? `TABLES_N` change-tracking SCD type 2 tables and a CDC control, one row updated every `BURST_GAP` seconds for `BURST_N` rounds on `BUSY_PCT`% of the tables, then 5 updates back to back; the kept versions and the gateway's staging files show how often each table was read | About 25 minutes for 22 tables, longer for 200 |
+| [scripts/sqlserver-same-name.sh](scripts/sqlserver-same-name.sh) | Two source tables with the same name in different source schemas (`lfcddemo.orders`, `lfcdb.orders`) in one pipeline: `CASE` maps them to two destination schemas, schema objects, one schema renamed, the legacy publishing mode, one destination table, or two names that are equal once `.` becomes `_`; `TRACK=ct\|cdc`. Each destination must keep only its own source's rows and changes | About 10 minutes a case |
 | [scripts/sqlserver-scale.sh](scripts/sqlserver-scale.sh) | Many tables in one pipeline (lfc-faq #7): `COPIES` copies of a TPC model, one schema each, kept and reused between runs; `MODE`, `OBJECTS=schema\|table`, `SF`. With [scripts/vm-throttle.sh](scripts/vm-throttle.sh) `<MiB/s> --cold` before (and `off` after) and `DISK_MBPS`, the same run on a slow source disk | 10 minutes to over an hour, by table count |
 | [scripts/sqlserver-migrate.sh](scripts/sqlserver-migrate.sh) | Can a pipeline move between integrated CDC and a gateway and keep its tables: `PART=A` integrated → new gateway, `PART=B` gateway → integrated → back, `PART=C` a second pipeline on the same tables | 10–20 minutes each |
 | [scripts/postgres-ddl.sh](scripts/postgres-ddl.sh) | PostgreSQL DDL (`ENGINE=postgres`): nullable and default ADD COLUMN, TOAST-able columns and replica identity, DROP, type changes, rename, primary key, TRUNCATE, parse failures, with and without `auto_full_refresh_policy` | About 40 minutes |
@@ -41,6 +45,25 @@ export SRC_SQL="$PWD/scripts/vm-mssql.sh" SRC_ENV="$PWD/scripts/vm-mssql.sh --en
 OUT=/tmp/addcol-result.md scripts/sqlserver-add-column.sh
 MODE=integrated OUT=/tmp/addcol-result-integrated.md scripts/sqlserver-add-column.sh   # the same on integrated CDC
 ```
+
+### Several runs at once
+
+Most of these tests are low volume, so run them side by side, each on its own source: one SQL Server container per two vCPUs of the VM (check `nproc`, `free -g`, `podman stats --no-stream` and the other sessions' containers first; `vm-mssql.sh --env` gives the disk's IOPS and MB/s). A separate source per run keeps one run's reads from slowing another's, which matters for tests that time the gateway. Make another container and its connection with [lfc-source-cloud-vm `add-mssql-container.sh`](../lfc-source-cloud-vm/scripts/add-mssql-container.sh), then queue the runs:
+
+```bash
+cat > slots <<'EOF2'
+<connection-1> <container-1>
+<connection-2> <container-2>
+EOF2
+cat > jobs <<'EOF2'
+ct22   sqlserver-ct-net-changes.sh
+ct200  sqlserver-ct-net-changes.sh TABLES_N=200 BURST_N=30
+ct20pc sqlserver-ct-net-changes.sh TABLES_N=200 BURST_N=30 BUSY_PCT=20
+EOF2
+RUNS=/tmp/ct-runs scripts/parallel.sh slots jobs     # PROFILE, CATALOG, CONN_USER, VM_IP exported as above
+```
+
+[scripts/parallel.sh](scripts/parallel.sh) starts each job on the next free source, from its own copy of the scripts, with that source's `CONNECTION`, `MSSQL_CONTAINER` and `SRC_SQL`, and prints a line as each starts and ends. It needs bash 4 or later.
 
 It exits 0 when every claim passed, 1 when one failed, 2 when a prerequisite is missing (nothing is left behind in either case).
 
@@ -88,6 +111,14 @@ It exits 0 when every claim passed, 1 when one failed, 2 when a prerequisite is 
 - **`external-reads.sh`'s UniForm step changes the kept table for good:** turning on Iceberg compatibility upgrades its protocol, which can't be undone. Run it on a table kept for this test only; `UNIFORM=0` skips the step. The incremental dbt model keys on `id`, plus `__START_AT` on an SCD type 2 table, and the run is recorded with the kept table's pipeline mode (a gateway means standard CDC).
 - **A bigger TPC-C SF isn't always a bigger table.** `item` is fixed at 100 K rows and there's one warehouse up to SF 1, so SF 0.1 is only 1.5x SF 0.01 per copy; count the source rows before calling a run "large".
 - **A disk limit only shows when the reads outlast it.** Divide the source database's size by the limit: if that read time is small next to the load, the limit changes nothing, so lower it until reads dominate. Drop SQL Server's clean buffers first (`vm-throttle.sh <MiB/s> --cold`), or the reads come from memory. After `off`, `io.max` is empty: that's no limit. The numbers stay in the private results store.
+- **Many tables: one setup call, not one per table.** `track` sets up change tracking or CDC on all of a script's tables in one call and checks them in one query; one call per table took about 3 SSH connections a table, and one of 200 tables came out untracked with no error.
+- **Write values in sequence when the question is what got through.** `i0`, `i1`, `i2` … on one row show a dropped or merged change as a gap you can read (`i2` then `i12`: `i3` … `i11` merged into one); random or repeated values hide it. Use sequential values and log each one with its source time, so every stage can be compared with what was written.
+- **Every result records the same baseline:** the captured tables and their columns in all (`src_shape` in lib.sh, the result's "Test schema" line and the run record). Row counts and the change rate depend on what a test is for, so each script records its own.
+- **Pipeline create doesn't check where tables land.** Two source tables mapped to one destination table, or two destination names equal once `.` becomes `_` (`<S>_raw.orders`, `<S>.raw_orders`), are accepted at create and fail at the first update (`CDC_MULTIPLE_SOURCE_TABLES_MAPPED_TO_SAME_DESTINATION_TABLE`; `FLOW_DEFINED_IN_MULTIPLE_DATASETS`, then automatic retries). A script whose question is "is it refused?" runs one update, reads the error and stops the pipeline, rather than following the retry chain (`sqlserver-same-name.sh` `CASE=flowname`).
+- **`COLLECT_LIST` doesn't keep a subquery's `ORDER BY`.** Comparing destination rows as one string needs `SORT_ARRAY(COLLECT_LIST(...))`; without it, correct data failed the claim in four runs.
+- **Bisect a size threshold with the parallel sources.** Between a size that passes and one that fails, run as many sizes per round as there are sources (`parallel.sh`), splitting the interval evenly, until the failing size is within roughly 10-20%. Go to the exact count only when the code suggests a fixed limit near it, and then test both sides of that limit.
+- **Test the busy-table mix, not only "all busy".** In real databases a few tables are hot and the hot set moves with the time of day (OLTP by day, batch at night; lfc-source-statschema "When each table is busy"). `sqlserver-ct-net-changes.sh` `BUSY_PCT=20` updates every fifth table and leaves the rest idle; with all tables busy, one table of 202 was read far less often than the rest and its updates between reads merged.
+- **An expected answer can be wrong; the data decides.** On 22 change-tracking tables updated every 2 seconds, every update arrived as its own SCD type 2 version, where the expectation was that some would merge. The claim was turned into an observation.
 - **Print what a claim rests on.** A row count suggested which rows arrived, but only printing the ids showed it. Print the ids (or the staging counts) whenever a count alone could be read two ways.
 
 ## With an agent
