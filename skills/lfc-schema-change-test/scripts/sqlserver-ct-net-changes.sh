@@ -83,6 +83,14 @@ fi
 # one value per read of the table: all rounds kept means every table was read at least once a round (seen with 22
 # tables and 2 s rounds); fewer means some rounds fell between two reads and merged
 observe ct-kept-rounds "change-tracking SCD type 2 tables kept $kmin to $kmax (median $kmed) of $BURST_N rounds"
+# missed data: a table kept more than 2 values fewer than the median table (lfc-faq #41: the highest-id table kept 2-21
+# of 30 while the others kept 29-30); the gap alone misses a mild case (165 tables: 6 s gap, 9 values lost)
+low=$(sort -t$'\t' -k2,2n "$W/ct.tsv" | head -1 | cut -f1)
+if [ $((kmed - kmin)) -gt 2 ]; then
+  claim no-table-missed-data FAIL "$low kept $kmin of $BURST_N values while the median table kept $kmed: its updates between reads merged"
+else
+  claim no-table-missed-data PASS "every change-tracking SCD type 2 table kept within 2 of the median ($kmed of $BURST_N); lowest $low, $kmin"
+fi
 observe ct-read-gap "the largest gap between kept rounds on a change-tracking table: $maxgap rounds (about $(echo "$maxgap * $round" | bc) s)"
 v1=$(q "SELECT v FROM $T.ct1 WHERE id = 1" 2>&1); v2=$(q "SELECT v FROM $T.ct1 WHERE id = 2" 2>&1)
 [ "$v1" = "$last" ] && [ "$v2" = f5 ] && claim ct-scd1-final-values PASS "ct1 (SCD type 1) ends with the source's final values ($v1, $v2)" \
