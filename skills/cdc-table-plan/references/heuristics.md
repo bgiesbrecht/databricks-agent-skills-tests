@@ -49,6 +49,12 @@ becomes a fact (scd1); inserts and deletes with few updates, a queue. Activity n
 quiet dimension gets inserts only too, and a fixture load is inserts only. A fact others reference stays scd1 when the
 window shows inserts only (an e-mail sent, opened later).
 
+Then a constraint, which isn't a guess: a table with a primary key and a foreign key whose `ON DELETE` acts on it
+(CASCADE, SET NULL, SET DEFAULT; the collector records `on_delete`) is never `[append]`. Its parent's deletes delete
+or change its rows, so it gets `[scd1]`, and the role it was guessed stays. In Mautic this moves 19 tables named like
+logs (`lead_event_log`, `page_hits`, the `*_stats` tables) to scd1. On MySQL through 9.5 those changes aren't in the
+binlog either: silver applies them itself (`zerobus-debezium-test`, `cdc.fk_actions`).
+
 ## How well, relations only
 
 Against roles from the specifications (`truth/`, TPC) and from Mautic's code (25 tables whose writes were traced). The

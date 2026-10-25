@@ -24,6 +24,7 @@ for t in raw["tables"]:
         if c["name"] in pk: col["primary_key"] = True
         if c["name"] in uniq: col["unique"] = True
         if c.get("generated"): col["generated"] = c["generated"]   # computed by the database: stored or virtual
+        if c.get("default") is not None: col["default"] = str(c["default"])   # a SQL literal (MySQL's collector writes it so)
         cols.append(col)
         nf = c.get("null_fraction") or 0.0
         s = {"name": c["name"], "null_fraction": nf, "n_distinct": c.get("n_distinct") or 0.0}
@@ -37,8 +38,11 @@ for t in raw["tables"]:
     if t.get("comment"): tbl["description"] = t["comment"]
     fks = t.get("foreign_keys") or []
     if fks:
+        # on_delete / on_update only where the key acts (CASCADE, SET NULL, SET DEFAULT): a CDC log may not carry what
+        # the action changes (MySQL through 9.5, MariaDB), so silver applies it (zerobus-debezium-test's cdc.fk_actions)
+        act = lambda f, k: {k: f[k]} if f.get(k) and f[k] not in ("NO ACTION", "RESTRICT") else {}   # noqa: E731
         tbl["fk_constraints"] = [{"columns": f["columns"], "parent_table": f["ref_table"], "parent_columns": f["ref_columns"],
-                                  "fk_distribution": "uniform"} for f in fks]
+                                  "fk_distribution": "uniform", **act(f, "on_delete"), **act(f, "on_update")} for f in fks]
         tbl["load_after"] = sorted({f["ref_table"] for f in fks if f["ref_table"] != t["name"]})
     schema.append(tbl)
     by = {s["name"]: s for s in cstats}

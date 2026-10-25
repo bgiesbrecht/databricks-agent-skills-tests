@@ -10,10 +10,12 @@ For each table whose silver changed, an action and whether it can be done withou
            the snapshot and the change log from T on the next update (refreshed, so it's rebuilt the same way each time)
   rebuild  <table> changes kind (scd1 <-> append): a full refresh of that table alone, from the snapshot and the change
            log, which holds every event from T (it's never truncated in these tests: with a retention it couldn't be)
-  drop     a target no longer wanted: the pipeline stops defining it and drops it; asks first (it can be undropped
-           for a while, but its readers lose it now)
+  drop     a target no longer wanted: the pipeline stops defining it, and it stays in the catalog, no longer updated
+           (seen in the Mautic test), until a DROP TABLE removes it; asks first (its readers would read stale rows,
+           or lose it when dropped)
   refuse   what the pipeline can't build: scd1 or scd2 without a primary key, append together with scd1 or scd2
-  warn     append for a table the activity shows updated or deleted: those changes would be left out
+  warn     append for a table the activity shows updated or deleted, or whose foreign key deletes or changes its rows
+           with its parent (ON DELETE CASCADE, SET NULL): those changes would be left out
 A table only in desired needs its producer to capture it first (refused here); one only in current is dropped.
 Prints a table, or with --json {"refresh": [...], "drop": [...], "refuse": [...], "warn": [...], "auto": bool}: the
 targets to full-refresh, and whether everything can go ahead without asking. Exit 0 auto, 1 needs asking, 2 refused.
@@ -37,7 +39,7 @@ def targets(table, silver):
         ({"scd2": table + HIST} if "scd2" in silver else {})
 
 
-def diff(cur, des, keyed, activity):
+def diff(cur, des, keyed, activity, acting=None):
     acts = []
     ct, dt = cur.get("tables") or {}, des.get("tables") or {}
     for t in sorted(set(ct) | set(dt)):
@@ -71,6 +73,9 @@ def diff(cur, des, keyed, activity):
             acts.append(("add", t, tb["scd2"], f"new history table {tb['scd2']}"))
         if "scd2" in ta and "scd2" not in tb:
             acts.append(("drop", t, ta["scd2"], f"{ta['scd2']} is no longer wanted: its history goes with it"))
+        if "append" in b and (acting or {}).get(t):
+            acts.append(("warn", t, t, f"append, but {acting[t][0]}: its parent's deletes change its rows, and silver "
+                                       "would keep them"))
         act = (activity or {}).get(t) or {}
         if "append" in b and (act.get("updates") or act.get("deletes")):
             acts.append(("warn", t, t, f"append, but the source had {act.get('updates', 0)} updates and "
@@ -83,10 +88,15 @@ def main():
     ap.add_argument("cmd", choices=["diff"]); ap.add_argument("current"); ap.add_argument("desired")
     ap.add_argument("--schema"); ap.add_argument("--activity"); ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
-    keyed = None
+    keyed = acting = None
     if a.schema:
-        keyed = {t["name"]: any(c.get("primary_key") for c in t["columns"]) for t in load(a.schema)["tables"]}
-    acts = diff(load(a.current), load(a.desired), keyed, load(a.activity) if a.activity else None)
+        tables = load(a.schema)["tables"]
+        keyed = {t["name"]: any(c.get("primary_key") for c in t["columns"]) for t in tables}
+        acting = {t["name"]: [f"{','.join(f['columns'])} -> {f['parent_table']} ON DELETE {f['on_delete']}"
+                              for f in t.get("fk_constraints") or []
+                              if str(f.get("on_delete") or "").upper().replace("_", " ") in ("CASCADE", "SET NULL", "SET DEFAULT")]
+                  for t in tables}
+    acts = diff(load(a.current), load(a.desired), keyed, load(a.activity) if a.activity else None, acting)
     refuse = [x for x in acts if x[0] == "refuse"]
     ask = [x for x in acts if x[0] in ("drop", "warn")]
     if a.json:

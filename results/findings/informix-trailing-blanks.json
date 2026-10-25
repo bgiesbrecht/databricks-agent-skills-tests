@@ -1,0 +1,29 @@
+{
+  "id": "informix-trailing-blanks",
+  "title": "Informix ignores a string's trailing blanks",
+  "kind": "source-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "informix"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "source",
+      "silver"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test SOURCE=informix MODEL=tpch"
+  },
+  "symptom": "LENGTH and the text cast dropped trailing blanks; silver kept them as stored",
+  "cause": "Informix compares and measures character strings without trailing blanks",
+  "effect": "Row comparisons between Informix and silver differ on padded values",
+  "fix": "Trim on both sides when comparing"
+}

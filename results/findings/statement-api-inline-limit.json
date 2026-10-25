@@ -1,0 +1,31 @@
+{
+  "id": "statement-api-inline-limit",
+  "title": "The SQL statement API's inline result limit",
+  "kind": "databricks-limit",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "*"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "test"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test MODEL=tpcds"
+  },
+  "symptom": "Inline byte limit exceeded reading customer_demographics' digest rows",
+  "cause": "INLINE disposition caps a result at 25 MB",
+  "effect": "Large reads fail",
+  "fix": "Fall back to EXTERNAL_LINKS",
+  "refs": [
+    "https://docs.databricks.com/api/workspace/statementexecution"
+  ]
+}

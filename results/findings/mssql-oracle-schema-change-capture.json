@@ -1,0 +1,29 @@
+{
+  "id": "mssql-oracle-schema-change-capture",
+  "title": "SQL Server and Oracle capture don't follow an added column",
+  "kind": "source-behavior",
+  "status": "open",
+  "applies": {
+    "source": [
+      "sqlserver",
+      "oracle"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test planning rounds 4-5 for SOURCE=mssql, oracle"
+  },
+  "symptom": "Not run yet: rounds 4 and 5 (add, drop, retype a column) are off for these sources",
+  "cause": "SQL Server's capture instance keeps its column list (a new column needs a new capture instance); Oracle's online catalog mines with the current dictionary only",
+  "effect": "A schema change on the source may not reach bronze until capture is reconfigured",
+  "fix": "To test: a second capture instance (SQL Server), the redo-log catalog (Oracle)"
+}

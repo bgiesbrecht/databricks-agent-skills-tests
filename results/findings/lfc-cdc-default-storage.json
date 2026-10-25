@@ -1,0 +1,30 @@
+{
+  "id": "lfc-cdc-default-storage",
+  "title": "Lakeflow Connect CDC can't target a catalog on Default Storage",
+  "kind": "databricks-limit",
+  "status": "by-design",
+  "applies": {
+    "source": [
+      "*"
+    ],
+    "route": [
+      "lfc-icdc",
+      "lfc-scdc"
+    ],
+    "layer": [
+      "bronze",
+      "silver"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-15",
+    "by": "run 2026-10-15-azure-serverless-workspace"
+  },
+  "symptom": "Default Storage for Unity Catalog is not supported on LakeFlow Connect pipelines",
+  "cause": "CDC pipelines need the catalog's own managed storage",
+  "effect": "A CDC pipeline into such a catalog is refused",
+  "fix": "Use a catalog with its own managed storage; query-based works on Default Storage"
+}

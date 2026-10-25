@@ -7,7 +7,9 @@ A table is in the union when any source has it; a column too (in the first sourc
 A column's type is the widest the sources have: integer < long < decimal (the most integer digits and the most scale
 any source has) < string; types that don't widen into each other (a date and a number) become string. Its default
 is the first one given; not_null only when every source that has the column says so. The primary key must be the
-same in every source that has the table (exit 1 if not: the tables aren't identical, so they can't merge).
+same in every source that has the table (exit 1 if not: the tables aren't identical, so they can't merge). A table's
+foreign keys (fk_constraints, with on_delete / on_update, which silver's cdc.fk_actions applies) are every source's,
+once each (the same columns and parent): the first source's rule is kept.
 
 --current and --changed-dir: compare the union with the schema silver is built from now, and write each table that
 changed to DIR/<table>.yaml (one table per file, statschema's format), for silver-from-schema.py's
@@ -52,11 +54,17 @@ def union(schemas):
     for s in schemas:
         for t in s["tables"]:
             n = t["name"]
-            if n not in tables:
+            first = n not in tables
+            if first:
                 tables[n] = {"name": n, "columns": [dict(c) for c in t["columns"]]}
                 order.append(n)
-                continue
             u = tables[n]
+            for f in t.get("fk_constraints") or []:
+                fk = u.setdefault("fk_constraints", [])
+                if not any((g["columns"], g["parent_table"], g["parent_columns"]) == (f["columns"], f["parent_table"], f["parent_columns"]) for g in fk):
+                    fk.append(dict(f))
+            if first:
+                continue
             pk_u = [c["name"] for c in u["columns"] if c.get("primary_key")]
             pk_t = [c["name"] for c in t["columns"] if c.get("primary_key")]
             if pk_u != pk_t:

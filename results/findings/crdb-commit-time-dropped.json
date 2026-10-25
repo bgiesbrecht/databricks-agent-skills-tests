@@ -1,0 +1,30 @@
+{
+  "id": "crdb-commit-time-dropped",
+  "title": "CockroachDB's Debezium connector drops the commit time",
+  "kind": "connector-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "cockroachdb"
+    ],
+    "route": [
+      "debezium-zerobus"
+    ],
+    "layer": [
+      "producer",
+      "silver"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-20",
+    "by": "zerobus-debezium-test SOURCE=crdb"
+  },
+  "symptom": "source.ts_hlc is null; ts_ns and ts_ms hold the connector's offset time, the same for changes committed apart",
+  "cause": "The connector reads only the schema and table names from the changefeed's source block",
+  "effect": "Silver can't sequence by the database's commit time",
+  "fix": "Sequence by the event's top-level ts_ns (one server processes a key's changes in order)",
+  "versions": "CockroachDB connector 3.7.0.Final"
+}

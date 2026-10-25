@@ -1,0 +1,36 @@
+{
+  "id": "debezium-temporal-units",
+  "title": "Debezium temporal values: the unit depends on the column",
+  "kind": "connector-behavior",
+  "status": "fixed",
+  "applies": {
+    "source": [
+      "sqlserver",
+      "oracle",
+      "postgres",
+      "mysql",
+      "db2",
+      "informix"
+    ],
+    "route": [
+      "debezium-zerobus"
+    ],
+    "layer": [
+      "silver"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test SOURCE=mssql, oracle MODEL=tpch"
+  },
+  "symptom": "Timestamps off by factors of 1000; SQL Server DATETIME2 values in the far future; Oracle DATE as a large integer; Informix DimTime 00:21:40 read as 00:00:01.3",
+  "cause": "Days for a date; milliseconds (precision 0-3), microseconds (4-6) or nanoseconds (7-9) for timestamps and times; Oracle DATE (with its time) and a TIMESTAMP(0) as epoch milliseconds; Informix DATETIME HOUR TO SECOND as milliseconds of the day",
+  "effect": "Wrong dates and times in silver unless decoded by type and precision",
+  "fix": "Decode by the column's type and precision from the source schema",
+  "where": [
+    "skills/zerobus-debezium-test/scripts/silver-from-schema.py"
+  ]
+}

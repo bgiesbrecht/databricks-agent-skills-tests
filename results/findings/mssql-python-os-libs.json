@@ -1,0 +1,31 @@
+{
+  "id": "mssql-python-os-libs",
+  "title": "mssql-python on Linux needs OS libraries",
+  "kind": "tooling",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "sqlserver"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "test"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test SOURCE=mssql"
+  },
+  "symptom": "Import errors in python:3.12-slim",
+  "cause": "libltdl7, libkrb5-3 and libgssapi-krb5-2 aren't in the image",
+  "effect": "The driver doesn't load",
+  "fix": "Install them in the image",
+  "where": [
+    "skills/lfc-source-datagen/references/python-drivers.md"
+  ]
+}

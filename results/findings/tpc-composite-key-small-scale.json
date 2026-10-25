@@ -1,0 +1,31 @@
+{
+  "id": "tpc-composite-key-small-scale",
+  "title": "Small-scale composite keys outrun their parents",
+  "kind": "tooling",
+  "status": "fixed",
+  "applies": {
+    "source": [
+      "*"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "test"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test MODEL=tpce, tpcdi SF 0.001"
+  },
+  "symptom": "watch_item insert violates foreign key: wi_s_symb not present in security",
+  "cause": "15 items per watch list but 7 securities at SF 0.001; the second key column ran past its parent",
+  "effect": "Fills of TPC-E and TPC-DI failed on every engine",
+  "fix": "shape.py caps rows per first-key value and the table's rows at the key pairs",
+  "where": [
+    "skills/lfc-source-statschema/scripts/shape.py"
+  ]
+}

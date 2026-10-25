@@ -1,0 +1,31 @@
+{
+  "id": "informix-lock-wait",
+  "title": "Informix fails concurrent writers at once instead of waiting",
+  "kind": "source-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "informix"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "source"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test SOURCE=informix MODEL=tpcds, tpce"
+  },
+  "symptom": "Error -425 / ISAM -107 (record locked) while filling with several sessions",
+  "cause": "The default lock mode is NOT WAIT",
+  "effect": "Parallel loaders or applications get errors under contention",
+  "fix": "SET LOCK MODE TO WAIT <seconds> per session",
+  "where": [
+    "skills/lfc-source-datagen/scripts/python/drivers.py"
+  ]
+}

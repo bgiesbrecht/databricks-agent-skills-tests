@@ -7,13 +7,21 @@ usage: model-sql.py <schema.yaml> <command> [options]
                                         isn't a foreign key; save its output (with the header row) for --state
   round N --state F --prefix P [--part before|after] [--manifest out.json]
                                         the DML of round N (1, 2, 3) on the source, and what it should produce
-  alter N --prefix P [--part ddl|after] [--gold gold.sql] [--manifest out.json]
+  alter N --prefix P [--part ddl|after] [--gold gold.sql] [--manifest out.json] [--state F]
                                         round 4 (a column added, with a default) or 5 (a column dropped, one retyped)
   select T --side source|databricks --prefix P [--from NAME] [--where COND] [--order COLS]
                                         table T's columns, every value rendered as the same text on both sides (NULL as
                                         <null>), each under its own name, ordered by the key (every column for a table
                                         without one), then COLS; --from reads another table with T's columns (T_history)
-  --dialect crdb|pg (default pg, which is also YugabyteDB); --only t1,t2 limits the workload to those tables.
+  digest --side source|databricks --prefix P --tables t1[:silver1],t2 [--where COND]
+                                        one query: per table, its rows and the sum of CRC32 of each row rendered as in
+                                        select (the same on both sides), "table<TAB>rows<TAB>sum"; silverN reads table
+                                        tN's columns from another table (tN_history); --where on the Databricks side
+  --dialect crdb|pg|mysql|mssql|oracle|db2|informix (default pg, which is also YugabyteDB; mysql: select and digest
+  only so far); --only t1,t2 limits the workload to those tables. mssql, oracle, db2 and informix take each table's
+  first row (its key, and a parent's key for the inserts) from the state's "first:" rows instead of a subquery
+  (they lack LIMIT, a tuple IN, or, Informix, a subquery on the table an UPDATE changes), and fold names as the
+  database does: Oracle and Db2 keep an unquoted name in upper case, so do their change events (fold).
 
 The workload, generic over keys and foreign keys:
   - a table with a primary key gets inserts of new keys (each integer key column that isn't a foreign key at its MAX
@@ -48,8 +56,23 @@ def ctype(c):
     return ALIAS.get(c["type"], c["type"])
 
 
+DIALECT = "pg"   # set from --dialect: MySQL quotes identifiers with backticks
+# the first rows come from the state, as literals (MySQL too: it refuses a subquery on the table an UPDATE changes)
+LITERAL_FIRST = ("mssql", "oracle", "db2", "informix", "mysql")
+
+
+def fold(n):   # a name as the database keeps it, and as its change events carry it (ddl.py writes them unquoted)
+    return n.upper() if DIALECT in ("oracle", "db2") else n.lower() if DIALECT == "informix" else n
+
+
 def qi(n):   # a source identifier, quoted: names keep their case (TPC-DI's are mixed case)
-    return '"' + n.replace('"', '""') + '"'
+    if DIALECT == "mysql":
+        return "`" + n.replace("`", "``") + "`"
+    if DIALECT == "mssql":
+        return "[" + n.replace("]", "]]") + "]"
+    if DIALECT == "informix":   # quoting needs DELIMIDENT; unquoted names are folded to lower case
+        return n.lower()
+    return '"' + fold(n).replace('"', '""') + '"'
 
 
 def bq(n):   # a Databricks identifier
@@ -110,33 +133,83 @@ def value(c, seed):
     if ty in ("float", "double"):
         return f"{seed}.5"
     if ty == "boolean":
-        return "TRUE" if seed % 2 else "FALSE"
+        return {"mssql": "1" if seed % 2 else "0", "informix": "'t'" if seed % 2 else "'f'"}.get(
+            DIALECT, "TRUE" if seed % 2 else "FALSE")
     epoch = datetime.datetime(2030, 1, 1)
     if ty == "date":
-        return f"DATE '{(epoch + datetime.timedelta(days=seed % 3000)).date()}'"
+        return literal(c, f"{(epoch + datetime.timedelta(days=seed % 3000)).date()}")
     if ty in ("timestamp", "timestamptz"):
-        ts = epoch + datetime.timedelta(seconds=seed)
-        return f"TIMESTAMP '{ts:%Y-%m-%d %H:%M:%S}'" + ("" if ty == "timestamp" else "::TIMESTAMPTZ")
+        return literal(c, f"{epoch + datetime.timedelta(seconds=seed):%Y-%m-%d %H:%M:%S}")
     if ty in ("time", "timetz"):
-        return f"TIME '{datetime.timedelta(seconds=seed % 86400)}'".replace("TIME '0:", "TIME '00:")
+        return literal(c, f"{datetime.timedelta(seconds=seed % 86400)}".rjust(8, "0"))
     if ty == "binary":
-        return f"decode('{seed:08x}', 'hex')"
-    s = f"r{seed}"
-    n = c.get("length")
-    return "'" + (s[-int(n):] if n else s) + "'"
+        return literal(c, f"{seed:08x}")
+    # base 36, so a short column still gets a new value from each seed (the last digit of r2000 and r2100 is the same,
+    # and an UPDATE to the value a row has is no change: SQL Server doesn't log it, so its CDC has no event)
+    b, x = "", seed
+    while True:
+        b, x = "0123456789abcdefghijklmnopqrstuvwxyz"[x % 36] + b, x // 36
+        if not x:
+            break
+    n = int(c.get("length") or 0)
+    s = "r" + b if not n or n > len(b) else b[-n:]
+    return "'" + s + "'"
+
+
+def literal(c, v):
+    """A value given as text (an integer, a decimal, a string, YYYY-MM-DD, YYYY-MM-DD HH:MM:SS[.ffffff], HH:MM:SS,
+    hex for binary) as a literal of the column's type, in the dialect."""
+    ty, d = ctype(c), DIALECT
+    if ty in INTS or ty in ("decimal", "float", "double"):
+        return v
+    if ty == "boolean":
+        t = v.lower() in ("true", "t", "1")
+        return {"mssql": "1" if t else "0", "informix": "'t'" if t else "'f'"}.get(d, "TRUE" if t else "FALSE")
+    if ty == "date":
+        if d == "mssql":
+            return f"CAST('{v}' AS DATE)"
+        if d == "informix":   # MDY: no dependence on DBDATE
+            y, m, dd = v.split("-")
+            return f"MDY({int(m)}, {int(dd)}, {int(y)})"
+        return f"DATE('{v}')" if d == "db2" else f"DATE '{v}'"
+    if ty in ("timestamp", "timestamptz"):
+        if d == "mssql":
+            return f"CAST('{v}' AS {'DATETIME2' if ty == 'timestamp' else 'DATETIMEOFFSET'})"
+        if d == "informix":
+            return f"DATETIME({v}) YEAR TO FRACTION(5)" if "." in v else f"DATETIME({v}) YEAR TO SECOND"
+        if d == "db2":
+            return f"TIMESTAMP('{v}')"
+        return f"TIMESTAMP '{v}'" + ("::TIMESTAMPTZ" if ty == "timestamptz" and d in ("pg", "crdb") else "")
+    if ty in ("time", "timetz"):
+        return {"mssql": f"CAST('{v}' AS TIME)", "informix": f"DATETIME({v}) HOUR TO SECOND",
+                # Oracle has no TIME: ddl.py makes it TIMESTAMP(0), on the data generator's 1970-01-01
+                "oracle": f"TIMESTAMP '1970-01-01 {v}'", "db2": f"TIME('{v}')"}.get(d, f"TIME '{v}'")
+    if ty == "binary":
+        return {"mssql": f"0x{v}", "oracle": f"HEXTORAW('{v}')", "db2": f"BX'{v}'", "mysql": f"X'{v}'"}.get(d, f"decode('{v}', 'hex')")
+    return "'" + v.replace("'", "''") + "'"
 
 
 class Rounds:
     def __init__(self, m, prefix, state):
         self.m, self.p = m, prefix
-        self.base = {}
-        for line in (open(state).read().splitlines()[1:] if state else []):
-            f = line.split("\t")
-            if len(f) >= 3:
+        self.base, self.firsts = {}, {}
+        for line in (open(state).read().splitlines() if state else []):
+            f = [x.strip() for x in line.split("\t")]
+            if len(f) < 3 or f[0] in ("tbl", "TBL"):   # a header (one per result set where a database sends several)
+                continue
+            if f[1].startswith("first:"):   # a table's first row by its key: column -> its value as text
+                self.firsts.setdefault(f[0], {})[f[1][6:]] = f[2]
+            else:
                 self.base[(f[0], f[1])] = int(f[2] or 0) if f[2] not in ("", "NULL") else 0
 
     def tbl(self, t):
-        return f"{self.p}.{qi(t)}"
+        return qi(t) if DIALECT == "informix" else f"{self.p}.{qi(t)}"   # Informix: a database per source
+
+    def firstlit(self, t, k):   # the first row's value of column k, as a literal (the state's first: rows)
+        v = self.firsts.get(t, {}).get(k)
+        if v is None:
+            raise SystemExit(f"no first row of {t} in the state: run state first (the table must have rows)")
+        return literal(self.m.col(t, k), v)
 
     def keylit(self, t, k, n):
         c = self.m.col(t, k)
@@ -148,6 +221,8 @@ class Rounds:
         return value(c, 900000 + n)
 
     def first(self, t):   # the table's first row by its key: never one the workload inserts (those keys come after MAX)
+        if DIALECT in LITERAL_FIRST:
+            return " AND ".join(f"{qi(k)} = {self.firstlit(t, k)}" for k in self.m.t[t]["keys"])
         ks = ", ".join(qi(k) for k in self.m.t[t]["keys"])
         return f"({ks}) IN (SELECT {ks} FROM {self.tbl(t)} ORDER BY {ks} LIMIT 1)"
 
@@ -159,6 +234,12 @@ class Rounds:
         names, vals, froms = [], [], []
         for i, (cs, parent, pcs) in enumerate(d["fks"]):
             if parent not in self.m.t:
+                continue
+            if DIALECT in LITERAL_FIRST:   # the parent's first row, from the state
+                for c, pc in zip(cs, pcs):
+                    if c not in names:
+                        names.append(c)
+                        vals.append(self.firstlit(parent, pc))
                 continue
             pk = ", ".join(qi(x) for x in pcs)
             froms.append(f"(SELECT {pk} FROM {self.tbl(parent)} ORDER BY {pk} LIMIT 1) f{i}")
@@ -225,15 +306,15 @@ class Rounds:
             if d["keys"] and d["free"] and d["upd"] and all(ctype(m.col(t, k)) in INTS for k in d["free"]):
                 n = {1: 2, 2: 3, 3: 2 if part == "before" else 4}[rnd]
                 op = "update" if (rnd, part) in ((3, "before"), (3, "after")) else "create"
-                cond = " AND ".join(f"{vpath('key', k)}::STRING = '{self.keylit(t, k, n)}'" for k in d["free"])
-                return f"destination LIKE '%.{t}' AND operation = '{op}' AND {cond}"
+                cond = " AND ".join(f"{vpath('key', fold(k))}::STRING = '{self.keylit(t, k, n)}'" for k in d["free"])
+                return f"destination LIKE '%.{fold(t)}' AND operation = '{op}' AND {cond}"
         return "true"
 
 
-def count(steps):
+def count(steps):   # by each table's name as the change log carries it (fold: Oracle's and Db2's in upper case)
     e = {}
     for t, _, op in steps:
-        e.setdefault(t, {"create": 0, "update": 0, "delete": 0})[op] += 1
+        e.setdefault(fold(t), {"create": 0, "update": 0, "delete": 0})[op] += 1
     return e
 
 
@@ -261,12 +342,12 @@ def first_keyed(m):
 
 
 def cmd_alter(m, a):
-    r = Rounds(m, a.prefix, None)
+    r = Rounds(m, a.prefix, a.state)   # the state's first rows, for the dialects that name a row by literals
     gold = set(re.findall(r"\w+", open(a.gold).read())) if a.gold else set()
     if a.n == 4:
         t = first_keyed(m)
         man = {"table": t, "column": "lfc_r4", "value": "r4_set", "default": "none",
-               "probe": f"destination LIKE '%.{t}' AND {vpath('value:after', 'lfc_r4')}::STRING = 'r4_set'"}
+               "probe": f"destination LIKE '%.{fold(t)}' AND {vpath('value:after', fold('lfc_r4'))}::STRING = 'r4_set'"}
         sql = (f"ALTER TABLE {r.tbl(t)} ADD COLUMN lfc_r4 VARCHAR(20) NOT NULL DEFAULT 'none';" if a.part == "ddl" else
                f"UPDATE {r.tbl(t)} SET lfc_r4 = 'r4_set' WHERE {r.first(t)};")
     else:
@@ -294,9 +375,10 @@ def cmd_alter(m, a):
                 new, v = f"DECIMAL({p + 2},{s})", "9" * (p - s + 1) + ("." + "1" * s if s else "")
             else:
                 new, v = "BIGINT", "3000000000"
-            ddl.append(f"ALTER TABLE {r.tbl(t)} ALTER COLUMN {qi(c['name'])} TYPE {new};")
+            ddl.append(f"ALTER TABLE {r.tbl(t)} MODIFY COLUMN {qi(c['name'])} {new}{'' if c.get('nullable', True) and not c.get('not_null') else ' NOT NULL'};"
+                       if a.dialect == "mysql" else f"ALTER TABLE {r.tbl(t)} ALTER COLUMN {qi(c['name'])} TYPE {new};")
             man.update(retype={"column": c["name"], "to": new}, column=c["name"], value=v,
-                       probe=f"destination LIKE '%.{t}' AND {vpath('value:after', c['name'])}::STRING = '{v}'")
+                       probe=f"destination LIKE '%.{fold(t)}' AND {vpath('value:after', fold(c['name']))}::STRING = '{v}'")
         sql = "\n".join(ddl) if a.part == "ddl" else (f"UPDATE {r.tbl(t)} SET {qi(c['name'])} = {man['value']} WHERE {r.first(t)};" if c else "")
     print(sql)
     write(a, man)
@@ -304,7 +386,22 @@ def cmd_alter(m, a):
 
 def render(c, side, dialect):
     """One column as text, the same on both sides: NULL as <null>, times to the microsecond, chars without padding."""
+    return f"{expr(c, side, dialect)} AS {qi(c['name']) if side == 'source' else bq(c['name'])}"
+
+
+def expr(c, side, dialect):
     n, ty = c["name"], ctype(c)
+    if side == "source" and dialect == "mysql":   # MySQL: DATE_FORMAT, CAST AS CHAR, HEX for binary
+        x = qi(n)
+        f = "'%Y-%m-%d %H:%i:%s.%f'"
+        e = {"boolean": f"CASE WHEN {x} THEN 'true' ELSE 'false' END", "float": f"CAST(CAST({x} AS DECIMAL(38,6)) AS CHAR)",
+             "double": f"CAST(CAST({x} AS DECIMAL(38,6)) AS CHAR)", "timestamp": f"DATE_FORMAT({x}, {f})",
+             "timestamptz": f"DATE_FORMAT(CONVERT_TZ({x}, @@session.time_zone, '+00:00'), {f})",
+             "time": f"DATE_FORMAT(TIMESTAMP('2000-01-01', {x}), '%H:%i:%s.%f')", "char": f"RTRIM({x})",
+             "binary": f"LOWER(HEX({x}))"}.get(ty, f"CAST({x} AS CHAR)")
+        return f"COALESCE({e}, '<null>')"
+    if side == "source" and dialect in LITERAL_FIRST:
+        return f"COALESCE({source_text(c, qi(n), dialect)}, '<null>')"
     if side == "source":
         x = qi(n)
         fn, ymd, hms = ("experimental_strftime", "%Y-%m-%d ", "%H:%M:%S.%f") if dialect == "crdb" else \
@@ -316,6 +413,7 @@ def render(c, side, dialect):
              "double": f"CAST({x} AS DECIMAL(38,6))::TEXT", "timestamp": fmt(x), "timestamptz": fmt(f"{x} AT TIME ZONE 'UTC'"),
              "time": fmt(f"DATE '2000-01-01' + {x}", hms), "char": f"RTRIM({x})",
              "binary": f"encode({x}, 'hex')"}.get(ty, f"{x}::TEXT")
+        return f"COALESCE({e}, '<null>')"
     else:   # silver: a time is already text (silver-from-schema.py renders it as HH:mm:ss.SSSSSS)
         x = bq(n)
         e = {"boolean": f"CASE WHEN {x} THEN 'true' ELSE 'false' END", "float": f"CAST(CAST({x} AS DECIMAL(38,6)) AS STRING)",
@@ -323,7 +421,57 @@ def render(c, side, dialect):
              "timestamp": f"date_format({x}, 'yyyy-MM-dd HH:mm:ss.SSSSSS')",
              "timestamptz": f"date_format({x}, 'yyyy-MM-dd HH:mm:ss.SSSSSS')", "char": f"RTRIM({x})",
              "binary": f"lower(hex({x}))"}.get(ty, f"CAST({x} AS STRING)")
-    return f"COALESCE({e}, '<null>') AS {x}"
+        if dialect == "informix" and ty in ("string", "varchar", "text"):   # Informix ignores a string's trailing blanks
+            e = f"RTRIM({e})"   # (its text cast and LENGTH drop them); silver keeps them, as the source stored them
+    return f"COALESCE({e}, '<null>')"
+
+
+def ifx_len(c):   # an Informix cast's length: a row of casts, sorted, must fit its 32 KB row (-361)
+    if ctype(c) in ("string", "char", "varchar", "text"):
+        return max(int(c.get("length") or 255), 1)
+    return 40   # numbers, dates, times as text
+
+
+def source_text(c, x, d):
+    """SQL Server, Oracle, Db2, Informix: column x as the text Databricks renders (expr's databricks side)."""
+    ty = ctype(c)
+    # Informix: each cast at the column's length (255 without one), as a row of LVARCHAR(4000)s passes its row limit (-361)
+    vc = ("VARCHAR2(4000)" if d == "oracle" else "NVARCHAR(4000)" if d == "mssql"
+          else f"LVARCHAR({ifx_len(c)})" if d == "informix" else "VARCHAR(4000)")
+    if ty == "decimal":   # at the column's scale, a 0 before the point, as Databricks' CAST(DECIMAL AS STRING)
+        p, sc = int(c.get("precision") or 18), int(c.get("scale") or 0)
+        fmt = f"'FM{'9' * max(p - sc - 1, 0)}0{'.' + '0' * sc if sc else ''}'"
+        if d == "oracle":
+            return f"TO_CHAR({x}, {fmt})"
+        if d == "db2":   # CAST AS VARCHAR writes 0.50 as .50 (and VARCHAR_FORMAT takes no FM mask for a decimal)
+            v = f"CAST({x} AS VARCHAR(64))"
+            return (f"CASE WHEN {x} > -1 AND {x} < 0 THEN '-0' || SUBSTR({v}, 2) WHEN {x} >= 0 AND {x} < 1 AND {sc} > 0 "
+                    f"THEN '0' || {v} ELSE {v} END")
+        return f"CAST({x} AS {vc})"
+    if ty in ("float", "double"):
+        if d == "oracle":
+            return f"TO_CHAR(CAST({x} AS NUMBER(38,6)), 'FM{'9' * 31}0.000000')"
+        return f"CAST(CAST({x} AS DECIMAL(31,6)) AS {vc})"
+    if ty == "boolean":
+        return {"mssql": f"CASE WHEN {x} = 1 THEN 'true' WHEN {x} = 0 THEN 'false' END",
+                "informix": f"CASE WHEN {x} = 't' THEN 'true' WHEN {x} = 'f' THEN 'false' END"}.get(
+            d, f"CASE WHEN {x} THEN 'true' WHEN NOT {x} THEN 'false' END")
+    if ty == "date":
+        return render_text(c, x)
+    if ty in ("timestamp", "timestamptz"):
+        if d == "informix":   # FRACTION(5) at most: the sixth digit is 0
+            return f"TO_CHAR({x}, '%Y-%m-%d %H:%M:%S.%F5') || '0'"
+        return render_text(c, x)
+    if ty in ("time", "timetz"):
+        return {"mssql": f"CONVERT(VARCHAR(15), CAST({x} AS TIME(6)), 114)",
+                "oracle": f"TO_CHAR({x}, 'HH24:MI:SS') || '.000000'",   # a TIMESTAMP(0): ddl.py's time
+                "informix": f"{x}::LVARCHAR || '.000000'",   # DATETIME HOUR TO SECOND: text without a fraction
+                "db2": f"VARCHAR_FORMAT(TIMESTAMP(DATE('2000-01-01'), {x}), 'HH24:MI:SS') || '.000000'"}.get(d, f"CAST({x} AS {vc})")
+    if ty == "char":
+        return f"RTRIM({x})"
+    if ty == "binary":
+        return render_text(c, x)
+    return f"CAST({x} AS {vc})"
 
 
 def cmd_select(m, a):
@@ -332,15 +480,79 @@ def cmd_select(m, a):
     q = qi if a.side == "source" else bq
     order = [q(k) for k in d["keys"]] if d["keys"] else [str(i + 1) for i in range(len(d["cols"]))]
     where = f" WHERE {a.where}" if a.where else ""
-    print(f"SELECT {cols} FROM {a.prefix}.{q(a.__dict__['from'] or a.table)}{where} ORDER BY {', '.join(order + ([a.order] if a.order else []))}"
+    src = q(a.__dict__['from'] or a.table)
+    src = src if a.side == "source" and DIALECT == "informix" else f"{a.prefix}.{src}"   # Informix: a database per source
+    print(f"SELECT {cols} FROM {src}{where} ORDER BY {', '.join(order + ([a.order] if a.order else []))}"
           + (";" if a.side == "source" else ""))
+
+
+def cmd_digest(m, a):
+    """Per table: rows, and the sum of CRC32 over each row's columns rendered as select renders them, joined by |:
+    equal on both sides when the rows are (in any order). CRC32 is the same function in MySQL and Databricks."""
+    parts = []
+    for spec in a.tables.split(","):
+        t, _, frm = spec.partition(":")
+        if t not in m.t:
+            continue
+        cols = m.t[t]["cols"]
+        if a.side == "source":
+            row = f"CONCAT_WS('|', {', '.join(expr(c, 'source', a.dialect) for c in cols)})"
+            parts.append(f"SELECT '{t}' AS tbl, COUNT(*) AS n, CAST(COALESCE(SUM(CRC32({row})), 0) AS CHAR) AS h FROM "
+                         f"{qi(t) if DIALECT == 'informix' else a.prefix + '.' + qi(t)}")
+        else:
+            row = f"concat_ws('|', {', '.join(expr(c, 'databricks', a.dialect) for c in cols)})"
+            where = f" WHERE {a.where}" if a.where else ""
+            parts.append(f"SELECT '{frm or t}' AS tbl, COUNT(*) AS n, CAST(COALESCE(SUM(crc32({row})), 0) AS STRING) AS h "
+                         f"FROM {a.prefix}.{bq(frm or t)}{where}")
+    print(" UNION ALL ".join(parts) + (";" if a.side == "source" else ""))
 
 
 def cmd_state(m, a):
     r = Rounds(m, a.prefix, None)
-    parts = [f"SELECT '{t}' AS tbl, '{k}' AS col, COALESCE(MAX({qi(k)}), 0)::TEXT AS mx FROM {r.tbl(t)}"
-             for t in m.order for k in m.t[t]["free"] if ctype(m.col(t, k)) in INTS]
-    print(" UNION ALL ".join(parts) + ";" if parts else "SELECT '' AS tbl, '' AS col, '0' AS mx;")
+    if DIALECT not in LITERAL_FIRST:
+        parts = [f"SELECT '{t}' AS tbl, '{k}' AS col, COALESCE(MAX({qi(k)}), 0)::TEXT AS mx FROM {r.tbl(t)}"
+                 for t in m.order for k in m.t[t]["free"] if ctype(m.col(t, k)) in INTS]
+        print(" UNION ALL ".join(parts) + ";" if parts else "SELECT '' AS tbl, '' AS col, '0' AS mx;")
+        return
+    # one statement per table (a single row needs TOP, FETCH FIRST or FIRST, which a UNION member can't always have):
+    # its free integer keys' maxima, then its first row's key and every column a child's foreign key reads
+    out = []
+    txt = {"oracle": "VARCHAR2(400)", "mysql": "CHAR", "informix": "LVARCHAR(400)"}.get(DIALECT, "VARCHAR(400)")   # Informix: VARCHAR stops at 255
+    referenced = {(p, pc) for t in m.t.values() for _, p, pcs in t["fks"] for pc in pcs}
+    for t in m.order:
+        d = m.t[t]
+        for k in d["free"]:
+            if ctype(m.col(t, k)) in INTS:
+                out.append(f"SELECT '{t}' AS tbl, '{k}' AS col, CAST(COALESCE(MAX({qi(k)}), 0) AS {txt}) AS mx FROM {r.tbl(t)}")
+        if not d["keys"]:
+            continue
+        cols = list(d["keys"]) + [c for (p, c) in sorted(referenced) if p == t and c not in d["keys"]]
+        order = ", ".join(qi(k) for k in d["keys"])
+        for c in cols:
+            v = render_text(m.col(t, c), qi(c))
+            sel = f"'{t}' AS tbl, 'first:{c}' AS col, {v} AS mx FROM {r.tbl(t)} ORDER BY {order}"
+            out.append({"mssql": f"SELECT TOP 1 {sel}", "informix": f"SELECT FIRST 1 {sel}", "mysql": f"SELECT {sel} LIMIT 1"}.get(
+                DIALECT, f"SELECT {sel} FETCH FIRST 1 ROWS ONLY"))
+    print(";\n".join(out) + ";")
+
+
+def render_text(c, x):
+    """A column as the text literal() takes back: YYYY-MM-DD, YYYY-MM-DD HH:MM:SS.ffffff, hex, plain numbers."""
+    ty, d = ctype(c), DIALECT
+    if ty == "date":
+        return {"mssql": f"CONVERT(VARCHAR(10), {x}, 23)", "oracle": f"TO_CHAR({x}, 'YYYY-MM-DD')", "mysql": f"DATE_FORMAT({x}, '%Y-%m-%d')",
+                "informix": f"TO_CHAR({x}, '%Y-%m-%d')"}.get(d, f"VARCHAR_FORMAT({x}, 'YYYY-MM-DD')")
+    if ty in ("timestamp", "timestamptz"):   # Oracle: a DATE column too (it holds a time; Debezium sends it as one)
+        return {"mssql": f"CONVERT(VARCHAR(26), CAST({x} AS DATETIME2(6)), 121)",
+                "oracle": f"TO_CHAR(CAST({x} AS TIMESTAMP), 'YYYY-MM-DD HH24:MI:SS.FF6')", "mysql": f"DATE_FORMAT({x}, '%Y-%m-%d %H:%i:%s.%f')",
+                "informix": f"TO_CHAR({x}, '%Y-%m-%d %H:%M:%S.%F5')"}.get(d, f"VARCHAR_FORMAT({x}, 'YYYY-MM-DD HH24:MI:SS.FF6')")
+    if ty == "binary":
+        return {"mssql": f"LOWER(CONVERT(VARCHAR(400), {x}, 2))", "oracle": f"LOWER(RAWTOHEX({x}))"}.get(d, f"LOWER(HEX({x}))")
+    if d == "mysql":
+        return f"TRIM(CAST({x} AS CHAR))"
+    if ty == "boolean" and d == "mssql":
+        return f"CASE WHEN {x} = 1 THEN 'true' ELSE 'false' END"
+    return f"TRIM(CAST({x} AS {'VARCHAR2(400)' if d == 'oracle' else 'LVARCHAR(400)' if d == 'informix' else 'VARCHAR(400)'}))"
 
 
 def write(a, man):
@@ -351,7 +563,7 @@ def write(a, man):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("schema")
-    ap.add_argument("cmd", choices=["state", "round", "alter", "select"])
+    ap.add_argument("cmd", choices=["state", "round", "alter", "select", "digest"])
     ap.add_argument("arg", nargs="?")
     ap.add_argument("--prefix", required=True)
     ap.add_argument("--state")
@@ -359,12 +571,15 @@ def main():
     ap.add_argument("--manifest")
     ap.add_argument("--gold")
     ap.add_argument("--side", default="source", choices=["source", "databricks"])
-    ap.add_argument("--dialect", default="pg", choices=["pg", "crdb"])
+    ap.add_argument("--dialect", default="pg", choices=["pg", "crdb", "mysql", "mssql", "oracle", "db2", "informix"])
+    ap.add_argument("--tables")
     ap.add_argument("--only")
     ap.add_argument("--from")
     ap.add_argument("--where")
     ap.add_argument("--order")
     a = ap.parse_args()
+    global DIALECT
+    DIALECT = a.dialect
     m = Model(a.schema, set(a.only.split(",")) if a.only else None)
     if a.cmd in ("round", "alter"):
         a.n = int(a.arg)
@@ -372,7 +587,7 @@ def main():
             a.part = "ddl"
     if a.cmd == "select":
         a.table = a.arg
-    {"state": cmd_state, "round": cmd_round, "alter": cmd_alter, "select": cmd_select}[a.cmd](m, a)
+    {"state": cmd_state, "round": cmd_round, "alter": cmd_alter, "select": cmd_select, "digest": cmd_digest}[a.cmd](m, a)
 
 
 if __name__ == "__main__":

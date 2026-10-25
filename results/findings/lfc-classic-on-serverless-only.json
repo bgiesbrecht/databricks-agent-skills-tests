@@ -1,0 +1,30 @@
+{
+  "id": "lfc-classic-on-serverless-only",
+  "title": "Classic compute, including a classic gateway, is refused on a serverless-only workspace",
+  "kind": "databricks-limit",
+  "status": "by-design",
+  "applies": {
+    "source": [
+      "*"
+    ],
+    "route": [
+      "lfc-qbc",
+      "lfc-icdc",
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-16",
+    "by": "run 2026-10-16-azvm-four-engines"
+  },
+  "symptom": "You must use serverless compute in this workspace",
+  "cause": "The workspace allows only serverless compute",
+  "effect": "A gateway or pipeline that asks for classic compute doesn't start",
+  "fix": "Leave compute unset or serverless; on a classic workspace open the source's firewall to the classic egress IP"
+}

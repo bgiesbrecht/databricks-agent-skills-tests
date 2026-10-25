@@ -1,0 +1,30 @@
+{
+  "id": "idempotency-key-not-unique",
+  "title": "idempotency_key isn't unique per change",
+  "kind": "connector-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "cockroachdb"
+    ],
+    "route": [
+      "debezium-zerobus"
+    ],
+    "layer": [
+      "producer",
+      "bronze",
+      "silver"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-20",
+    "by": "zerobus-debezium-test SOURCE=crdb round 3"
+  },
+  "symptom": "Two quick updates of one row had the same key; a restart's replays landed as new bronze rows",
+  "cause": "The key comes from the table, the operation and the offset time",
+  "effect": "Deduplicating by the key drops real changes",
+  "fix": "Deduplicate on the key plus the row image within a watermark; AUTO CDC keeps the latest by sequence"
+}

@@ -1,0 +1,36 @@
+{
+  "id": "db2-boolean-not-captured",
+  "title": "A Db2 BOOLEAN column stops ASN capture for every table",
+  "kind": "source-behavior",
+  "status": "documented-limit",
+  "applies": {
+    "source": [
+      "db2"
+    ],
+    "route": [
+      "debezium-zerobus",
+      "kafka-connect-zerobus"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "zerobus-debezium-test SOURCE=db2 MODEL=tpcdi"
+  },
+  "versions": "Db2 11.5.9; Debezium 3.7.0.Final",
+  "symptom": "No change events for any TPC-DI table after T. ASNCDC.IBMSNAP_CAPTRACE: ASN0552E (SQLCODE -804) inserting into the change table of DIMDATE, then ASN0008I: the Capture program was stopped. Every registration still shows state A, and Debezium logs Starting streaming with no error",
+  "cause": "Db2's SQL Replication (ASN capture), which Debezium's Db2 connector reads, doesn't support BOOLEAN; Debezium can only snapshot such tables (its documentation's data type table)",
+  "effect": "Silent and database-wide: one table with a BOOLEAN column stops change capture for all tables",
+  "fix": "Use SMALLINT 0/1 or CHAR(1) instead of BOOLEAN; check a schema for BOOLEAN columns before ADDTABLE; watch ASNCDC.IBMSNAP_CAPTRACE for ASN0008I and ASN0552E (capture stopped), since Debezium reports nothing. The test maps booleans to SMALLINT 0/1 on Db2",
+  "where": [
+    "skills/zerobus-debezium-test/scripts/debezium-zerobus.sh"
+  ],
+  "refs": [
+    "https://debezium.io/documentation/reference/stable/connectors/db2.html#db2-data-types"
+  ]
+}

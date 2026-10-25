@@ -2,6 +2,8 @@
 
 Each line comes from `results/runs/*.jsonl`. Check the current state with `uv run skills/lfc-test-results/scripts/recall.py --coverage`, and see the plan in [test-matrix.md](../skills/lfc-test-results/references/test-matrix.md#planned). Back to the [README](../README.md).
 
+What the tests turned up for each combination (source behaviors, connector behaviors, Databricks limits, gaps in the pattern), and the fix or workaround for each, is in [findings.md](findings.md).
+
 ## Test axes: what's been tested and works
 
 From `results/runs/*.jsonl`, 2026-10. Each line is a value that passed at least once; a value that's missing hasn't been tested yet, which doesn't mean it fails. Blocked results aren't listed: a mode the workspace hasn't enabled, a missing grant, or a firewall that doesn't allow the compute's IP all work once fixed.

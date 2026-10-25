@@ -24,6 +24,7 @@ uv run $S/recall.py --engine oracle                   # everything about one eng
 uv run $S/recall.py --test icdc,scdc --outcome blocked,fail --all
 uv run $S/recall.py --grep "not supported in your workspace"
 uv run $S/recall.py --coverage                        # test x engine grid of the newest outcomes
+uv run $S/recall.py --combos --test zerobus           # per route and topology: engine x model grid of the newest outcomes
 uv run $S/recall.py --workspace classic --storage juicefs --all
 ```
 
@@ -44,7 +45,7 @@ Record every cell you ran, including the ones that stopped (`expected-stop`) or 
 |---|---|---|
 | `date` | yes | `YYYY-MM-DD` of the run |
 | `run` | yes | the run's name, the same as its write-up: `<date>-<topic>` |
-| `test` | yes | `connection`, `qbc`, `fcqbc` (QBC via foreign catalog), `icdc` (integrated CDC), `scdc` (standard CDC), `dml`, `source-setup`, `rclone-pull`, `reflink-isolation`, `juicefs-clone`, `disk-restore`, `snapshot-read`, `write-tps`, `other` |
+| `test` | yes | `connection`, `qbc`, `fcqbc` (QBC via foreign catalog), `icdc` (integrated CDC), `scdc` (standard CDC), `dml`, `source-setup`, `rclone-pull`, `reflink-isolation`, `juicefs-clone`, `disk-restore`, `snapshot-read`, `write-tps`, `load`, `zerobus` (change capture through Zerobus into bronze, silver, gold; `cdc` in the 2026-10-22 records), `other` |
 | `subject` | yes | `{"engine": "oracle", "version": "23ai Free 23.26"}`, plus `image`, `edition` where they matter |
 | `outcome` | yes | `pass`, `fail`, `blocked` (the workspace or environment refused it), `expected-stop` (the skill correctly stopped), `partial` |
 | `result` | yes | what happened, with counts: `snapshot 10/10; 3 inserts, 2 updates, 2 deletes applied (11/11)` |
@@ -69,6 +70,32 @@ uv run $S/record.py --check                     # re-validate the whole file (bi
 ```
 
 Write each record on one line in the file you pipe in (or pass a JSON array). Then write or extend `results/<run>.md`: the environment (cloud, region, workspace type, catalog type, VM size), a results table, what broke and how it was fixed, and the skill fixes. Commit both with the skill fixes they led to.
+
+## Findings: what a combination meets
+
+A run record says what was tested and how it came out. A finding says what the test turned up that a real deployment of the same combination would also meet, so nobody has to find it twice: a source's behavior, a connector's, a Databricks limit or bug, a gap in the pattern (bronze, silver, gold), or a defect in the test tooling that made a check wrong. Not typos. Record each as it's found, also when it's fixed the same day.
+
+One file per finding, `results/findings/<id>.json`, through [scripts/finding.py](scripts/finding.py):
+
+```bash
+S=skills/lfc-test-results/scripts
+uv run $S/finding.py --source mysql --route debezium-zerobus --topology n:1   # before building a combination: what's known
+uv run $S/finding.py --source sqlserver --route lfc-icdc --long                # with the effect and the fix
+uv run $S/finding.py add < finding.json                                        # a new one (--update to change one)
+uv run $S/finding.py --check && uv run $S/finding.py --md > docs/findings.md   # validate, then regenerate the table
+```
+
+| Field | Content |
+|---|---|
+| `id`, `title` | kebab-case id (the file name); a title short enough for one table line |
+| `kind` | `source-behavior`, `connector-behavior`, `databricks-limit`, `databricks-bug`, `pattern`, `tooling` |
+| `status` | `fixed`, `workaround`, `by-design`, `documented-limit`, `open` |
+| `applies` | the combination, each a list (`*`: any): `source` (the records' engine names), `route` (`lfc-qbc`, `lfc-icdc`, `lfc-scdc`, `debezium-zerobus`, `kafka-connect-zerobus`), `layer` (`source`, `capture`, `producer`, `bronze`, `silver`, `gold`, `test`), `topology` (`1:1`, `n:1` many sources into one target, `1:n` one source into many) |
+| `found` | `date`, and `by`: the test and its settings, or the run's name |
+| `symptom`, `cause`, `effect`, `fix` | what was seen (with the error text), why, what a customer would see, and the fix or workaround |
+| `versions`, `not_affected`, `where`, `refs`, `notes` | optional: versions it applies to, sources checked and not affected, the scripts or docs that handle it, public documentation |
+
+A lookup leaves out findings only about the test itself (layer `test`) unless `--with-test` or `--layer test` is given. The same public-repo rules apply as for records: `finding.py` refuses what `record.py` refuses.
 
 ## Contributing in parallel
 

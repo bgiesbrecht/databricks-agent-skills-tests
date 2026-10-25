@@ -1,0 +1,31 @@
+{
+  "id": "informix-case-lvarchar-padding",
+  "title": "Informix pads a CASE with an LVARCHAR cast to 2048",
+  "kind": "source-behavior",
+  "status": "fixed",
+  "applies": {
+    "source": [
+      "informix"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "source"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test SOURCE=informix MODEL=tpcds"
+  },
+  "symptom": "Audit JSON for date_dim was cut off at its 32000-character column; each integer was followed by blanks",
+  "cause": "CASE WHEN x IS NULL THEN 'null' ELSE x::LVARCHAR END returns a fixed-width result, blank-padded to LVARCHAR's 2048",
+  "effect": "Text built in Informix SQL (triggers, exports) grows past column limits and is truncated",
+  "fix": "TRIM each such CASE",
+  "where": [
+    "skills/zerobus-debezium-test/scripts/sources/audit-triggers.py"
+  ]
+}

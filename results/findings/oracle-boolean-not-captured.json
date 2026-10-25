@@ -1,0 +1,38 @@
+{
+  "id": "oracle-boolean-not-captured",
+  "title": "Debezium's Oracle connector doesn't capture Oracle 23's BOOLEAN",
+  "kind": "connector-behavior",
+  "status": "documented-limit",
+  "applies": {
+    "source": [
+      "oracle"
+    ],
+    "route": [
+      "debezium-zerobus",
+      "kafka-connect-zerobus"
+    ],
+    "layer": [
+      "capture",
+      "producer"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "zerobus-debezium-test SOURCE=oracle MODEL=tpcdi"
+  },
+  "versions": "Oracle 23 and later (26ai Free 23.26 here); Debezium 3.7.0.Final",
+  "symptom": "No events for the 8 TPC-DI tables with a BOOLEAN column; tables without one streamed; no error in bronze or Databricks",
+  "cause": "The Debezium Oracle connector doesn't support the native BOOLEAN type Oracle 23 added (its documentation's Supported data types)",
+  "effect": "Silent: those tables never change in bronze or silver while the rest stream",
+  "fix": "Use NUMBER(1) (0/1) with Debezium's NumberOneToBooleanConverter, or SMALLINT; check a schema for BOOLEAN columns before capturing. The test maps booleans to SMALLINT 0/1 on Oracle",
+  "where": [
+    "skills/zerobus-debezium-test/scripts/debezium-zerobus.sh"
+  ],
+  "refs": [
+    "https://debezium.io/documentation/reference/stable/connectors/oracle.html#oracle-boolean-types"
+  ],
+  "notes": "Lakeflow Connect's Oracle connector: not tested for BOOLEAN"
+}

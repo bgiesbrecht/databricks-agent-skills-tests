@@ -1,0 +1,32 @@
+{
+  "id": "informix-audit-key-case",
+  "title": "Informix folds names to lower case; JSON keys built from the model kept its case",
+  "kind": "tooling",
+  "status": "fixed",
+  "applies": {
+    "source": [
+      "informix"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "test"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "zerobus-debezium-test SOURCE=informix MODEL=tpcdi"
+  },
+  "symptom": "Every history check crashed: TypeError comparing None and str",
+  "cause": "The audit trigger wrote JSON keys in the model's mixed case (SK_TimeID) while the schema read from Informix is lower case, so every key came back None",
+  "effect": "A model with mixed-case names breaks text built from it on Informix unless it folds the names the way Informix does",
+  "fix": "Write the keys in lower case; the check also sorts keys with a missing part instead of crashing",
+  "where": [
+    "skills/zerobus-debezium-test/scripts/sources/audit-triggers.py",
+    "skills/zerobus-debezium-test/scripts/scd2-history-check.py"
+  ]
+}

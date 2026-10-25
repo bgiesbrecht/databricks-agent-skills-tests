@@ -66,6 +66,9 @@ rounds of its own traffic (`mautic-source`'s `traffic.sh`).
 
 ## Trade-offs
 
+- **A foreign key's ON DELETE overrides the guess.** A table that CASCADE or SET NULL changes with its parent gets
+  `[scd1]` even when named like a log with inserts only, and `plan.py` warns about an edit that appends it. Its rows
+  can't be insert-only, so the guess was wrong.
 - **`[append]` drops what isn't an insert.** A table appended to keeps the snapshot rows and the inserts; an update or a
   delete of it is left out of silver (the producer still writes it to bronze, so a rebuild as scd1 gets it back).
 - **A collected row count is only today's size.** Fixed-size reference data is recognised only in a scaled model
@@ -73,4 +76,5 @@ rounds of its own traffic (`mautic-source`'s `traffic.sh`).
 - **The activity counts since the server started** (MySQL's `performance_schema`) **or the statistics were reset**
   (PostgreSQL); a fixture load counts as inserts, so collect it after real traffic and truncate it first.
 - **`plan.py` refuses** scd1 or scd2 without a primary key, append together with scd1 or scd2, and a table the producer
-  doesn't capture yet; it asks before dropping a target (a history table goes with its history).
+  doesn't capture yet; it asks before dropping a target (a history table goes with its history). The pipeline only stops updating a
+  target the plan drops: the table stays in the catalog until a `DROP TABLE`.

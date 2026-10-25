@@ -41,7 +41,7 @@
   | short text, digits don't fit | base 36 (`CHAR(2)` holds 1,296) | position of each character |
   | date / timestamp | days / seconds since 1970 | `LFC_DAYS(col)` / `LFC_EPOCH(col)` (per engine, in `ddl.py`) |
 
-  A composite key numbers its first two columns (`k1 = (n − 1) DIV f + 1`, `k2 = (n − 1) mod f + 1`, `f` from the statistics or the parent's rows, each kept within its parent); further key columns are constant.
+  A composite key numbers its first two columns (`k1 = (n − 1) DIV f + 1`, `k2 = (n − 1) mod f + 1`, `f` from the statistics or the parent's rows, each kept within its parent); further key columns are constant. When the second column has fewer values than `f` (a small scale: TPC-E's 15 securities per watch list, 7 securities at SF 0.001), `f` becomes that number, and when the two parents then allow fewer pairs than the table's rows, the rows are cut to the pairs (logged); otherwise the second column would point past its parent.
 - **A one-column key that is also a foreign key** (one child per parent) takes the parent's codec, and the table gets at most as many rows as the parent.
 - **No primary key**: the table stays without one; a timestamp (one second per row from 2023-11-14) or else an integer column numbers the rows.
 - **Text-key order:** the resume probe reads the highest key, so `n` must rise with the key's sort order: code lists are sorted, digits and base 36 sort as numbers in byte order.

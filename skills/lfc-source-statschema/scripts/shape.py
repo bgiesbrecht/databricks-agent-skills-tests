@@ -249,8 +249,14 @@ for tn in order:
         cap = lambda k, cd: min(x for x in (cd[3], R.get(fkcol[k][0]["parent_table"]) if k in fkcol else None, 10 ** 18) if x)
         d1 = min((math.ceil(-nd * rows) if nd < 0 else math.ceil(nd / rs * rows) if nd and rs else None) or rows, cap(k1, c1))
         f = max(1, math.ceil(rows / max(d1, 1)))         # rows per k1 value; a foreign key k1 stays within its parent
-        c2n = cap(k2, c2); step = max(1, c2n // f) if c2n < 10 ** 18 else 1
-        if c2n < 10 ** 18 and f > c2n: log(f"{tn}: {f} {k2} per {k1} but only {c2n} values of {k2}; the key can't be unique")
+        c2n = cap(k2, c2)
+        if c2n < 10 ** 18 and f > c2n:          # (a small scale: TPC-E's 15 securities per watch list, 7 securities at SF 0.001)
+            log(f"{tn}: {f} {k2} per {k1} but only {c2n} values of {k2}; {c2n} per {k1}"); f = c2n
+            c1n = cap(k1, c1)
+            if c1n < 10 ** 18 and math.ceil(rows / f) > c1n:   # more rows than the two keys' pairs: the key can't be unique
+                log(f"{tn}: {rows} rows but only {c1n} x {f} key pairs; {c1n * f} rows")
+                rows = R[tn] = c1n * f; tags[0] = f"lfc:rows={rows}"
+        step = max(1, c2n // f) if c2n < 10 ** 18 else 1
         put(k1, (c1[0], c1[2](f"((x.n - 1) DIV {f} + 1)"))); put(k2, (c2[0], c2[2](f"(((x.n - 1) % {f}) * {step} + 1)")))
         for k in pk[2:]:
             ck = pcodec(k) or codec(cols[k], rows); put(k, (ck[0], ck[2]("1")))

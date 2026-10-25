@@ -1,0 +1,32 @@
+{
+  "id": "vm-route-drops",
+  "title": "A lost route to the source host fails checks falsely",
+  "kind": "tooling",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "*"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "test"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test four runs at once"
+  },
+  "symptom": "Silver checks failed with an empty source side; ssh timed out",
+  "cause": "The laptop's route to the VM dropped for more than the retries' 11 minutes",
+  "effect": "Hours-long runs fail late",
+  "fix": "Retry ssh for VM_RETRY_MIN minutes (default 120)",
+  "where": [
+    "skills/zerobus-debezium-test/scripts/debezium-zerobus.sh"
+  ],
+  "notes": "Again on 2026-10-25, overnight: more than 2 hours, so a run with the 120-minute retry still failed (Oracle TPC-DI), and its host folder on the VM was then missing (statfs ... no such file or directory: cause not known). Runs whose retries outlasted it carried on (Db2 TPC-E). Long runs shouldn't start before the laptop sleeps, or should run on a host that doesn't"
+}

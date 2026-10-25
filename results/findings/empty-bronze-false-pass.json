@@ -1,0 +1,31 @@
+{
+  "id": "empty-bronze-false-pass",
+  "title": "A check passed on an empty bronze table",
+  "kind": "tooling",
+  "status": "fixed",
+  "applies": {
+    "source": [
+      "*"
+    ],
+    "route": [
+      "debezium-zerobus"
+    ],
+    "layer": [
+      "test"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test SOURCE=mssql"
+  },
+  "symptom": "A change-log claim passed with no rows in bronze",
+  "cause": "awk NR==FNR treats the second file as the first when the first is empty",
+  "effect": "A failure reads as a pass",
+  "fix": "Compare with FILENAME==ARGV[1]",
+  "where": [
+    "skills/zerobus-debezium-test/scripts/debezium-zerobus.sh"
+  ]
+}

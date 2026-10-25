@@ -1,0 +1,33 @@
+{
+  "id": "fk-actions-in-pipeline-slow",
+  "title": "Foreign key actions inside the silver pipeline make updates slow",
+  "kind": "pattern",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "mysql",
+      "mariadb"
+    ],
+    "route": [
+      "debezium-zerobus"
+    ],
+    "layer": [
+      "silver"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test SOURCE=mysql APP=mautic FK_IN_PIPELINE=1"
+  },
+  "symptom": "With one materialized view per foreign key folded into the change views, the first update ran far longer than without, most of it graph resolution",
+  "cause": "Hundreds of extra views and joins in one pipeline graph (Mautic: 190 acting foreign keys)",
+  "effect": "Silver latency grows with the number of foreign keys",
+  "fix": "Run the actions as SQL after each update (fk-actions.py), counting orphans first so only foreign keys with work run; the in-pipeline variant stays behind FK_IN_PIPELINE=1",
+  "where": [
+    "skills/zerobus-debezium-test/scripts/fk-actions.py",
+    "skills/zerobus-debezium-test/scripts/silver-from-schema.py"
+  ]
+}

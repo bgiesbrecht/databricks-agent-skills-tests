@@ -58,12 +58,15 @@ def features(schema, sf, activity):
     tables = {t["name"]: t for t in schema["tables"]}
     lower = {n.lower(): n for n in tables}
     fks = {n: [] for n in tables}   # child -> [(columns, parent)]
+    acting = {n: [] for n in tables}   # child -> its foreign keys whose ON DELETE changes it (CASCADE, SET NULL)
     for n, t in tables.items():
         seen = set()
         for fk in t.get("fk_constraints") or []:
             p = lower.get(str(fk["parent_table"]).lower())
             if p:
                 fks[n].append((tuple(fk["columns"]), p)); seen.update(fk["columns"])
+                if str(fk.get("on_delete") or "").upper().replace("_", " ") in ("CASCADE", "SET NULL", "SET DEFAULT"):
+                    acting[n].append(f"{','.join(fk['columns'])} -> {p} ON DELETE {fk['on_delete']}")
         for c in t["columns"]:   # a column's own references: [parent, column]
             r = c.get("references")
             if r and c["name"] not in seen and lower.get(str(r[0]).lower()):
@@ -99,7 +102,8 @@ def features(schema, sf, activity):
                       created=[c["name"] for c in t["columns"] if CREATED_COL.search(c["name"]) and c.get("type") in ("timestamp", "date", "datetime")],
                       measures=measures, times=times, ext=ext,
                       updated=[c["name"] for c in t["columns"] if UPDATED_COL.search(c["name"])],
-                      named_col=[c["name"] for c in t["columns"] if NAME_COL.search(c["name"])], identifies=ident[n], act=(activity or {}).get(n))
+                      named_col=[c["name"] for c in t["columns"] if NAME_COL.search(c["name"])], identifies=ident[n], act=(activity or {}).get(n),
+                      acting=acting[n])
     return out
 
 
@@ -213,6 +217,14 @@ def plan(schema, sf, activity, model):
     for n in feats:
         role, silver, conf, why, ask = classify(n, feats[n], feats, roles)
         role, silver, conf, why, ask = refine(n, feats[n], role, silver, conf, why, ask)
+        # not a guess: a parent's delete deletes (CASCADE) or changes (SET NULL) these rows, so they aren't insert-only,
+        # whatever the role. The role stays; the rows need a MERGE (and on MySQL through 9.5 silver applies those
+        # changes itself: the binlog doesn't carry them)
+        if silver == ["append"] and feats[n]["pk"] and feats[n]["acting"]:
+            silver, conf, ask = ["scd1"], "high", None
+            acts = feats[n]["acting"]
+            more = f" and {len(acts) - 1} more" if len(acts) > 1 else ""
+            why = why + [f"its parent's deletes change its rows ({acts[0]}{more}): scd1, not append"]
         out[n] = {"role": role, "silver": list(silver), "confidence": conf, "decided_by": "relations", "why": "; ".join(why)}
         if ask and conf != "high":
             out[n]["ask"] = ask

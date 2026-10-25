@@ -6,6 +6,7 @@ usage: scd2-history-check.py <schema.tsv> <table> <snapshot.tsv> <changefeed.tsv
   schema.tsv     table, ordinal, column, Databricks type, 1 when in the primary key, and any later fields (ignored)
   snapshot.tsv   the table as of T, with a header row, as model-sql.py's select renders it
   changefeed.tsv CockroachDB's changefeed from T WITH updated: table, key and value, the last two as \\x hex JSON
+                 (or the value as JSON text: {"after": row, "updated": order})
   history.tsv    the silver history table's columns in schema order (model-sql.py's select), ordered by the key and
                  __START_AT
 
@@ -51,7 +52,7 @@ def norm(v):
 
 def main():
     schema_f, table, snap_f, feed_f, hist_f = sys.argv[1:6]
-    cols, keys = [], []
+    cols, keys, times = [], [], set()
     for line in open(schema_f):
         f = line.rstrip("\n").split("\t")   # table, ordinal, column, type, key flag, then possibly more (a default)
         t, col, pk = f[0], f[2], f[4]
@@ -59,6 +60,12 @@ def main():
             cols.append(col)
             if pk == "1":
                 keys.append(col)
+            if f[3].lower() in ("time", "timetz"):
+                times.add(col)
+
+    def nc(c, v):   # norm, and a time column's whole timestamp (Oracle keeps a time as TIMESTAMP(0)) as its time of day
+        x = norm(v)
+        return x[11:] if c in times and isinstance(x, str) and len(x) == 26 and x[10] == " " else x
     others = [c for c in cols if c not in keys]
 
     expected = {}
@@ -67,28 +74,30 @@ def main():
     for line in lines[1:]:
         row = dict(zip(head, line.split("\t")))
         k = tuple(norm(row[c]) for c in keys)
-        expected.setdefault(k, []).append(tuple(norm(row.get(c)) for c in others))
+        expected.setdefault(k, []).append(tuple(nc(c, row.get(c)) for c in others))
 
     events = []
     for line in open(feed_f):
         parts = line.rstrip("\n").split("\t")
-        if len(parts) < 3 or parts[0] != table or not parts[2].startswith("\\x"):
+        if len(parts) < 3 or parts[0] != table or not parts[2].startswith(("\\x", "{")):
             continue
-        value = json.loads(bytes.fromhex(parts[2][2:]), parse_float=Decimal)
+        # \x hex of the JSON, or the JSON as it is (Oracle: a long row can't be hexed in SQL, RAW holds 2000 bytes)
+        raw = bytes.fromhex(parts[2][2:]) if parts[2].startswith("\\x") else parts[2]
+        value = json.loads(raw, parse_float=Decimal)
         events.append((Decimal(value["updated"]), value))
     for _, value in sorted(events, key=lambda e: e[0]):
         after = value.get("after")
         if after is None:
             continue
         k = tuple(norm(after.get(c)) for c in keys)
-        expected.setdefault(k, []).append(tuple(norm(after.get(c)) for c in others))
+        expected.setdefault(k, []).append(tuple(nc(c, after.get(c)) for c in others))
 
     actual = {}
     for line in open(hist_f):
         vals = line.rstrip("\n").split("\t")
         row = dict(zip(cols, vals))
         k = tuple(norm(row[c]) for c in keys)
-        actual.setdefault(k, []).append(tuple(norm(row[c]) for c in others))
+        actual.setdefault(k, []).append(tuple(nc(c, row[c]) for c in others))
 
     # an update to the values a row already has may be kept or dropped: silver can't tell it from a producer's replay
     # (the same row image within the dedup window). So a key passes when its versions, with consecutive identical ones
@@ -98,7 +107,7 @@ def main():
         return [v for i, v in enumerate(vs) if i == 0 or v != vs[i - 1]]
     ok = {k for k in set(expected) | set(actual)
           if collapse(expected.get(k, [])) == collapse(actual.get(k, [])) and len(actual.get(k, [])) <= len(expected.get(k, []))}
-    differ = sorted(k for k in set(expected) | set(actual) if k not in ok)
+    differ = sorted((k for k in set(expected) | set(actual) if k not in ok), key=str)   # a key with a NULL part sorts too
     n_exp = sum(len(v) for v in expected.values())
     n_act = sum(len(v) for v in actual.values())
     detail = "; ".join(

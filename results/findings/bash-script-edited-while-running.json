@@ -1,0 +1,31 @@
+{
+  "id": "bash-script-edited-while-running",
+  "title": "Editing a running bash script changes the run",
+  "kind": "tooling",
+  "status": "fixed",
+  "applies": {
+    "source": [
+      "*"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "test"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test matrix.sh, edited during a run"
+  },
+  "symptom": "syntax error near unexpected token at the end of a matrix whose runs had all finished",
+  "cause": "bash reads a script from the file as it runs, so an edit shifts what it reads next",
+  "effect": "A run fails or does something neither version says",
+  "fix": "Run from a copy: matrix.sh re-executes itself from a temp file, and each run gets its own copy of the skills",
+  "where": [
+    "skills/zerobus-debezium-test/scripts/matrix.sh"
+  ]
+}

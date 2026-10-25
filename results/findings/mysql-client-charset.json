@@ -1,0 +1,28 @@
+{
+  "id": "mysql-client-charset",
+  "title": "A MySQL client's default character set changes text it reads",
+  "kind": "source-behavior",
+  "status": "fixed",
+  "applies": {
+    "source": [
+      "mysql"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "test"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test SOURCE=mysql APP=mautic"
+  },
+  "symptom": "Digests of Mautic's leads table differed between the source and silver at T",
+  "cause": "The client connected as latin1, so non-ASCII utf8mb4 text came back converted",
+  "effect": "Any comparison or export through a default client gets different bytes than the binlog carries",
+  "fix": "Connect with --default-character-set=utf8mb4"
+}

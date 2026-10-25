@@ -1,0 +1,32 @@
+{
+  "id": "debezium-failed-start-silent",
+  "title": "A failed connector start leaves Debezium Server up, idle",
+  "kind": "connector-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "*"
+    ],
+    "route": [
+      "debezium-zerobus"
+    ],
+    "layer": [
+      "producer"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test SOURCE=oracle NSRC=2"
+  },
+  "symptom": "No events from one source; its Debezium Server was up; its log had 'Engine has failed' (ORA-17002, connection validation timed out)",
+  "cause": "Debezium Server 3.7 keeps the process alive when the engine fails to start",
+  "effect": "Silent data stop: nothing errors in Zerobus or Databricks",
+  "fix": "Watch each server's log for 'Starting streaming'; restart it on 'Engine has failed'",
+  "versions": "Debezium Server 3.7.0.Final",
+  "where": [
+    "skills/zerobus-debezium-test/scripts/debezium-zerobus.sh"
+  ]
+}

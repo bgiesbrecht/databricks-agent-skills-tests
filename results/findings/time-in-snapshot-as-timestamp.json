@@ -1,0 +1,31 @@
+{
+  "id": "time-in-snapshot-as-timestamp",
+  "title": "A snapshot can hold a time column as a whole timestamp",
+  "kind": "pattern",
+  "status": "fixed",
+  "applies": {
+    "source": [
+      "oracle"
+    ],
+    "route": [
+      "debezium-zerobus"
+    ],
+    "layer": [
+      "silver"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "zerobus-debezium-test SOURCE=oracle MODEL=tpcdi"
+  },
+  "symptom": "DimTime rows from the snapshot missing in silver; rows changed later through the change log were right",
+  "cause": "Oracle keeps a time as TIMESTAMP(0), so the snapshot export writes 1970-01-01 04:05:33; silver read only HH:MM:SS text",
+  "effect": "The snapshot rows of a time column come out NULL or wrong",
+  "fix": "Silver takes the time of day from a whole timestamp too",
+  "where": [
+    "skills/zerobus-debezium-test/scripts/silver-from-schema.py"
+  ]
+}

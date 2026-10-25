@@ -1,0 +1,32 @@
+{
+  "id": "mssql-noop-update-not-logged",
+  "title": "SQL Server logs no update that changes nothing",
+  "kind": "source-behavior",
+  "status": "by-design",
+  "applies": {
+    "source": [
+      "sqlserver"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test SOURCE=mssql MODEL=tpch"
+  },
+  "symptom": "An UPDATE setting a row to its own values: the audit trigger fired, but no CDC row and no Debezium event",
+  "cause": "SQL Server writes no log record when no byte of the row changes, and CDC reads the log",
+  "effect": "No data is lost, but event counts and trigger-based audits don't match the change log",
+  "fix": "Compare rows, not event counts; the test's updates always set a new value",
+  "not_affected": [
+    "postgres",
+    "oracle"
+  ]
+}

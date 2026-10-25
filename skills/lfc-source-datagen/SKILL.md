@@ -12,6 +12,11 @@ Loading 100 GB from a laptop or a notebook means pushing 100 GB over the network
 
 **Without a database CLI** (RDS, Aurora, Azure SQL and other managed services, or Databricks serverless), and for **Db2 and Informix**, use [`scripts/python/fill.py`](scripts/python/fill.py): the same fill through a pip-installable driver, for Postgres, MySQL, SQL Server, Oracle, Db2 and Informix. It writes the same SQL as the SQL planners and is as fast; see [references/python-drivers.md](references/python-drivers.md).
 
+Two more scripts use the same drivers (`drivers.py`), for engines whose CLI can't do it:
+- [`scripts/python/export.py`](scripts/python/export.py) `<engine> <schema> --tables a,b --out <dir>`: each table as CSV with a header, NULL as `\N`, a quote doubled inside quotes. On Informix it reads a `DATETIME HOUR TO ...` column as text: the pure-Python driver fails decoding one (`hour must be in 0..23`).
+- [`scripts/python/sq.py`](scripts/python/sq.py) `<engine>`: SQL on stdin, tab-separated rows out, for Db2 and Informix, whose CLIs pad columns (Db2's CLP) or print no column layout at all (Informix's `dbaccess`). A line `@` ends a statement that can't end at `;` (a trigger body).
+- **Informix:** fill with `--sessions 1`. Each connection sets `SET LOCK MODE TO WAIT 30`, since the default lock mode fails a concurrent writer at once (`-425` / ISAM `-107`), and several sessions still collided.
+
 ## How it works
 
 - **Every row comes from one integer `n`.** Each column's value is a cast of `n` to its type, for example `n % 32767` for `smallint`, `date '1970-01-01' + n % 2932896` for `date`, or a zero-padded `n` followed by MD5 filler for text. Every cast in the engine references has been run at `n` = 1, 2, 10⁶, 10¹², 2⁶², and 2⁶³ − 2 on the live engine, and stays valid for all of them.

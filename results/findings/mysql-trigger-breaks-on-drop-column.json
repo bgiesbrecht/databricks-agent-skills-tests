@@ -1,0 +1,31 @@
+{
+  "id": "mysql-trigger-breaks-on-drop-column",
+  "title": "A MySQL trigger naming a dropped column fails writes",
+  "kind": "source-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "mysql"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "source"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test SOURCE=mysql MODEL=tpch rounds 4-5"
+  },
+  "symptom": "After ALTER TABLE ... DROP COLUMN, every INSERT and UPDATE on the table failed",
+  "cause": "MySQL keeps the trigger body as text and resolves NEW.<column> at run time; the drop doesn't touch or check triggers",
+  "effect": "An audit or sync trigger on the source blocks the application's writes after a schema change",
+  "fix": "Recreate the table's triggers from the schema after a schema change (audit-triggers.py --only T --replace)",
+  "where": [
+    "skills/zerobus-debezium-test/scripts/sources/audit-triggers.py"
+  ]
+}

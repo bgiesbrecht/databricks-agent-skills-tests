@@ -1,0 +1,33 @@
+{
+  "id": "remote-query-time-as-string",
+  "title": "A time read as a string keeps Debezium's microseconds",
+  "kind": "pattern",
+  "status": "fixed",
+  "applies": {
+    "source": [
+      "postgres",
+      "cockroachdb"
+    ],
+    "route": [
+      "debezium-zerobus"
+    ],
+    "layer": [
+      "silver"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test SOURCE=pg MODEL=tpcdi"
+  },
+  "symptom": "DimTime: source 00:21:40, silver 1300000000",
+  "cause": "The schema query through the UC connection mapped time without time zone to STRING, so silver didn't decode it",
+  "effect": "Wrong time values in silver",
+  "fix": "Map time and timetz in the schema read; silver decodes them",
+  "where": [
+    "skills/zerobus-debezium-test/scripts/debezium-zerobus.sh",
+    "skills/zerobus-debezium-test/scripts/schema-tsv-to-canonical.py"
+  ]
+}
