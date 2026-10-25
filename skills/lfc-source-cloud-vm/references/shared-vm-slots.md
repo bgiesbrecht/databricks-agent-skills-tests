@@ -35,7 +35,8 @@ Engines: `postgres` (16), `mysql` (8.4), `sqlserver` (2022). A master works with
 | `MAX_RUNNING` | vCPUs / 2 | `up` stops with `the VM is full` and lists what's running |
 | `PORT_MIN`-`PORT_MAX` | 30000-30063 | `no free port`; each database keeps its port until `rm` |
 | `HOST` | the cloud metadata's public IP, else the first local IP | set it on Azure: the metadata has no public IP for a Standard SKU address |
-| `ROOT`, `STATE`, `SECRETS` | `/mnt/jfs`, `/var/lib/lfc/slots`, `/root/lfc-src` | |
+| `ROOT`, `STATE`, `SECRETS` | `/mnt/jfs`, `/var/lib/lfc/slots`, `/root/lfc-src` | `STATE` under `ROOT` needs `ROOT` mounted, else the command stops |
+| `LOCK` | `$STATE/.lock` | the lock for one command at a time; a personal VM's is on the VM's disk |
 
 A clone of a master uses the master's admin env file (`$SECRETS/<engine>.env`, the one `tpc-master.sh` built it with); an empty database gets a new admin password. Passwords and env files stay in `$STATE/<owner>/` (mode 700, root).
 
@@ -48,7 +49,7 @@ VOLUME=<volume> BUCKET=https://<container>.core.windows.net HOST=<public IP> SLO
   bash slot-vm-setup.sh
 ```
 
-It installs podman, fuse3, jq and JuiceFS, formats the data disk as XFS at `/var/lib/containers`, starts Redis for the metadata on 127.0.0.1, formats the volume if it's new and mounts it at boot. Safe to rerun. With `META_URL` (for example `postgres://<role>@<host>:5432/<database>?sslmode=require`, password as `META_PASSWORD` in `azure.env`), the metadata is in that store, with no Redis on the VM: it outlives the VM, and several VMs can each keep their volume's metadata in one managed Postgres (a database per volume). Put masters in `/mnt/jfs/masters` (`tpc-master.sh`, or a copy with `tar --numeric-owner`, which keeps the engines' uids) and their admin env files in `/root/lfc-src`.
+It installs podman, fuse3, jq and JuiceFS, formats the data disk as XFS at `/var/lib/containers`, starts Redis for the metadata on 127.0.0.1, formats the volume if it's new and mounts it at boot. Safe to rerun. `KIND=personal` (a VM for one person) keeps the state on the volume at `/mnt/jfs/.state` with the lock on the VM's disk; `RESTORE_DUMP=<gzipped juicefs dump>` loads that dump into an empty metadata store instead of formatting it, so a VM rebuilt over its volume's data gets the data back. With `META_URL` (for example `postgres://<role>@<host>:5432/<database>?sslmode=require`, password as `META_PASSWORD` in `azure.env`), the metadata is in that store, with no Redis on the VM: it outlives the VM, and several VMs can each keep their volume's metadata in one managed Postgres (a database per volume). Put masters in `/mnt/jfs/masters` (`tpc-master.sh`, or a copy with `tar --numeric-owner`, which keeps the engines' uids) and their admin env files in `/root/lfc-src`.
 
 By hand:
 

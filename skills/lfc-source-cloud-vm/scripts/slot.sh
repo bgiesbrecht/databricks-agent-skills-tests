@@ -15,12 +15,15 @@
 # another owner; as root without --owner the owner is "admin".
 # Settings, from /etc/lfc-slot.env if present: HOST (address printed for connections; set it on Azure, see host()),
 # ROOT (/mnt/jfs), STATE (/var/lib/lfc/slots), PORT_MIN/PORT_MAX (30000/30063), MAX_RUNNING (vCPUs / 2),
-# MAX_PER_OWNER (1; 0 = no limit, for a personal VM), SECRETS (/root/lfc-src: the admin env files tpc-master.sh used).
+# MAX_PER_OWNER (1; 0 = no limit, for a personal VM), SECRETS (/root/lfc-src: the admin env files tpc-master.sh used),
+# LOCK (the lock file for one command at a time; default $STATE/.lock: keep it on a local disk when STATE is on a
+# JuiceFS volume, where flock isn't checked here). STATE on /mnt/jfs needs that volume mounted, or the command stops.
 set -euo pipefail
 [ -r /etc/lfc-slot.env ] && . /etc/lfc-slot.env
 ROOT=${ROOT:-/mnt/jfs} STATE=${STATE:-/var/lib/lfc/slots} SECRETS=${SECRETS:-/root/lfc-src}
 PORT_MIN=${PORT_MIN:-30000} PORT_MAX=${PORT_MAX:-30063} MAX_PER_OWNER=${MAX_PER_OWNER:-1}
 MAX_RUNNING=${MAX_RUNNING:-$(( $(nproc) / 2 ))}
+LOCK=${LOCK:-$STATE/.lock}
 usage() { sed -n 2,20p "$0" >&2; exit 2; }
 die() { echo "slot: $*" >&2; exit 1; }
 OWNER="admin"
@@ -28,7 +31,8 @@ if [ "${1:-}" = --owner ]; then OWNER=${2:-}; shift 2; fi
 [[ $OWNER =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || die "bad owner: $OWNER"
 [ $# -ge 1 ] || usage
 CMD=$1; shift
-install -d -m 700 "$STATE" "$STATE/$OWNER"
+case $STATE in "$ROOT"/*) mountpoint -q "$ROOT" || die "$ROOT isn't mounted: the state is on it" ;; esac
+install -d -m 700 "$STATE" "$STATE/$OWNER" "$(dirname "$LOCK")"
 LEDGER=$STATE/ledger.jsonl
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 log() { printf '{"ts":"%s","owner":"%s","name":"%s","event":"%s"}\n' "$(now)" "$OWNER" "$1" "$2" >> "$LEDGER"; }
@@ -102,7 +106,7 @@ case $CMD in
     E=${1:-}; N=${2:-}; shift 2 || usage; name_ok "$N"; engine "$E"
     FROM="" EMPTY=0
     while [ $# -gt 0 ]; do case $1 in --from) FROM=${2:-}; shift 2 ;; --empty) EMPTY=1; shift ;; *) usage ;; esac; done
-    exec 9>"$STATE/.lock"; flock 9
+    exec 9>"$LOCK"; flock 9
     M=$(meta "$OWNER" "$N"); D=$ROOT/dbs/$OWNER/$N; C=$(cname "$OWNER" "$N")
     if [ -f "$M" ]; then
       [ "$(field "$M" engine)" = "$E" ] || die "$N is a $(field "$M" engine) database"
@@ -162,12 +166,12 @@ case $CMD in
 
   park)
     N=${1:-}; name_ok "$N"; [ -f "$(meta "$OWNER" "$N")" ] || die "no database $N"
-    exec 9>"$STATE/.lock"; flock 9
+    exec 9>"$LOCK"; flock 9
     if running "$OWNER" "$N"; then park_one "$OWNER" "$N"; echo "parked $N: its data stays in $ROOT/dbs/$OWNER/$N"; else echo "$N is already parked"; fi ;;
 
   rm)
     N=${1:-}; name_ok "$N"; M=$(meta "$OWNER" "$N"); [ -f "$M" ] || die "no database $N"
-    exec 9>"$STATE/.lock"; flock 9
+    exec 9>"$LOCK"; flock 9
     running "$OWNER" "$N" && park_one "$OWNER" "$N"
     D=$ROOT/dbs/$OWNER/$N
     if [ -d "$D" ]; then juicefs rmr "$D" >/dev/null 2>&1 || rm -rf "${D:?}"; fi
