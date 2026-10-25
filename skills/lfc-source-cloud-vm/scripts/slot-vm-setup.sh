@@ -14,6 +14,7 @@
 #   rebuilt), and its lock stays on the VM's disk (LOCK=/var/lib/lfc/lock). Any other value: as before.
 #   RESTORE_DUMP=<gzipped juicefs dump>: when the metadata store is empty, load this dump into it instead of formatting
 #   the volume (a VM rebuilt over the data its volume has in object storage). Without it, an empty store is formatted.
+#   JFS_VERSION=<x.y.z>: install this JuiceFS release (when the client isn't installed yet). Unset: the latest release.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 : "${VOLUME:?VOLUME=<volume name>}" "${BUCKET:?BUCKET=https://<container>.core.windows.net}" "${HOST:?HOST=<public address>}"
@@ -29,7 +30,7 @@ export DEBIAN_FRONTEND=noninteractive
 command -v podman >/dev/null && command -v jq >/dev/null && dpkg -s fuse3 >/dev/null 2>&1 \
   || { apt-get update -qq && apt-get install -y -qq podman fuse3 jq xfsprogs >/dev/null; }
 if ! command -v juicefs >/dev/null; then
-  V=$(curl -fsSL https://api.github.com/repos/juicedata/juicefs/releases/latest | jq -r .tag_name)
+  if [ -n "${JFS_VERSION:-}" ]; then V="v${JFS_VERSION#v}"; else V=$(curl -fsSL https://api.github.com/repos/juicedata/juicefs/releases/latest | jq -r .tag_name); fi
   T=$(mktemp -d); trap 'rm -rf "${T:?}"' EXIT
   (cd "$T" && curl -fsSLO "https://github.com/juicedata/juicefs/releases/download/$V/juicefs-${V#v}-linux-amd64.tar.gz" \
     && curl -fsSLO "https://github.com/juicedata/juicefs/releases/download/$V/checksums.txt" \
