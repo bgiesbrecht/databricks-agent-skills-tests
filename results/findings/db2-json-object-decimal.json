@@ -1,0 +1,31 @@
+{
+  "id": "db2-json-object-decimal",
+  "title": "Db2's JSON_OBJECT writes decimals with leading zeros",
+  "kind": "source-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "db2"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "source"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test SOURCE=db2 MODEL=tpch"
+  },
+  "symptom": "-999.99 came out as -0000000000999.99, which no JSON parser accepts",
+  "cause": "JSON_OBJECT formats DECIMAL with the column's full precision",
+  "effect": "JSON built in Db2 (triggers, exports) with decimals is invalid",
+  "fix": "Cast decimals to VARCHAR before JSON_OBJECT",
+  "where": [
+    "skills/zerobus-debezium-test/scripts/sources/audit-triggers.py"
+  ]
+}

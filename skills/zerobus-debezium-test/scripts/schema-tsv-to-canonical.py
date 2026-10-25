@@ -14,7 +14,7 @@ import re
 import sys
 
 CANON = {"INT": "integer", "SMALLINT": "integer", "BIGINT": "long", "FLOAT": "float", "DOUBLE": "double",
-         "BOOLEAN": "boolean", "DATE": "date", "TIMESTAMP_NTZ": "timestamp", "TIMESTAMP": "timestamptz",
+         "BOOLEAN": "boolean", "DATE": "date", "TIMESTAMP_NTZ": "timestamp", "TIMESTAMP": "timestamptz", "TIME": "time", "TIMETZ": "timetz",
          "BINARY": "binary", "STRING": "string", "CHAR": "char"}
 
 

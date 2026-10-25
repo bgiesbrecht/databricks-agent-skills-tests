@@ -1,0 +1,31 @@
+{
+  "id": "db2-asncap-start-order",
+  "title": "Db2 ASN capture needs a set start order",
+  "kind": "source-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "db2"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test SOURCE=db2 MODEL=tpch"
+  },
+  "symptom": "VALUES ASNCDC.ASNCDCSERVICES('start', ...) through ibm-db never returned; later, captured tables had no change rows",
+  "cause": "The UDF starts the agent and stays attached to it when called from a driver; registrations are read when the agent starts",
+  "effect": "Debezium sees no changes from tables that look registered",
+  "fix": "Start asncap as the instance user (detached), register tables with ADDTABLE, then asnccmd reinit",
+  "where": [
+    "skills/zerobus-debezium-test/scripts/debezium-zerobus.sh"
+  ]
+}

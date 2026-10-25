@@ -1,0 +1,31 @@
+{
+  "id": "db2-json-object-timestamp-format",
+  "title": "Db2's JSON_OBJECT writes timestamps in its own text form",
+  "kind": "source-behavior",
+  "status": "fixed",
+  "applies": {
+    "source": [
+      "db2"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "source"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test SOURCE=db2 MODEL=tpcc"
+  },
+  "symptom": "History check: expected 1970-01-01-00.00.01.000000, silver had 1970-01-01 00:00:01.000000",
+  "cause": "JSON_OBJECT renders a TIMESTAMP in Db2's character form (a dash between date and time, dots in the time), and a TIME as 00.00.01",
+  "effect": "JSON built in Db2 (triggers, exports) has timestamps no ISO parser reads as such",
+  "fix": "VARCHAR_FORMAT(x, 'YYYY-MM-DD HH24:MI:SS.FF6') for timestamps (and times on a fixed date) before JSON_OBJECT",
+  "where": [
+    "skills/zerobus-debezium-test/scripts/sources/audit-triggers.py"
+  ]
+}

@@ -46,6 +46,26 @@
 #                         spread over n pipelines (default: every table)
 #   cdc.history_suffix    the SCD type 2 tables' suffix (default _history); a source table with that name stops the start
 #   cdc.nodedup_table, cdc.on_drift (record | fail), cdc.drift_sample (check one event in n for drift, default 1)
+#   cdc.seq               what orders a key's events: ts_ns (the event's time, the default) or binlog (MySQL: the binlog
+#                         file's number, the event's position in it and the row in the event, (file << 44) + (pos << 12) +
+#                         row, exact and the same for a replay; a source's T is the snapshot's position in that form)
+#                         or lsn (PostgreSQL: the change's LSN; a source's T is its replication slot's), or change_lsn
+#                         (SQL Server: source.change_lsn's file, offset and slot as one number; T is the log's last LSN),
+#                         or scn (Oracle: the change's SCN; T is the database's current SCN), or db2_lsn (Db2: the low 8
+#                         bytes of source.change_lsn, the third of its parts; T is the ASN capture's synch point), or
+#                         ifx_lsn (Informix: source.change_lsn, a number; T is 0, Debezium starting after the snapshot)
+#   cdc.binary            hex: binary values come as hex text (Debezium's binary.handling.mode=hex, and the snapshot)
+#   cdc.fk_actions        apply: the change log lacks the rows foreign keys' ON DELETE CASCADE / SET NULL change (MySQL
+#                         through 9.5, MariaDB), so silver derives them from each parent delete and the schema's
+#                         on_delete, into the child's targets and fk_actions (the trace); logged (default): it has them
+#   cdc.fk_depth          how many levels of derived deletes to follow (chains, a table referencing itself; default 4)
+# A source in _sources.yaml may carry csv: {option: value} for its CSV snapshot files (MySQL's INTO OUTFILE writes NULL
+# as \N and escapes with a backslash).
+#
+# The table plan: <volume>/_plan.yaml, when there is one (cdc-table-plan's classify.py, checked and edited by the
+# customer), says what each table gets: silver: [scd1] (current rows), [scd2] (history only), [scd1, scd2], or [append]
+# (the snapshot rows and the inserts, appended: no MERGE; an update or delete of such a table is left out, and the
+# harness counts them). A table it doesn't list gets the default: scd1 and scd2 with a key, append without one.
 import functools
 import os
 import re
@@ -53,6 +73,7 @@ import zlib
 
 import yaml
 from pyspark import pipelines as dp
+from pyspark.sql import Window
 from pyspark.sql import functions as F
 
 VOL = spark.conf.get("cdc.volume")
@@ -65,7 +86,19 @@ ON_DRIFT = spark.conf.get("cdc.on_drift", "record")
 DRIFT_SAMPLE = int(spark.conf.get("cdc.drift_sample", "1"))
 TRY = ON_DRIFT == "record"
 HIST = spark.conf.get("cdc.history_suffix", "_history")
+SEQ = spark.conf.get("cdc.seq", "ts_ns")
+BINHEX = spark.conf.get("cdc.binary", "") == "hex"
+SEQ_EXPR = {"ts_ns": "value:ts_ns::BIGINT",
+            "binlog": "CAST(regexp_extract(value:source:file::STRING, '([0-9]+)$', 1) AS BIGINT) * 17592186044416"
+                      " + value:source:pos::BIGINT * 4096 + COALESCE(value:source:row::BIGINT, 0)",
+            "lsn": "value:source:lsn::BIGINT",
+            "scn": "value:source:scn::BIGINT",
+            "ifx_lsn": "value:source:change_lsn::BIGINT",
+            "db2_lsn": "CAST(conv(substring(split_part(COALESCE(value:source:change_lsn, value:source:commit_lsn)::STRING, ':', 3), -15), 16, 10) AS BIGINT)",
+            "change_lsn": "CAST(conv(split_part(value:source:change_lsn::STRING, ':', 1), 16, 10) AS BIGINT) * 281474976710656 + CAST(conv(split_part(value:source:change_lsn::STRING, ':', 2), 16, 10) AS BIGINT) * 65536 + CAST(conv(split_part(value:source:change_lsn::STRING, ':', 3), 16, 10) AS BIGINT)"}[SEQ]
 GROUP = spark.conf.get("cdc.placement_group", "")   # composite: only this group's tables, from <volume>/_placement.tsv
+FK_ACTIONS = spark.conf.get("cdc.fk_actions", "logged")   # apply: the log lacks what foreign keys' actions change
+FK_DEPTH = int(spark.conf.get("cdc.fk_depth", "4"))
 
 # the type names the TPC schema files use besides statschema's canonical ones (ddl.py takes the same)
 ALIAS = {"int": "integer", "smallint": "integer", "tinyint": "integer", "bigint": "long", "numeric": "decimal",
@@ -82,6 +115,8 @@ def spark_type(c):
     t = ctype(c)
     if t == "decimal":
         return f"DECIMAL({c.get('precision') or 38},{c.get('scale') or 0})"
+    if c.get("unsigned") and t in ("integer", "long"):   # MySQL's INT UNSIGNED goes past INT, BIGINT UNSIGNED past BIGINT
+        return "BIGINT" if t == "integer" else "DECIMAL(20,0)"
     return {"integer": "INT", "long": "BIGINT", "float": "FLOAT", "double": "DOUBLE", "boolean": "BOOLEAN",
             "date": "DATE", "timestamp": "TIMESTAMP_NTZ", "timestamptz": "TIMESTAMP", "binary": "BINARY"}.get(t, "STRING")
 
@@ -101,14 +136,15 @@ def decode(c, s, cast="CAST"):
     """s, a STRING expression with the value as text or a number -> the column's type. A number is Debezium's: days
     for a date; for a timestamp, epoch milliseconds when the column holds 3 digits of fraction or fewer, else
     microseconds (without a precision too: PostgreSQL's and CockroachDB's default is 6 digits);
-    microseconds of the day for a time. cast: CAST, or TRY_CAST (NULL where the text doesn't fit)."""
+    microseconds of the day for a time; with 7 to 9 digits of fraction (SQL Server's DATETIME2 and TIME), Debezium's
+    nanoseconds. cast: CAST, or TRY_CAST (NULL where the text doesn't fit)."""
     t, ty = ctype(c), spark_type(c)
     num = f"{s} RLIKE '^-?[0-9]+$'"
     p = c.get("precision")
     n = f"CAST({s} AS BIGINT)"
     # no precision: 6 digits, as PostgreSQL and CockroachDB default to, so microseconds (a guess by size took a
     # date near 1970 for milliseconds: 1 s after the epoch, 1000000 us, read as 1000 s)
-    us = n if p is None or int(p) > 3 else f"{n} * 1000"
+    us = n if p is None or 3 < int(p) <= 6 else f"{n} * 1000" if int(p) <= 3 else f"{n} DIV 1000"   # 7-9 digits: nanoseconds
     if t == "date":
         return f"CASE WHEN {num} THEN date_add(DATE'1970-01-01', CAST({s} AS INT)) ELSE {cast}({s} AS DATE) END"
     if t == "timestamp":
@@ -118,14 +154,19 @@ def decode(c, s, cast="CAST"):
         return (f"CASE WHEN {num} THEN timestamp_micros({us}) "
                 f"ELSE {cast}(regexp_replace({s}, '([+-][0-9]{{2}})$', '$1:00') AS TIMESTAMP) END")
     if t in ("time", "timetz"):
-        tus = f"{n} * 1000" if p is not None and int(p) <= 3 else n
+        tus = f"{n} * 1000" if p is not None and int(p) <= 3 else f"{n} DIV 1000" if p is not None and int(p) > 6 else n
         return (f"date_format(CASE WHEN {num} THEN timestampadd(MICROSECOND, {tus}, TIMESTAMP_NTZ'1970-01-01 00:00:00') "
+                # a snapshot's text: HH:MM:SS, or a whole timestamp where the source keeps a time as one (Oracle's
+                # TIMESTAMP(0)): its time of day
+                f"WHEN {s} RLIKE '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}[ T]' THEN {cast}({s} AS TIMESTAMP_NTZ) "
                 f"ELSE {cast}(concat('1970-01-01 ', {s}) AS TIMESTAMP_NTZ) END, 'HH:mm:ss.SSSSSS')")
     return f"{cast}({s} AS {ty})"
 
 
 def typed(c, v, cast):
     """A VARIANT field v as the column's type."""
+    if ctype(c) == "binary" and BINHEX:
+        return f"unhex({v}::STRING)"
     return decode(c, f"{v}::STRING", cast) if ctype(c) in TEMPORAL else f"{cast}({v} AS {spark_type(c)})"
 
 
@@ -158,8 +199,19 @@ if GROUP:
 _clash = sorted(t for t in SCHEMA if (t + HIST).lower() in {x.lower() for x in SCHEMA})
 if _clash:
     raise ValueError(f"cdc.history_suffix {HIST}: {', '.join(t + HIST for t in _clash[:5])} would be a source table too; set another")
+PLAN = {}
+if os.path.exists(f"{VOL}/_plan.yaml"):
+    with open(f"{VOL}/_plan.yaml") as f:
+        PLAN = {t: set(v.get("silver") or []) for t, v in ((yaml.safe_load(f) or {}).get("tables") or {}).items()}
+_bad = sorted(t for t, v in PLAN.items() if t in SCHEMA and (not v or v - {"scd1", "scd2", "append"} or "append" in v and len(v) > 1
+              or v & {"scd1", "scd2"} and not any(c.get("primary_key") for c in SCHEMA[t])))
+if _bad:
+    raise ValueError(f"_plan.yaml: silver must be scd1 and/or scd2 (with a key), or append alone: {', '.join(_bad[:5])}")
 DRIFT = "schema_drift" + (f"_s{SHARD.replace('/', '_of_')}" if SHARD else "")
+FKLOG = "fk_actions" + (f"_s{SHARD.replace('/', '_of_')}" if SHARD else "")
 _views = set()
+INFO = {}   # per table: cols, pk, keys, targets [(name, scd type)], versions (a function: the versions as of now)
+FK_VIEWS = set()   # the tables with derived foreign key changes (<table>_fk), filled before any view is evaluated
 
 
 def _snapshot_files():
@@ -195,18 +247,7 @@ def norm_view(bronze):
         return name
     _views.add(name)
 
-    @dp.temporary_view(name=name)
-    def norm():
-        log = spark.readStream.table(bronze)
-        if BRONZE == "kafka":
-            return log.select(
-                "destination",
-                F.expr("CASE value:op::STRING WHEN 'c' THEN 'create' WHEN 'u' THEN 'update' WHEN 'd' THEN 'delete' "
-                       "WHEN 'r' THEN 'read' END").alias("operation"),
-                F.expr("value:source:lsn::STRING").alias("idempotency_key"),   # none from CockroachDB: replays match on the row
-                F.expr("CASE value:op::STRING WHEN 'd' THEN value:before ELSE value:after END").alias("key"), "value",
-                F.expr("COALESCE(value:source:lsn::BIGINT, value:ts_ns::BIGINT)").alias("_seq"), F.expr("value:ts_ms::BIGINT * 1000000").alias("_event_ns"))
-        return log.withColumn("_seq", F.expr("value:ts_ns::BIGINT")).withColumn("_event_ns", F.expr("value:ts_ns::BIGINT"))
+    dp.temporary_view(name=name)(lambda: normed(spark.readStream.table(bronze)))
 
     @dp.temporary_view(name=f"_dedup_{bronze}")
     def dedup():
@@ -218,6 +259,19 @@ def norm_view(bronze):
                 .dropDuplicatesWithinWatermark(["destination", "idempotency_key", "operation", "_after"])
                 .drop("_event_time", "_after"))
     return name
+
+
+def normed(log):
+    """The change log (a stream, or a table read as of now) in norm_view's shape."""
+    if BRONZE == "kafka":
+        return log.select(
+            "destination",
+            F.expr("CASE value:op::STRING WHEN 'c' THEN 'create' WHEN 'u' THEN 'update' WHEN 'd' THEN 'delete' "
+                   "WHEN 'r' THEN 'read' END").alias("operation"),
+            F.expr("value:source:lsn::STRING").alias("idempotency_key"),   # none from CockroachDB: replays match on the row
+            F.expr("CASE value:op::STRING WHEN 'd' THEN value:before ELSE value:after END").alias("key"), "value",
+            F.expr("COALESCE(value:source:lsn::BIGINT, value:ts_ns::BIGINT)").alias("_seq"), F.expr("value:ts_ms::BIGINT * 1000000").alias("_event_ns"))
+    return log.withColumn("_seq", F.expr(SEQ_EXPR)).withColumn("_event_ns", F.expr("value:ts_ns::BIGINT"))
 
 
 def define(table, cols):
@@ -247,59 +301,99 @@ def define(table, cols):
         if c["name"] not in have:
             return f"CAST({dflt(c)} AS {spark_type(c)})"
         x = f"`{c['name']}`"
+        if ctype(c) == "binary" and BINHEX:   # hex text in a CSV snapshot; binary already in Parquet
+            return f"CASE WHEN typeof({x}) = 'binary' THEN CAST({x} AS BINARY) ELSE unhex(CAST({x} AS STRING)) END"
         return decode(c, f"CAST({x} AS STRING)") if ctype(c) in TEMPORAL else f"CAST({x} AS {spark_type(c)})"
     chg_cols = [F.expr(change(c)).alias(c["name"]) for c in cols]
     # the source: everything in destination before the table's name (crdb1.public.orders -> crdb1.public)
     src = F.expr(f"substring(destination, 1, length(destination) - {len(table) + 1})").alias("_source")
     mine = F.expr(f"substring_index(destination, '.', -1) = '{table}'")
 
-    @dp.temporary_view(name=f"{table}_snapshot")
-    def snapshot():
-        # one Auto Loader stream per format over <volume>/<table>/<prefix>/: the source from the folder, T from _sources
+    def snapshot_rows(stream):
+        """Every source's snapshot rows as of its T (_seq) or None: one Auto Loader stream per format over
+        <volume>/<table>/<prefix>/ (stream), or the files read as they are (the foreign key actions' versions)."""
         parts = []
-        for fmt in sorted({s.get("format", "parquet") for s in SOURCES if (table, s.get("format", "parquet")) in SNAPSHOT_FILES}):
-            r = (spark.readStream.format("cloudFiles").option("cloudFiles.format", fmt)
-                 .option("pathGlobFilter", f"*.{fmt}"))
+        kinds = {(s.get("format", "parquet"), tuple(sorted((s.get("csv") or {}).items()))) for s in SOURCES
+                 if (table, s.get("format", "parquet")) in SNAPSHOT_FILES}
+        for fmt, opts in sorted(kinds):
+            r = (spark.readStream.format("cloudFiles").option("cloudFiles.format", fmt) if stream
+                 else spark.read.format(fmt).option("recursiveFileLookup", "true")).option("pathGlobFilter", f"*.{fmt}")
             if fmt == "csv":
                 r = r.option("header", "true")
+                for k, v in opts:
+                    r = r.option(k, str(v).lower() if isinstance(v, bool) else str(v))
+            # the sources of this kind only, when the kinds differ (each source's files are under its own folder)
+            mine_src = [s["prefix"] for s in SOURCES if (s.get("format", "parquet"), tuple(sorted((s.get("csv") or {}).items()))) == (fmt, opts)]
             df = r.load(f"{VOL}/{table}")
             have = set(df.columns)
             parts.append(df.select(*[F.expr(snap(c, have)).alias(c["name"]) for c in cols],
                                    F.regexp_extract(F.col("_metadata.file_path"), f"/{re.escape(table)}/([^/]+)/", 1)
-                                   .alias("_source")))
-        if not parts:   # no snapshot files: no rows at T; an empty stream of the view's columns (no join: it folds away)
-            return spark.readStream.table(norm).where("false").select(
-                *[F.expr(f"CAST(NULL AS {spark_type(c)})").alias(c["name"]) for c in cols], F.lit(None).cast("string").alias("_source"),
-                F.lit(0).cast("bigint").alias("_seq"), F.lit("read").alias("_op"))
+                                   .alias("_source")).where(F.col("_source").isin(mine_src)))
+        if not parts:
+            return None
         t = spark.createDataFrame([(s["prefix"], int(s["t_ns"])) for s in SOURCES], "_source STRING, _seq BIGINT")
         return (functools.reduce(lambda a, b: a.unionByName(b), parts).join(F.broadcast(t), "_source")
                 .select(*names, "_source", "_seq", F.lit("read").alias("_op")))
 
+    @dp.temporary_view(name=f"{table}_snapshot")
+    def snapshot():
+        rows = snapshot_rows(True)
+        if rows is None:   # no snapshot files: no rows at T; an empty stream of the view's columns (no join: it folds away)
+            return spark.readStream.table(norm).where("false").select(
+                *[F.expr(f"CAST(NULL AS {spark_type(c)})").alias(c["name"]) for c in cols], F.lit(None).cast("string").alias("_source"),
+                F.lit(0).cast("bigint").alias("_seq"), F.lit("read").alias("_op"))
+        return rows
+
     def changes(view):
-        return spark.readStream.table(view).where(mine).select(*chg_cols, src, F.col("_seq"), F.col("operation").alias("_op"))
+        df = spark.readStream.table(view).where(mine).select(*chg_cols, src, F.col("_seq"), F.col("operation").alias("_op"))
+        if table in FK_VIEWS:   # the changes its foreign keys' ON DELETE made, which the log lacks (cdc.fk_actions)
+            df = df.unionByName(spark.readStream.table(f"{table}_fk").select(*names, "_source", "_seq", "_op"))
+        return df
 
     # a TIMESTAMP_NTZ column needs its Delta table feature enabled (an append-only table's create fails without it)
     props = {"delta.feature.timestampNtz": "supported"} if any(spark_type(c) == "TIMESTAMP_NTZ" for c in cols) else {}
     dp.temporary_view(name=f"{table}_changes")(lambda: changes(norm))
     if TRY:
         drift(table, cols, pk, norm, mine, src)
-    if not pk:   # append-only: the snapshot rows, then each insert (a table without a key gets no updates or deletes)
+    want = PLAN.get(table) or ({"scd1", "scd2"} if pk else {"append"})
+
+    def versions():   # every version of each row, from T, as of now: its _seq and the next one's (_next)
+        ch = normed(spark.read.table(bronze_of(table))).where(mine).select(*chg_cols, src, "_seq", F.col("operation").alias("_op"))
+        rows = snapshot_rows(False)
+        v = (ch if rows is None else rows.unionByName(ch)).dropDuplicates(["_source", *pk, "_seq"])
+        return v.withColumn("_next", F.lead("_seq").over(Window.partitionBy("_source", *pk).orderBy("_seq")))
+    INFO[table] = {"cols": cols, "pk": pk, "keys": keys, "targets": [], "versions": versions}
+    if "append" in want:   # append-only: the snapshot rows, then each insert (a table without a key gets no updates or deletes)
         dp.create_streaming_table(name=table, table_properties=props)
         dp.append_flow(target=table, name=f"{table}_from_snapshot")(   # not once: a once append flow takes a batch only
             lambda: spark.readStream.table(f"{table}_snapshot").drop("_seq", "_op"))
         # the inserts with producer replays removed (the dedup view): without a key, a replay would be a second row.
         # Two identical rows inserted within the dedup watermark count as one
         dp.temporary_view(name=f"{table}_changes_dedup")(lambda: changes(f"_dedup_{bronze_of(table)}"))
+        # only inserts after the source's T: a producer started before the snapshot (MySQL's) also sends rows it has
+        after_t = " ".join(f"WHEN '{s['prefix']}' THEN {int(s['t_ns'])}" for s in SOURCES)
         dp.append_flow(target=table, name=f"{table}_from_changes")(
-            lambda: spark.readStream.table(f"{table}_changes_dedup").where("_op = 'create'").drop("_seq", "_op"))
+            lambda: spark.readStream.table(f"{table}_changes_dedup").where("_op = 'create'")
+            .where(f"_seq > CASE _source {after_t} ELSE -1 END").drop("_seq", "_op"))
         return
     dp.temporary_view(name=f"{table}_changes_dedup")(lambda: changes(f"_dedup_{bronze_of(table)}"))
 
-    targets = [(table, 1, f"{table}_changes"), (f"{table}{HIST}", 2, f"{table}_changes_dedup")]
+    # clustered by the key, but for the columns Delta can't skip on (a BINARY key: Mautic's cache_items; BOOLEAN)
+    ctype_of = {c["name"]: spark_type(c) for c in cols}
+    ckeys = [k for k in keys if ctype_of.get(k, "STRING") not in ("BINARY", "BOOLEAN")]
+    # Delta keeps stats for the first 32 columns, and clustering needs them for its columns: with many sources the key
+    # starts with _source, the last column, so a wide table (Mautic's emails) names its stats columns itself
+    order = names + ["_source"]
+    if any(order.index(k) >= 32 for k in ckeys if k in order):
+        rest = [n for n in order if n not in ckeys and ctype_of.get(n, "STRING") not in ("BINARY", "BOOLEAN")]   # no stats for those
+        props = dict(props, **{"delta.dataSkippingStatsColumns": ",".join(f"`{n}`" for n in ckeys + rest[:32 - len(ckeys)])})
+    targets = ([(table, 1, f"{table}_changes")] if "scd1" in want else []) \
+        + ([(f"{table}{HIST}", 2, f"{table}_changes_dedup")] if "scd2" in want else [])
     if table == NODEDUP:
         targets.append((f"{table}{HIST}_nodedup", 2, f"{table}_changes"))
+    INFO[table]["targets"] = [(target, scd) for target, scd, _ in targets]
     for target, scd, change_view in targets:
-        dp.create_streaming_table(name=target, cluster_by=keys, table_properties=props)
+        dp.create_streaming_table(name=target, cluster_by=ckeys or None, table_properties=props)
         # once: the snapshot is loaded on the first update only (and again on a full refresh), so later updates don't
         # start a snapshot stream per table
         dp.create_auto_cdc_flow(name=f"{target}_from_snapshot", target=target, source=f"{table}_snapshot", keys=keys,
@@ -346,5 +440,115 @@ def drift(table, cols, pk, norm, mine, src):
                             keys=["tbl", "_source", "kind", "col"], sequence_by="_seq", stored_as_scd_type=1)
 
 
+def load_fks():
+    """{child: [(parent, columns, parent columns, action)]}: the foreign keys whose ON DELETE changes the child's rows
+    (CASCADE deletes them, SET NULL sets the columns to NULL), from schema.yaml's fk_constraints (on_delete), a table's
+    own _schema/tables/<table>.yaml over it; only children built here."""
+    docs = [f"{VOL}/_schema/schema.yaml"]
+    d = f"{VOL}/_schema/tables"
+    docs += [f"{d}/{n}" for n in sorted(os.listdir(d)) if n.endswith(".yaml")] if os.path.isdir(d) else []
+    by = {}
+    for doc in docs:
+        with open(doc) as f:
+            by.update({t["name"]: t.get("fk_constraints") or [] for t in yaml.safe_load(f)["tables"]})
+    out = {}
+    for child, fks in by.items():
+        for f in fks:
+            act = str(f.get("on_delete") or "").upper().replace("_", " ")
+            if act in ("CASCADE", "SET NULL") and child in INFO and INFO[child]["pk"]:
+                out.setdefault(child, []).append((f["parent_table"], f["columns"], f["parent_columns"], act))
+    return out
+
+
+def fk_actions():
+    """cdc.fk_actions = apply: the rows a foreign key's ON DELETE changes, which the source's change log leaves out
+    (MySQL through 9.5 and MariaDB: InnoDB's own cascades aren't in the binlog). For each parent delete (sequence S),
+    the child rows whose version at S references it are deleted (CASCADE) or get the columns NULL (SET NULL), as
+    changes at S, into the child's own targets: AUTO CDC orders them with the child's events. A child deleted so is a
+    parent at the next level, to cdc.fk_depth levels (chains, and a table referencing itself). Each change is also in
+    fk_actions (table, source, key, sequence, operation, the foreign key), the trace."""
+    fks = load_fks()
+    if FK_ACTIONS != "apply" or not fks:
+        return
+    deletes = {0: set(INFO)}   # level -> tables with deletes at that level (0: the change log's own)
+    levels = {}                # (child, n) -> the edges feeding it
+    for n in range(1, FK_DEPTH + 1):
+        deletes[n] = set()
+        for child, edges in sorted(fks.items()):
+            feed = [e for e in edges if n == 1 or e[0] in deletes[n - 1]]
+            if feed:
+                levels[(child, n)] = feed
+                if any(e[3] == "CASCADE" for e in feed):
+                    deletes[n].add(child)
+
+    def level(child, n, edges):
+        info = INFO[child]
+        cmap = {c["name"]: c for c in info["cols"]}
+
+        @dp.temporary_view(name=f"{child}_fk_d{n}")
+        def view():
+            ver = spark.read.table(f"_fkv_{child}").alias("v")
+            parts = []
+            for parent, fcols, pcols, act in edges:
+                if n == 1:   # the parent's deletes in the change log: the referenced values from the row before
+                    d = (spark.readStream.table(norm_view(bronze_of(parent)))
+                         .where(F.expr(f"substring_index(destination, '.', -1) = '{parent}' AND operation = 'delete'"))
+                         .select(*[F.expr(typed(cmap[fc], f"COALESCE({path('value:before', pc)}, {path('key', pc)})", "TRY_CAST"))
+                                   .alias(f"_p{i}") for i, (fc, pc) in enumerate(zip(fcols, pcols))],
+                                 F.expr(f"substring(destination, 1, length(destination) - {len(parent) + 1})").alias("_source"),
+                                 "_seq", "_event_ns"))
+                else:        # the parent's rows deleted at the level above
+                    d = (spark.readStream.table(f"{parent}_fk_d{n - 1}").where("_op = 'delete'")
+                         .select(*[F.col(f"`{pc}`").cast(spark_type(cmap[fc])).alias(f"_p{i}") for i, (fc, pc) in enumerate(zip(fcols, pcols))],
+                                 "_source", "_seq", "_event_ns"))
+                d = d.alias("d")
+                on = [F.col(f"v.`{fc}`") == F.col(f"d._p{i}") for i, fc in enumerate(fcols)] + [
+                    F.col("v._source") == F.col("d._source"), F.col("v._seq") < F.col("d._seq"),
+                    F.col("v._next").isNull() | (F.col("v._next") > F.col("d._seq")), F.col("v._op") != "delete"]
+                rule = f"{child}({','.join(fcols)}) -> {parent}({','.join(pcols)}) ON DELETE {act}"
+                parts.append(d.join(ver, functools.reduce(lambda a, b: a & b, on)).select(
+                    *[(F.lit(None).cast(spark_type(c)) if act == "SET NULL" and c["name"] in fcols else F.col(f"v.`{c['name']}`"))
+                      .alias(c["name"]) for c in info["cols"]],
+                    F.col("d._source").alias("_source"), F.col("d._seq").alias("_seq"),
+                    F.lit("delete" if act == "CASCADE" else "update").alias("_op"), F.lit(rule).alias("_fk"),
+                    F.col("d._event_ns").alias("_event_ns")))
+            # two foreign keys to the same parent give the same change twice
+            return (functools.reduce(lambda a, b: a.unionByName(b), parts)
+                    .withColumn("_event_time", F.timestamp_micros(F.expr("_event_ns DIV 1000")))
+                    .withWatermark("_event_time", "10 minutes")
+                    .dropDuplicatesWithinWatermark(["_source", *info["pk"], "_seq", "_op"]).drop("_event_time"))
+
+    # each child's versions once per update, a materialized view: the levels' joins read it rather than each
+    # re-reading the child's snapshot files and change log (they made resolving the pipeline's graph take 27 minutes
+    # for Mautic's 125 children)
+    for child in sorted({c for c, _ in levels}):
+        dp.materialized_view(name=f"_fkv_{child}", comment=f"{child}'s versions from T, for its foreign keys' ON DELETE "
+                             "changes (cdc.fk_actions): its key, columns, source, sequence, operation and the next "
+                             "version's sequence", table_properties={"delta.feature.timestampNtz": "supported"}   # as the targets'
+                             )(lambda child=child: INFO[child]["versions"]())
+    for (child, n), edges in sorted(levels.items(), key=lambda x: x[0][1]):
+        level(child, n, edges)
+    # each child's levels in one view; its own change views take it in (define's changes), so the flows that build its
+    # targets apply these changes too, with no flow of their own: an update starts one flow per target, not three
+    children = sorted({c for c, _ in levels})
+    for child in children:
+        ns = sorted(n for c, n in levels if c == child)
+        dp.temporary_view(name=f"{child}_fk")(
+            lambda ns=ns, child=child: functools.reduce(lambda a, b: a.unionByName(b),
+                                                        [spark.readStream.table(f"{child}_fk_d{n}") for n in ns]))
+        FK_VIEWS.add(child)
+    dp.create_streaming_table(name=FKLOG, comment="The rows foreign keys' ON DELETE actions changed, which the source's "
+                              "change log doesn't carry: one row per change (table, source, key, sequence, operation, "
+                              "foreign key), applied to the table's targets (an append-only table's are not)")
+
+    @dp.append_flow(target=FKLOG, name=f"{FKLOG}_all")
+    def trace():   # one flow for every child's changes
+        return functools.reduce(lambda a, b: a.unionByName(b), [
+            spark.readStream.table(f"{c}_fk").select(
+                F.lit(c).alias("tbl"), "_source", F.to_json(F.struct(*INFO[c]["pk"])).alias("key"), "_seq",
+                F.col("_op").alias("operation"), F.col("_fk").alias("foreign_key"),
+                F.lit(bool(INFO[c]["targets"])).alias("applied")) for c in children])
+
 for name, columns in SCHEMA.items():
     define(name, columns)
+fk_actions()

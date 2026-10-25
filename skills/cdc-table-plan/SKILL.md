@@ -44,6 +44,9 @@ little, `ask`: the question to put to the customer ("Is page_hits insert-only?")
 
 ## What it gets right
 
+The rules one by one, what each miss costs (changes lost, history lost, or only extra work), and the signals from
+published work and the databases' catalogs not used yet: [references/heuristics.md](references/heuristics.md).
+
 Relations only, against the specifications' roles (`truth/`): TPC-H 8 of 8, TPC-B 4 of 4, TPC-DI 18 of 18, TPC-C 8 of 9,
 TPC-DS 22 of 24, TPC-E 27 of 32. Mautic 7.2.1 (128 tables, 199 foreign keys, collected from an installed database),
 against the 25 tables whose writes were traced in its code: 23 of 25 from relations, 24 of 25 with the activity of two
@@ -63,6 +66,9 @@ rounds of its own traffic (`mautic-source`'s `traffic.sh`).
 
 ## Trade-offs
 
+- **A foreign key's ON DELETE overrides the guess.** A table that CASCADE or SET NULL changes with its parent gets
+  `[scd1]` even when named like a log with inserts only, and `plan.py` warns about an edit that appends it. Its rows
+  can't be insert-only, so the guess was wrong.
 - **`[append]` drops what isn't an insert.** A table appended to keeps the snapshot rows and the inserts; an update or a
   delete of it is left out of silver (the producer still writes it to bronze, so a rebuild as scd1 gets it back).
 - **A collected row count is only today's size.** Fixed-size reference data is recognised only in a scaled model
@@ -70,4 +76,5 @@ rounds of its own traffic (`mautic-source`'s `traffic.sh`).
 - **The activity counts since the server started** (MySQL's `performance_schema`) **or the statistics were reset**
   (PostgreSQL); a fixture load counts as inserts, so collect it after real traffic and truncate it first.
 - **`plan.py` refuses** scd1 or scd2 without a primary key, append together with scd1 or scd2, and a table the producer
-  doesn't capture yet; it asks before dropping a target (a history table goes with its history).
+  doesn't capture yet; it asks before dropping a target (a history table goes with its history). The pipeline only stops updating a
+  target the plan drops: the table stays in the catalog until a `DROP TABLE`.

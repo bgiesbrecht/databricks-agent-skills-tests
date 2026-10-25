@@ -1,0 +1,32 @@
+{
+  "id": "informix-row-size-361",
+  "title": "Informix limits a select's row of text casts to about 32 KB",
+  "kind": "source-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "informix"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "source",
+      "test"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test SOURCE=informix MODEL=tpcds"
+  },
+  "symptom": "Error -361 reading catalog_returns with every column cast to LVARCHAR",
+  "cause": "The casts' declared lengths add up past the row size limit",
+  "effect": "Wide-table exports or digests that cast every column fail",
+  "fix": "Cast strings to their own length and other types to LVARCHAR(40)",
+  "where": [
+    "skills/zerobus-debezium-test/scripts/model-sql.py"
+  ]
+}

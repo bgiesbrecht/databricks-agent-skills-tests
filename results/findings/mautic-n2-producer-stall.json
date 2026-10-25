@@ -1,0 +1,29 @@
+{
+  "id": "mautic-n2-producer-stall",
+  "title": "One of two MySQL producers fell behind in round 2",
+  "kind": "connector-behavior",
+  "status": "open",
+  "applies": {
+    "source": [
+      "mysql"
+    ],
+    "route": [
+      "debezium-zerobus"
+    ],
+    "layer": [
+      "producer"
+    ],
+    "topology": [
+      "n:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test SOURCE=mysql APP=mautic NSRC=2"
+  },
+  "symptom": "Producer 2's GTID lagged producer 1's; round 2 checks waited",
+  "cause": "Not known yet; rerunning with KEEP=1 to inspect",
+  "effect": "Silver for one source stays behind",
+  "fix": "None yet",
+  "notes": "Not reproduced: the 2026-10-24 rerun with 2 sources and the run with 4 sources passed every claim with every producer current. Open until it recurs or a cause is found"
+}

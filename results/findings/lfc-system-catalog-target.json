@@ -1,0 +1,31 @@
+{
+  "id": "lfc-system-catalog-target",
+  "title": "system and hive_metastore can't be a Lakeflow Connect target",
+  "kind": "databricks-limit",
+  "status": "by-design",
+  "applies": {
+    "source": [
+      "*"
+    ],
+    "route": [
+      "lfc-qbc",
+      "lfc-icdc",
+      "lfc-scdc"
+    ],
+    "layer": [
+      "bronze",
+      "silver"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-17",
+    "by": "docs/coverage.md (no run record names it)"
+  },
+  "symptom": "The pipeline is refused",
+  "cause": "These catalogs aren't writable targets",
+  "effect": "Pipeline creation fails",
+  "fix": "Choose a Unity Catalog catalog"
+}

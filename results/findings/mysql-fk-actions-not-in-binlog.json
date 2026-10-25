@@ -1,0 +1,46 @@
+{
+  "id": "mysql-fk-actions-not-in-binlog",
+  "title": "MySQL and MariaDB don't log foreign key actions",
+  "kind": "source-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "mysql",
+      "mariadb"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "capture",
+      "silver"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test SOURCE=mysql APP=mautic; fk-cascade-check.sh on MySQL 8.4, 9.6, MariaDB, PostgreSQL 16, SQL Server 2022, Oracle 23ai"
+  },
+  "symptom": "A parent row deleted in the application; its children are gone at the source but still in silver",
+  "cause": "InnoDB carries out ON DELETE CASCADE and SET NULL inside the storage engine and writes no binlog event for the child rows (documented in the MySQL manual)",
+  "effect": "Any binlog reader misses the child deletes and updates: the target keeps rows the source no longer has",
+  "fix": "Apply the actions in silver after each update from the foreign keys (the source enforces them, so an orphan is a missed cascade), and record each in a trace table",
+  "versions": "MySQL through 9.5, MariaDB; MySQL 9.6 and later log them (SQL-layer foreign keys)",
+  "not_affected": [
+    "postgres",
+    "sqlserver",
+    "oracle",
+    "mysql 9.6+"
+  ],
+  "where": [
+    "skills/zerobus-debezium-test/scripts/fk-actions.py",
+    "skills/zerobus-debezium-test/scripts/fk-cascade-check.sh",
+    "skills/cdc-table-plan/scripts/classify.py"
+  ],
+  "refs": [
+    "https://dev.mysql.com/doc/refman/8.4/en/innodb-and-mysql-replication.html"
+  ],
+  "notes": "Lakeflow Connect's MySQL connector reads the binlog too: not tested here for this case. ON UPDATE CASCADE and SET DEFAULT aren't handled"
+}

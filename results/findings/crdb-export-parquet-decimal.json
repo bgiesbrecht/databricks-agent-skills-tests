@@ -1,0 +1,29 @@
+{
+  "id": "crdb-export-parquet-decimal",
+  "title": "CockroachDB EXPORT INTO PARQUET corrupts DECIMAL",
+  "kind": "source-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "cockroachdb"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "source"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-20",
+    "by": "zerobus-debezium-test SOURCE=crdb snapshot"
+  },
+  "symptom": "21.00 read back as 2155734753.76, in Databricks and DuckDB alike",
+  "cause": "A DECIMAL column is written as BYTE_ARRAY annotated DECIMAL but filled with the number's text",
+  "effect": "Snapshot rows with decimals are wrong",
+  "fix": "Export decimals as text and cast back",
+  "versions": "CockroachDB v25.4.13"
+}

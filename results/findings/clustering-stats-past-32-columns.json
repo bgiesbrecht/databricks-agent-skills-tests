@@ -1,0 +1,34 @@
+{
+  "id": "clustering-stats-past-32-columns",
+  "title": "Liquid clustering on a column past the 32nd fails the first update",
+  "kind": "databricks-limit",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "*"
+    ],
+    "route": [
+      "debezium-zerobus"
+    ],
+    "layer": [
+      "silver"
+    ],
+    "topology": [
+      "n:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test SOURCE=mysql APP=mautic NSRC=2"
+  },
+  "symptom": "DELTA_CLUSTERING_COLUMN_MISSING_STATS on a wide table's first update",
+  "cause": "Delta collects stats for the first 32 columns; with many sources the key starts with _source, which silver puts last",
+  "effect": "Wide tables fail in an n:1 silver",
+  "fix": "Set delta.dataSkippingStatsColumns: the clustering columns first (not BINARY or BOOLEAN)",
+  "where": [
+    "skills/zerobus-debezium-test/scripts/silver-from-schema.py"
+  ],
+  "refs": [
+    "https://docs.databricks.com/aws/en/delta/clustering"
+  ]
+}

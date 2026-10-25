@@ -44,6 +44,8 @@ def _connect(engine, a):
         import informix_db                         # informix-driver: pure Python
         # autocommit at connect: set afterwards, a transaction is already open (and CREATE DATABASE fails with -377)
         c = informix_db.connect(host=a.host, port=a.port or 9088, user=a.user, password=pw, database=a.database, server=a.server or "informix", autocommit=True)
+        if a.database:   # wait for a lock rather than fail at once (-425, ISAM -107: the planner's session and a filling one)
+            k = c.cursor(); k.execute("SET LOCK MODE TO WAIT 30"); k.close()
     else:
         raise SystemExit(f"unknown engine {engine}")
     return c

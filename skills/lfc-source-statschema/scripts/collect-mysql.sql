@@ -35,6 +35,11 @@ WITH h AS (                                                -- histograms: one ro
          JSON_ARRAYAGG(JSON_OBJECT(
            'pos', c.ordinal_position, 'name', c.column_name, 'data_type', c.column_type, 'nullable', c.is_nullable = 'YES',
            'generated', CASE WHEN c.extra LIKE '%STORED GENERATED%' THEN 'stored' WHEN c.extra LIKE '%VIRTUAL GENERATED%' THEN 'virtual' END,  -- not DEFAULT_GENERATED (an expression default)
+           -- the default as a SQL literal (a number as it is, other values quoted); an expression default (DEFAULT_GENERATED,
+           -- CURRENT_TIMESTAMP) is left out: a CDC test fills old rows with it when a column is added after T
+           'default', CASE WHEN c.column_default IS NULL OR c.extra LIKE '%DEFAULT_GENERATED%' THEN NULL
+                           WHEN c.data_type IN ('tinyint', 'smallint', 'mediumint', 'int', 'bigint', 'decimal', 'float', 'double') THEN c.column_default
+                           ELSE CONCAT(CHAR(39), REPLACE(c.column_default, CHAR(39), CONCAT(CHAR(39), CHAR(39))), CHAR(39)) END,
            'null_fraction', hc.null_frac, 'n_distinct', COALESCE(hc.n_distinct, ix.card),
            'min_value', IF(@vals = 'all' OR (@vals = 'ranges' AND c.data_type IN ('tinyint', 'smallint', 'mediumint', 'int', 'bigint', 'decimal',
                            'float', 'double', 'date', 'datetime', 'timestamp', 'time', 'year')), hc.lo, NULL),
@@ -50,20 +55,23 @@ WITH h AS (                                                -- histograms: one ro
   LEFT JOIN ix ON ix.table_name = c.table_name AND ix.column_name = c.column_name
   WHERE c.table_schema = @db GROUP BY c.table_name
 ), k AS (                                                  -- primary key, unique keys, foreign keys
-  SELECT tc.table_name, tc.constraint_type, tc.constraint_name,
+  SELECT tc.table_name, tc.constraint_type, tc.constraint_name, rc.delete_rule, rc.update_rule,
          JSON_ARRAYAGG(JSON_ARRAY(u.ordinal_position, u.column_name, u.referenced_table_name, u.referenced_column_name)) AS cols
   FROM information_schema.table_constraints tc
   JOIN information_schema.key_column_usage u ON u.constraint_schema = tc.constraint_schema AND u.table_name = tc.table_name
                                              AND u.constraint_name = tc.constraint_name
+  LEFT JOIN information_schema.referential_constraints rc ON rc.constraint_schema = tc.constraint_schema   -- ON DELETE, ON UPDATE
+                                             AND rc.table_name = tc.table_name AND rc.constraint_name = tc.constraint_name
   WHERE tc.constraint_schema = @db AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE', 'FOREIGN KEY')
-  GROUP BY tc.table_name, tc.constraint_type, tc.constraint_name
+  GROUP BY tc.table_name, tc.constraint_type, tc.constraint_name, rc.delete_rule, rc.update_rule
 )
 SELECT JSON_OBJECT('version', '1', 'source_dialect', 'mysql', 'source_version', VERSION(), 'schema', @db, 'values', @vals,
          'collected_at', NOW(),
          'tables', (SELECT JSON_ARRAYAGG(JSON_OBJECT(
            'name', t.table_name, 'row_count', t.table_rows, 'size_bytes', t.data_length + t.index_length, 'comment', t.table_comment,
            'avg_row_bytes', t.avg_row_length,
-           'keys', (SELECT JSON_ARRAYAGG(JSON_OBJECT('type', k.constraint_type, 'cols', k.cols)) FROM k WHERE k.table_name = t.table_name),
+           'keys', (SELECT JSON_ARRAYAGG(JSON_OBJECT('type', k.constraint_type, 'cols', k.cols, 'on_delete', k.delete_rule,
+                                                'on_update', k.update_rule)) FROM k WHERE k.table_name = t.table_name),
            'checks', (SELECT JSON_ARRAYAGG(cc.check_clause) FROM information_schema.table_constraints tc
                       JOIN information_schema.check_constraints cc ON cc.constraint_schema = tc.constraint_schema AND cc.constraint_name = tc.constraint_name
                       WHERE tc.constraint_schema = @db AND tc.table_name = t.table_name AND tc.constraint_type = 'CHECK'),

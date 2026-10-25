@@ -1,0 +1,33 @@
+{
+  "id": "debezium-upper-case-names",
+  "title": "Oracle and Db2 change events carry names in upper case",
+  "kind": "connector-behavior",
+  "status": "fixed",
+  "applies": {
+    "source": [
+      "oracle",
+      "db2"
+    ],
+    "route": [
+      "debezium-zerobus"
+    ],
+    "layer": [
+      "bronze",
+      "silver"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test SOURCE=oracle, db2"
+  },
+  "symptom": "Events for ORACLE1.TPCH1.ORDERS matched no lower-case table in the schema",
+  "cause": "Both keep unquoted identifiers in upper case, and Debezium reports them as stored",
+  "effect": "Silver built from a lower-case model finds no events",
+  "fix": "Fold the schema's names per source (upper for Oracle and Db2, lower for Informix)",
+  "where": [
+    "skills/zerobus-debezium-test/scripts/model-sql.py"
+  ]
+}

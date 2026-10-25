@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# setup.sh <database> <web port>: Mautic in a MySQL database that's already running, as Mautic itself makes it, on the
+# host with the containers (lfc-source-cloud-vm's VM, over SSH):
+#   1. mautic:install into <database> (Mautic builds every table from its Doctrine entities; nothing is loaded from DDL)
+#   2. doctrine:fixtures:load: Mautic's own sample data (contacts, companies, segments, forms and their results, pages
+#      and hits, e-mails, a campaign), about 1,500 rows over 30 tables
+#   3. a web container on 127.0.0.1:<web port> (Apache, the same image), for traffic.sh: the tracking pixel, form posts,
+#      the REST API (basic auth on), and the cron commands; its config/local.php points at <database>
+# Needs: NET (the Podman network), DB_HOST (the MySQL container's alias on it), DB_PW_FILE (a file with MySQL's root
+# password, 0600), DIR (a folder for this database's config), NAME (the web container's name), PODMAN; optional
+# MAUTIC_IMAGE (docker.io/mautic/mautic:7.2.1-apache), ADMIN_PW (the installer's admin password; the fixtures replace
+# the users with Mautic's sample ones: admin / Maut1cR0cks!, the password in Mautic's own development config).
+# Prints what it made; exit 1 when a step failed.
+set -uo pipefail
+DB=${1:?database}; PORT=${2:?web port}
+: "${NET:?}" "${DB_HOST:?}" "${DB_PW_FILE:?}" "${DIR:?}" "${NAME:?}" "${PODMAN:?}"
+IMG=${MAUTIC_IMAGE:-docker.io/mautic/mautic:7.2.1-apache}
+umask 077; mkdir -p "$DIR"
+PW=$(cat "$DB_PW_FILE")
+# config/local.php: the database, the REST API with basic auth, a mailer that sends nothing (e-mails are only recorded)
+cat > "$DIR/local.php" <<PHP
+<?php
+\$parameters = ['db_driver' => 'pdo_mysql', 'db_host' => '$DB_HOST', 'db_port' => 3306, 'db_name' => '$DB',
+  'db_user' => 'root', 'db_password' => '$PW', 'db_table_prefix' => null, 'site_url' => 'http://127.0.0.1:$PORT',
+  'secret_key' => '$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')', 'api_enabled' => true,
+  'api_enable_basic_auth' => true, 'mailer_dsn' => 'null://null'];
+PHP
+chmod 644 "$DIR/local.php"   # read by the container's www-data; the host folder stays 0700
+run() { $PODMAN run --rm --network "$NET" --entrypoint bash -v "$DIR/local.php:/var/www/html/config/local.php" "$IMG" -c "cd /var/www/html && $1"; }
+# the database first: mautic:install doesn't create one (PHP's PDO, from the same image, so the host needs no client)
+$PODMAN run --rm --network "$NET" --entrypoint php "$IMG" -r \
+  "(new PDO('mysql:host=$DB_HOST;port=3306', 'root', '$PW'))->exec('CREATE DATABASE IF NOT EXISTS \`$DB\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci');" \
+  > "$DIR/create.out" 2>&1 || { echo "CREATE DATABASE $DB failed: $(head -c 300 "$DIR/create.out")"; exit 1; }
+# the installer writes its own config/local.php, in its container (removed after): ours is mounted for the rest
+$PODMAN run --rm --network "$NET" --entrypoint bash "$IMG" -c \
+  "cd /var/www/html && php bin/console mautic:install http://127.0.0.1:$PORT --db_driver=pdo_mysql --db_host=$DB_HOST --db_port=3306 \
+   --db_name=$DB --db_user=root --db_password='$PW' --db_backup_tables=false --admin_email=admin@example.com \
+   --admin_password='${ADMIN_PW:-Install-Adm1n}' --force" > "$DIR/install.out" 2>&1
+grep -q 'Install complete' "$DIR/install.out" || { echo "mautic:install into $DB failed: $(tail -3 "$DIR/install.out" | tr '\n' ' ' | cut -c1-300)"; exit 1; }
+run "php bin/console doctrine:fixtures:load --no-interaction" > "$DIR/fixtures.out" 2>&1 \
+  || { echo "fixtures into $DB failed: $(tail -3 "$DIR/fixtures.out" | tr '\n' ' ' | cut -c1-300)"; exit 1; }
+$PODMAN rm -f "$NAME" >/dev/null 2>&1
+# the image's start-up checks want the database in its environment too: from a file (0600), not the command line
+printf 'DOCKER_MAUTIC_ROLE=mautic_web\nMAUTIC_DB_HOST=%s\nMAUTIC_DB_PORT=3306\nMAUTIC_DB_USER=root\nMAUTIC_DB_PASSWORD=%s\nMAUTIC_DB_DATABASE=%s\n' \
+  "$DB_HOST" "$PW" "$DB" > "$DIR/web.env"
+$PODMAN run -d --name "$NAME" --network "$NET" -p "127.0.0.1:$PORT:80" -v "$DIR/local.php:/var/www/html/config/local.php" \
+  --env-file "$DIR/web.env" "$IMG" >/dev/null || { echo "web container for $DB failed"; exit 1; }
+for _ in $(seq 1 40); do [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/mtracking.gif")" = 200 ] && break; sleep 3; done
+[ "$(curl -s -o /dev/null -w '%{http_code}' -u 'admin:Maut1cR0cks!' "http://127.0.0.1:$PORT/api/contacts?limit=1")" = 200 ] \
+  || { echo "Mautic's API on port $PORT doesn't answer for $DB"; exit 1; }
+echo "$DB: Mautic installed, fixtures loaded ($(grep -c 'loading' "$DIR/fixtures.out") fixtures), web $NAME on 127.0.0.1:$PORT"

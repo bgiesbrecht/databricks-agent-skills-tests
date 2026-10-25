@@ -12,6 +12,7 @@
   uv run recall.py --coverage                       # test x engine grid: latest outcome per cell, across every setup
   uv run recall.py --workspace serverless --storage juicefs   # filter on workspace and setup fields too
   uv run recall.py --compute unset                           # what an unset serverless ran on ("unset->classic")
+  uv run recall.py --combos --test zerobus          # engine x model grid per route and topology: newest outcome per cell
 
 Filters combine. --all lists every matching record instead of the latest per cell. --json prints records.
 """
@@ -38,6 +39,7 @@ def main():
     ap = argparse.ArgumentParser()
     for k in ("engine", "test", "outcome", "host", "run", "grep", "since", "workspace", "storage", "compute"): ap.add_argument(f"--{k}")
     ap.add_argument("--all", action="store_true"); ap.add_argument("--json", action="store_true"); ap.add_argument("--coverage", action="store_true")
+    ap.add_argument("--combos", action="store_true")
     a = ap.parse_args()
     lines = [l for f in sorted(RUNS.glob("*.jsonl")) for l in f.read_text().splitlines() if l.strip()] if RUNS.exists() else []
     recs = [dict(json.loads(l), _line=i) for i, l in enumerate(lines)]
@@ -61,6 +63,22 @@ def main():
         print("| test | " + " | ".join(engines) + " |\n|---|" + "---|" * len(engines))
         for t in tests: print(f"| {t} | " + " | ".join(ICON.get(cell[(t, e)]["outcome"], "?") if (t, e) in cell else "" for e in engines) + " |")
         print("\nempty = never recorded; each cell is the newest result for that test and engine (see --all for setups)")
+        return
+    if a.combos:                                     # the combinations: route x topology x (sources), then engine x model
+        cell = {}
+        for r in recs:
+            st = r.get("setup") or {}
+            key = (r["test"], st.get("route", ""), st.get("topology", ""), st.get("sources", ""),
+                   r["subject"].get("engine", ""), (st.get("workload") or {}).get("name", ""))
+            cell.setdefault(key, r)
+        for g in sorted({k[:4] for k in cell}, key=str):
+            sub = {k[4:]: v for k, v in cell.items() if k[:4] == g}
+            engines = sorted({e for e, _ in sub}); models = sorted({m for _, m in sub})
+            print(f"\n**{g[0]}**, route {g[1] or '-'}, topology {g[2] or '-'}, {g[3] or '-'} source(s)\n")
+            print("| engine | " + " | ".join(models) + " |\n|---|" + "---|" * len(models))
+            for e in engines:
+                print(f"| {e} | " + " | ".join(ICON.get(sub[(e, m)]["outcome"], "?") if (e, m) in sub else "" for m in models) + " |")
+        print("\nempty = never recorded; each cell is the newest result for that combination (--all for every run)")
         return
     if not a.all:                                    # newest per cell; the file is append-only, so later lines win ties
         seen, latest = set(), []

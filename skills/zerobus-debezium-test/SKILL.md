@@ -47,6 +47,30 @@ One canonical `schema.yaml` per model (statschema's format, **lfc-source-statsch
 
 A manifest per round lists every table's expected events, which the change-log claims wait for. Both sides render each value alike: NULL as `<null>`, timestamps in UTC to the microsecond, `char` without its padding, booleans as `true`/`false`. The rows are compared sorted, since the two sides' collations differ.
 
+## What a production pipeline meets
+
+Behaviors these tests found in the sources, Debezium, and the bronze and silver layers. Each would break the same pipeline outside the test; the fix the harness uses is in the scripts named. Every finding, with the combination it applies to (source, route, layer, topology), is also in the findings register, [docs/findings.md](../../docs/findings.md): record a new one with **lfc-test-results** `finding.py add` as it's found, and look up a customer's combination with `finding.py --source <s> --route debezium-zerobus --topology <t>`.
+
+**Source and change capture**
+- **MySQL through 9.5 and MariaDB don't log foreign key actions.** InnoDB's own `ON DELETE CASCADE` and `SET NULL` changes aren't in the binlog, so no binlog reader sees them, and silver keeps child rows the source deleted. PostgreSQL, SQL Server, Oracle and MySQL 9.6+ log them. Silver applies them after each update and records each one ([MySQL and an application's schema](#mysql-and-an-applications-schema-sourcemysql-appmautic), `scripts/fk-actions.py`).
+- **Oracle 23+ and Db2 tables with a `BOOLEAN` column aren't captured, and nothing says so.** Debezium's Oracle connector doesn't support Oracle 23's native `BOOLEAN`, and Db2's SQL Replication can't capture `BOOLEAN` (both documented). On Oracle those tables simply never change in bronze; on Db2 the first change to such a table stops the capture program for every table (`ASN0552E` SQLCODE -804, then `ASN0008I` in `ASNCDC.IBMSNAP_CAPTRACE`), while the registrations still show active and Debezium still reports streaming. Check the schema for `BOOLEAN` columns first; use `NUMBER(1)` (with Debezium's `NumberOneToBooleanConverter`) or `SMALLINT` 0/1. The harness maps the models' booleans to `SMALLINT` 0/1 on both.
+- **SQL Server logs no update that changes nothing**, so CDC and Debezium have no event for it; PostgreSQL and Oracle send one. Nothing is lost (the row didn't change), but an event count or a trigger-based audit won't match the change log.
+- **A column added on SQL Server needs a new CDC capture instance**, and Oracle's LogMiner with the online catalog doesn't follow DDL (the redo-log catalog does). Plan schema changes before relying on them.
+- **Db2's capture agent:** started through `ASNCDC.ASNCDCSERVICES` from a driver, the call never returns. Start `asncap` as the instance user, and register tables (`ADDTABLE`) with the agent running, then reinitialize it (`asnccmd ... reinit`); registrations made otherwise stay inactive.
+- **Informix ignores a string's trailing blanks** in comparisons and in `LENGTH`; the change stream and silver keep them as stored.
+- **The snapshot is consistent with the log position only while nothing writes** (PostgreSQL, SQL Server, Oracle, Db2, Informix here): see [Trade-offs](#trade-offs).
+
+**Debezium**
+- **A connector whose start fails leaves Debezium Server running and capturing nothing** (Oracle's version check timing out, `ORA-17002`, with two databases starting at once). No error reaches Zerobus. Check each server's log for `Starting streaming` and restart it on `Engine has failed`.
+- **Temporal values arrive as numbers whose unit depends on the column's precision:** days for a date; milliseconds (3 digits or fewer), microseconds (4 to 6, and PostgreSQL's default) or nanoseconds (7 to 9: SQL Server's `DATETIME2` and `TIME` default) for timestamps and times; Oracle's `DATE` holds a time and comes as epoch milliseconds. Silver must decode each by the column's type and precision (`decode()` in `scripts/silver-from-schema.py`).
+- **Oracle and Db2 send unquoted names in upper case** (`ORACLE1.TPCH1.ORDERS`); silver's schema has to match.
+- **What orders a key's changes differs per source**: the LSN, change LSN, SCN, or binlog position (`cdc.seq`, the sources table below). CockroachDB's connector drops the commit time ([Commit time](#commit-time-not-in-the-event-cockroachdb-connector-370final)).
+
+**Bronze and silver**
+- **Read every temporal type from the source's schema.** A `time` column read as a string keeps Debezium's microseconds (`1300000000` for `00:21:40`); `information_schema`'s `time without time zone` must map to a time.
+- **Liquid clustering needs stats on its columns, and Delta collects them for the first 32 only.** With many sources the key starts with `_source`, which comes last, so a wide table's first update fails with `DELTA_CLUSTERING_COLUMN_MISSING_STATS`. Name the stats columns (`delta.dataSkippingStatsColumns`): the clustering columns first.
+- **A table that foreign key actions change can't be append-only**: its rows must be deletable. cdc-table-plan gives such tables SCD type 1.
+
 ## Many sources, bronze layouts, schema drift
 
 The common case: N identical tables on many hosts, merged into one silver table per table. The design aims at 10,000s of source tables and many hosts, without a schema change stopping anything upstream.
@@ -159,9 +183,95 @@ Found on the way, and fixed:
 
 The run writes `_placement.tsv` (one row per table) to the volume; the pipeline (`cdc.placement_group`) and each MERGE job (`--placement-group`) read their tables from it. Each silver update runs the fan-out once, then the pipelines and the MERGE jobs; a full refresh goes to whichever builds the table. A MERGE group records drift in `schema_drift_<group>` (the pipeline owns `schema_drift`), and keeps its own state tables (`_cdc_tombstones_<group>`, ...). One pipeline group so far, and gold is made by SQL after both silvers, over both. A producer server the placement gives no tables isn't started. With `ROUNDS=5`, `BRONZE=shared`; no table move.
 
+## MySQL and an application's schema (`SOURCE=mysql APP=mautic`)
+
+`SOURCE=mysql` runs MySQL 8.4 (`SRC_IMAGE`) with Debezium Server's MySQL connector. `APP=mautic` installs Mautic, an open-source marketing application, into each source database (**mautic-source**). The test collects the installed schema back as the model, and **cdc-table-plan** guesses each table's silver, written to `<volume>/_plan.yaml`. The rounds are the application's own traffic (`ROUNDS=app`). Silver orders events by binlog file, position and row (`cdc.seq=binlog`). The snapshot is taken as of a binlog position T, in one consistent-snapshot transaction.
+
+**Foreign key actions aren't in the binlog through MySQL 9.5.** InnoDB carries out `ON DELETE CASCADE` and `SET NULL` itself and doesn't log the child rows it changes, so a binlog reader never sees those changes. The MySQL manual, "Replication and CASCADE": "the cascading deletes are handled internally by the InnoDB storage engine, which means that none of the changes are logged." From 9.6 the server handles foreign keys and logs those rows, unless `innodb_native_foreign_keys=ON`. Waiting doesn't help: the changes never arrive. [scripts/fk-cascade-check.sh](scripts/fk-cascade-check.sh) tests an engine. Each engine deletes a parent and changes a referenced key, and the script reads the change log right away and again after a wait:
+
+| Engine | Change log | CASCADE child deletes | SET NULL child updates | ON UPDATE CASCADE |
+|---|---|---|---|---|
+| MySQL 8.4 | binlog | missing | missing | missing |
+| MariaDB 11.4 | binlog | missing | missing | missing |
+| MySQL 9.7 | binlog | logged | logged | logged |
+| PostgreSQL 16 | logical decoding | logged | logged | logged |
+| SQL Server 2022 | CDC, Change Tracking | logged | logged | logged |
+| Oracle 23 | LogMiner | logged | logged | (no such action) |
+
+So on MySQL 8.4 a contact deleted in Mautic leaves its segment memberships and event-log rows in silver. Mautic's schema has 125 CASCADE and 65 SET NULL foreign keys.
+
+How silver handles it (the harness turns it on for MySQL before 9.6 and MariaDB):
+- **The rules:** the collector records each foreign key's `on_delete` in the canonical schema.
+- **After each silver update** ([scripts/fk-actions.py](scripts/fk-actions.py)): the source enforces its foreign keys, so at a consistent point no child row references a parent that's gone. For each CASCADE or SET NULL foreign key, the child rows whose key matches no current parent row are deleted (CASCADE) or get the columns NULL (SET NULL), in current rows and in the history (the open version closed at the parent's delete, a new one opened for SET NULL). One query first counts every key's such rows, so a pass runs only the statements of the keys with some; passes repeat until one finds none (chains).
+- **The trace:** each change is first a row in `fk_actions`: the table, source, key, operation, the foreign key, and when.
+- **In the pipeline instead** (`FK_IN_PIPELINE=1`, silver's `cdc.fk_actions=apply`): the changes derived from each parent delete in the change log, at its sequence, into the child's own change views, with each child's versions computed once per update (`_fkv_<child>`). Exact to the parent's sequence, but it made Mautic's first update run past an hour.
+- **The plan:** a table such a foreign key changes can't be `[append]`. `classify.py` makes it `[scd1]`, and `plan.py` warns about an edit that appends it.
+
+## PostgreSQL, SQL Server, Oracle, Db2, Informix and MySQL with the TPC models (`SOURCE=pg`, `mssql`, `oracle`, `db2`, `informix`, `mysql`)
+
+Each runs the TPC models through Debezium Server's own connector and the Zerobus sink. The same model, rounds and checks apply to every source; only these parts differ:
+
+| Source | Change capture | T, and silver's sequence | Snapshot as of T | Rounds |
+|---|---|---|---|---|
+| PostgreSQL 16 | `wal_level=logical`, a publication and a `pgoutput` slot per database | the slot's LSN; `source.lsn` (`cdc.seq=lsn`) | `COPY ... CSV` | 1 to 5 |
+| SQL Server 2022 Developer | CDC on the database and every table, SQL Server Agent running the capture job | the log's last LSN; `source.change_lsn` as one number (`cdc.seq=change_lsn`) | `export.py` | 1 to 3 (`ROUNDS=3`) |
+| Oracle AI Database 26ai Free (23.26) | ARCHIVELOG, supplemental logging (all columns), LogMiner with the online catalog | the database's SCN; `source.scn` (`cdc.seq=scn`) | `export.py` | 1 to 3 (`ROUNDS=3`) |
+| Db2 11.5 Community | archive logging; ASN capture with Debezium's management scripts (debezium-examples, pinned): `ADDTABLE` per table, the capture agent started and reinitialized | the capture's synch point; `source.change_lsn`'s low 8 bytes (`cdc.seq=db2_lsn`) | `export.py` | 1 to 3 (`ROUNDS=3`) |
+| Informix 14.10 Developer (14.10.FC7W1DE) | `syscdcv1` (the image's script), a logged database per source; Debezium Server with the Informix JDBC driver and change-stream client added | 0: Debezium starts after the snapshot; `source.change_lsn` (`cdc.seq=ifx_lsn`) | `export.py` | 1 to 3 (`ROUNDS=3`) |
+| MySQL 8.4 | binlog in row format with GTIDs (as for Mautic) | the snapshot's binlog position, taken after the producers start; `cdc.seq=binlog` | `INTO OUTFILE` | 1 to 5 |
+
+- **T is taken while nothing writes.** PostgreSQL can't read as of an earlier LSN, and neither SQL Server nor Oracle reads as of a log position the way the snapshot needs. So the harness writes nothing between the fill and the snapshot: the snapshot is the state at T. The rows at T for the history check are kept from that moment (`snapT` files).
+- **Clients.** SQL Server and Oracle use their own command-line clients in their containers (`sources/mssql-sq.sh`, `sources/oracle-sq.sh`). Db2's CLP prints space-padded columns and Informix's `dbaccess` no columns at all, so those two use lfc-source-datagen's `scripts/python/sq.py`: SQL on stdin, tab-separated rows out, through the same drivers as `fill.py`, in a container kept for the run.
+- **The snapshot exporter.** lfc-source-datagen's `scripts/python/export.py` reads each table through the same driver as `fill.py` and writes CSV with a header: NULL as `\N`, a quote doubled inside quotes. It runs in a container on the run's network.
+- **The history check's truth.** Each source records its own changes: audit triggers write every row change, in commit order, as JSON, to a table its change capture leaves out (`sources/mssql-cdc.sql`, `sources/oracle-cdc.sql`, `sources/audit-triggers.py` for MySQL, Db2 and Informix; YugabyteDB's and PostgreSQL's `cdc_sql`). Informix has no `JSON_OBJECT`, so its triggers build the JSON as text.
+- **Names.** Oracle keeps unquoted names in upper case, and its change events carry them that way (`ORACLE1.TPCH1.ORDERS`). `model-sql.py --dialect oracle` folds every name it writes, and silver's schema for Oracle is the model in upper case.
+- **Types.**
+  - SQL Server's `DATETIME2` and `TIME` default to 7 digits of fraction, which Debezium sends as nanoseconds: silver reads 7 to 9 digits as nanoseconds.
+  - Oracle's `DATE` holds a time and comes as epoch milliseconds: silver's schema gives it as a timestamp to the second.
+- **Not yet: rounds 4 and 5 on SQL Server and Oracle.** A column added to a CDC table needs a new capture instance in SQL Server. In Oracle, the online catalog doesn't follow DDL; the redo-log catalog would.
+
+Found while building the test (what a pipeline itself meets is in [What a production pipeline meets](#what-a-production-pipeline-meets)):
+- **The workload's updates always set a new value**, since SQL Server logs no update that changes nothing (`model-sql.py`'s values are base 36 of the seed, so a 1-character column gets a different one each time).
+- **`mssql-python` on Linux needs OS libraries**: `libltdl7`, `libkrb5-3` and `libgssapi-krb5-2`, none of them in `python:3.12-slim`. The harness builds an image with them once on the VM (`localhost/lfc-datagen-mssql:3.12-2`).
+- **Containers that run as their own user** (SQL Server's `mssql`, Oracle's `oracle`) can't read a mounted file the run wrote at mode 0600, so the client scripts (no secrets in them) are mounted readable.
+- **`AUDIT` is a reserved word in Oracle**: the audit table there is `LFC_AUDIT`, which the test's table list and capture leave out with every `LFC_` table.
+- **Db2 names an unnamed result column `1`, `2`, ...**: a query's header row then reads like data; the harness names every column it parses.
+- **Informix's developer image needs its volumes given to its user**: `/opt/ibm/data` and `/opt/ibm/config` mounted with `:U` (lfc-source-podman's engines.md), without `--privileged`; otherwise its start script's `sudo` fails and the server goes offline. The tested image, 14.10.FC7W1DE, is the harness's default.
+- **The checks trim strings on both sides for Informix**, which ignores trailing blanks.
+- **Informix's `VARCHAR` stops at 255 bytes, and a row's casts share a size limit** (error -361 on TPC-DS's `catalog_returns`): the checks cast a string column to `LVARCHAR` of its own length, and other types to `LVARCHAR(40)`.
+- **Informix pads a `CASE` that mixes a literal with an `LVARCHAR` cast** to 2048 characters: the audit trigger's JSON for TPC-DS's `date_dim` (16 integers) passed the audit column's 32000 and was cut off. Each value is trimmed.
+- **At a small scale a composite key can need more child rows than its parents allow.** TPC-E at SF 0.001 has 7 securities but gives each watch list 15 items, so `watch_item.wi_s_symb` pointed at securities that don't exist; TPC-DI's `FactWatches` hit the same problem. statschema's `shape.py` now caps the rows per first-key value at the second key column's values, and the table's rows at the pairs both parents allow.
+- **The laptop's route to the VM drops for half an hour and more** (sleep, VPN reconnects): an answer lost then reads as an empty source and fails a check. The VM client retries for `VM_RETRY_MIN` minutes (default 120).
+
+### Many sources and models at once: `matrix.sh`
+
+[scripts/matrix.sh](scripts/matrix.sh) runs every combination of `SOURCES` × `MODELS` × `NSRCS` (how many source databases merge into one silver), at most `PARALLEL` at once:
+
+```bash
+PROFILE=<cli-profile> CATALOG=<catalog> VM_IP=<vm-ip> SOURCES="pg mssql oracle" MODELS="tpch tpcb tpcc" NSRCS="1 2 4" PARALLEL=2 \
+  bash skills/zerobus-debezium-test/scripts/matrix.sh
+```
+
+- **Isolation:** each run gets its own copy of the skills folder, its own log, result file and port.
+- **Output:** `summary.md` has one row per run: exit status, claims passed and failed, the first failure, minutes.
+- **Coverage records:** each run writes the combination it tested and its outcome as an **lfc-test-results** record (`RECORD_OUT`); `records.jsonl` collects them. Look them over, then `record.py < records.jsonl`, so `recall.py --coverage` shows the combination as tested.
+- **Choosing `PARALLEL`:** one run per two vCPUs of the VM (2 on the 4-vCPU test VM), when memory allows. Check first: `nproc`, `free -m` (available), `podman stats --no-stream` for other sessions' containers (they share the VM), and that the disk is idle (`iostat -dx`). Memory per run: the database (PostgreSQL about 0.5 GB, MySQL 1 GB, Db2 and Informix 1 to 2 GB, SQL Server and Oracle 2 to 4 GB: **lfc-source-podman**'s engines.md), plus about 0.4 GB per Debezium Server, one per source database (`NSRC=4` Mautic: about 5 GB in all). Leave 2 GB free. Two Oracle databases starting at once can time out a connector's start (`ORA-17002`); the harness restarts it, but mixing engines in a pair avoids it.
+- **Runs on a laptop-driven VM stop when the laptop sleeps.** The harness drives the VM over SSH and waits out an outage for `VM_RETRY_MIN` minutes; start long matrices when the laptop stays awake, or from a host that does.
+
 ## Trade-offs
 
 What silver gives up, and where, so a result can be read for what it is:
+
+- **T while nothing writes (PostgreSQL, SQL Server, Oracle).** The snapshot is consistent only because the test stops writing between the fill and the snapshot. A source with live traffic would need the snapshot tied to the log position: PostgreSQL's exported snapshot from the slot, SQL Server's and Oracle's flashback or snapshot isolation.
+- **SQL Server's sequence fits a BIGINT only while the log's file number is below 2^15.** `change_lsn` is 10 bytes; silver packs the three parts into 64 bits, which a test database never outgrows.
+
+- **Foreign key actions applied after each update (`fk-actions.py`).** Silver re-applies what MySQL through 9.5 doesn't log, from the rules in the collected schema:
+  - **Source rules only:** they have to match the source's. A rule added at the source after the schema was collected isn't applied until the schema is collected again.
+  - **At the update, not at the parent's sequence:** between an update and the step after it, silver has the child rows; a reader then sees them. The history's version ends at the parent's last version's end (its delete) when the parent keeps history, else at the version's own start.
+  - **DML on the pipeline's tables:** the step deletes and updates rows in tables AUTO CDC builds (Databricks allows it). A full refresh rebuilds them from bronze, orphans included, and the step after it removes them again.
+  - **A consistent point:** the rule holds when silver has every source change up to some position; a parent's delete in bronze whose child's earlier insert isn't yet in silver can't happen with one ordered log per source (one producer per source database).
+  - **Not handled:** `ON UPDATE CASCADE`, SET DEFAULT, and a parent's primary key change (Debezium sends it as a delete and an insert). Mautic has none of these.
+  - **Turned off** for logs that carry the changes (`FK_ACTIONS=logged`).
 
 - **Replays and identical changes.** A producer resends changes after a restart, under a new sequence. Silver drops a change as a replay when it has the same event (destination, key, operation, row image, and idempotency key where the producer gives one) within 10 minutes of one already applied (the pipeline's dedup watermark; `merge-silver.py`'s `REPLAY_NS`). So:
   - in the history (SCD type 2), a real update that sets a row to the same values within 10 minutes counts once; the history check counts consecutive identical versions once on both sides;
@@ -181,7 +291,7 @@ What silver gives up, and where, so a result can be read for what it is:
 - **Own bronze on the direct route.** Debezium Server's Zerobus sink writes one table, so a table's own bronze is copied from the shared log by the fan-out: one more hop, and its changes stored twice.
 - **Silver across schemas (`SPLIT`).** Readers and gold name each table's schema.
 - **The Kafka route.** Zerobus's Kafka API takes the record value only, so the event is wrapped (`HoistField`, `StringifyField`) and nothing is dropped from it (no `DROP_FIELDS`): larger events than the direct route's.
-- **Retries.** A call that fails to connect is retried, up to 5 times with backoff: ssh to the VM when ssh itself can't connect (the input is kept, so a retry gets all of it), and the Databricks CLI when the request was never sent (DNS, refused, dial, TLS handshake). A connection lost after a request was sent isn't retried, since a create or a run-now may have gone through: the run fails there instead.
+- **Retries.** A call that fails to connect is retried, up to 5 times with backoff: ssh to the VM when ssh itself can't connect (the input is kept, so a retry gets all of it), and the Databricks CLI when the request was never sent (DNS, refused, dial, TLS handshake) or the workspace answered that it's temporarily unavailable (a 503, which a volume upload got once: the request wasn't taken). A connection lost after a request was sent isn't retried for a create or a run-now, which may have gone through; a read (get, list) is, after a timeout or reset too, since sending it again changes nothing (a job run's poll timed out once and failed a table move).
 - **Test data on CockroachDB.** For the PostgreSQL dialect the generator casts `POWER`'s arguments, and any expression plus or minus a decimal constant, to double precision (CockroachDB doesn't mix float and decimal). On plain PostgreSQL that arithmetic was NUMERIC before, so a generated value can differ in its last digits, or round to the other side of an exact `FLOOR` boundary.
 
 ## Before running
@@ -224,7 +334,7 @@ On the laptop, with no cloud VM or storage: `PROFILE=... CATALOG=... LIMA=<insta
 3. **Every source**, `SOURCES="crdb yb"` by default, in parallel on their own ports (CockroachDB 30026, YugabyteDB 30031). Each run cleans up after itself.
 4. **The results**, in `~/.lfc-test/results/zerobus-<UTC time>/`: `check.txt`, `<source>.md` (the result table, with images and digests), `<source>.log`, and `summary.md` (the commit, claims passed and failed per source). The exit code is 0 only when everything passed. When everything passed, it also writes one row per source into the "Successful runs" table of [docs/lakeflow-connect-zerobus.md](../../docs/lakeflow-connect-zerobus.md), newest first (`RECORD=0` to skip): commit that change with the run.
 
-**Leftovers.** A run removes what it created when it exits, but a killed run, or one kept with `KEEP=1`, leaves its containers, pipeline, connection, service principal, folder and schema. Every name carries the run's epoch, and [`scripts/sweep.sh`](scripts/sweep.sh) finds them by name, on the VM (`VM_IP`) or the laptop (`LIMA`) and in the workspace. It prints its plan and removes nothing without `--apply`. It leaves runs younger than `MIN_AGE` seconds (default 7200, as one may still be running) and the epochs in `KEEP_RUNS`.
+**Leftovers.** A run removes what it created when it exits, but a killed run, or one kept with `KEEP=1`, leaves its containers, pipeline, connection, service principal, folder and schema. Every name carries the run's epoch, and [`scripts/sweep.sh`](scripts/sweep.sh) finds them by name, on the VM (`VM_IP`) or the laptop (`LIMA`) and in the workspace. It prints its plan and removes nothing without `--apply`. It leaves runs younger than `MIN_AGE` seconds (default 7200, as one may still be running) and the epochs in `KEEP_RUNS`; `ONLY_RUNS="<epoch> ..."` sweeps just those runs, whatever their age. It covers every source the harness runs.
 
 ## Without cloud storage or service principal permissions: the laptop
 

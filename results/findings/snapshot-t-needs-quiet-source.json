@@ -1,0 +1,33 @@
+{
+  "id": "snapshot-t-needs-quiet-source",
+  "title": "The snapshot matches the log position only while nothing writes",
+  "kind": "pattern",
+  "status": "by-design",
+  "applies": {
+    "source": [
+      "postgres",
+      "sqlserver",
+      "oracle",
+      "db2",
+      "informix",
+      "mysql"
+    ],
+    "route": [
+      "debezium-zerobus"
+    ],
+    "layer": [
+      "silver"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test every source but crdb and yb"
+  },
+  "symptom": "(design) T is read while the source is quiet",
+  "cause": "These sources can't read a snapshot as of a given log position the way the test needs",
+  "effect": "With live writes, rows changed between T and the snapshot read are applied twice or missed",
+  "fix": "Tie the snapshot to the log position: PostgreSQL's exported slot snapshot, SQL Server or Oracle snapshot isolation or flashback; or let Debezium snapshot"
+}

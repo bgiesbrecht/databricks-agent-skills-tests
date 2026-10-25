@@ -1,0 +1,31 @@
+{
+  "id": "informix-driver-time-decode",
+  "title": "The Python Informix driver can't read a DATETIME HOUR TO SECOND",
+  "kind": "tooling",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "informix"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "test"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "zerobus-debezium-test SOURCE=informix MODEL=tpcdi (export.py)"
+  },
+  "symptom": "ValueError: hour must be in 0..23 reading DimTime with SELECT *",
+  "cause": "informix-driver (pure Python) decodes a DATETIME that starts at HOUR as if it started at YEAR",
+  "effect": "A snapshot or export of a table with a time-of-day column fails through that driver",
+  "fix": "Select such columns as text (col::LVARCHAR); export.py does it from syscolumns",
+  "where": [
+    "skills/lfc-source-datagen/scripts/python/export.py"
+  ]
+}

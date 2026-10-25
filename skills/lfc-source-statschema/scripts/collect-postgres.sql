@@ -43,7 +43,9 @@ SELECT json_build_object('version', '1', 'source_dialect', 'postgres', 'source_v
            'foreign_keys', (SELECT json_agg(json_build_object(
                               'columns', (SELECT json_agg(a.attname ORDER BY array_position(k.conkey, a.attnum)) FROM pg_attribute a WHERE a.attrelid = k.conrelid AND a.attnum = ANY (k.conkey)),
                               'ref_table', (SELECT relname FROM pg_class WHERE oid = k.confrelid),
-                              'ref_columns', (SELECT json_agg(a.attname ORDER BY array_position(k.confkey, a.attnum)) FROM pg_attribute a WHERE a.attrelid = k.confrelid AND a.attnum = ANY (k.confkey))))
+                              'ref_columns', (SELECT json_agg(a.attname ORDER BY array_position(k.confkey, a.attnum)) FROM pg_attribute a WHERE a.attrelid = k.confrelid AND a.attnum = ANY (k.confkey)),
+                              'on_delete', CASE k.confdeltype WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' WHEN 'r' THEN 'RESTRICT' ELSE 'NO ACTION' END,
+                              'on_update', CASE k.confupdtype WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' WHEN 'r' THEN 'RESTRICT' ELSE 'NO ACTION' END))
                             FROM pg_constraint k WHERE k.conrelid = r.oid AND k.contype = 'f'),
            'checks', (SELECT json_agg(pg_get_constraintdef(k.oid)) FROM pg_constraint k WHERE k.conrelid = r.oid AND k.contype = 'c'),
            'indexes', (SELECT json_agg((SELECT json_agg(a.attname ORDER BY array_position(i.indkey::int2[], a.attnum)) FROM pg_attribute a

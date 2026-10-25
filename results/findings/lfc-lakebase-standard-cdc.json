@@ -1,0 +1,28 @@
+{
+  "id": "lfc-lakebase-standard-cdc",
+  "title": "Standard CDC from Lakebase refuses the publication it needs",
+  "kind": "databricks-limit",
+  "status": "by-design",
+  "applies": {
+    "source": [
+      "lakebase"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-15",
+    "by": "run 2026-10-15-azure-serverless-workspace"
+  },
+  "symptom": "The gateway setup fails on the publication",
+  "cause": "Lakebase doesn't allow the publication standard CDC creates",
+  "effect": "Standard CDC from Lakebase doesn't run",
+  "fix": "Use query-based ingestion; the skill says so and creates nothing"
+}

@@ -1,0 +1,33 @@
+{
+  "id": "fk-acting-table-not-append",
+  "title": "A table that foreign key actions change can't be append-only",
+  "kind": "pattern",
+  "status": "fixed",
+  "applies": {
+    "source": [
+      "mysql",
+      "mariadb"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "silver"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test SOURCE=mysql APP=mautic"
+  },
+  "symptom": "cdc-table-plan chose append for a log-like table that ON DELETE CASCADE also deletes from",
+  "cause": "Append keeps rows as inserted; a delete from a foreign key action has nowhere to go",
+  "effect": "The appended table keeps rows the source deleted",
+  "fix": "cdc-table-plan gives tables with an acting foreign key SCD type 1, and plan.py warns on append",
+  "where": [
+    "skills/cdc-table-plan/scripts/classify.py",
+    "skills/cdc-table-plan/scripts/plan.py"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "id": "zerobus-rejects-object-encoding",
+  "title": "Zerobus rejects Debezium's nested-object field encoding",
+  "kind": "connector-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "*"
+    ],
+    "route": [
+      "debezium-zerobus"
+    ],
+    "layer": [
+      "producer",
+      "bronze"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-20",
+    "by": "zerobus-debezium-test SOURCE=crdb"
+  },
+  "symptom": "Record decoder/encoder error: invalid type: map, expected a string (NonRetriableException)",
+  "cause": "With json.flexible.fields.encoding=object the sink sends maps where Zerobus expects JSON text for VARIANT",
+  "effect": "Nothing reaches bronze",
+  "fix": "json.flexible.fields.encoding=string into VARIANT columns"
+}

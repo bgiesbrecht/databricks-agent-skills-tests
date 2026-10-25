@@ -1,0 +1,28 @@
+{
+  "id": "sqlcmd-truncates-max",
+  "title": "sqlcmd truncates NVARCHAR(MAX) columns to 256 characters",
+  "kind": "tooling",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "sqlserver"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "test"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-24",
+    "by": "zerobus-debezium-test SOURCE=mssql"
+  },
+  "symptom": "Digests differed on long strings",
+  "cause": "sqlcmd's default variable-length display width",
+  "effect": "Long text compares wrong",
+  "fix": "Cast to NVARCHAR(4000) (or set -y)"
+}
