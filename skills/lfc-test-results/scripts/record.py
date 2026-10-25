@@ -24,10 +24,10 @@ OUTCOMES = {"pass", "fail", "blocked", "expected-stop", "partial"}
 TESTS = {"connection", "qbc", "icdc", "scdc", "fcqbc", "dml", "source-setup",      # ingestion and setup
          "secret-by-reference", "network", "compat",                                  # credentials, network path, versions
          "rclone-pull", "reflink-isolation", "juicefs-clone", "disk-restore",      # branch layers
-         "snapshot-read", "write-tps", "load",                                     # performance
+         "snapshot-read", "write-tps", "load",                                      # performance
          "zerobus",                                                                 # change capture -> Zerobus -> bronze, silver, gold
          "cdc",                                                                     # the same, in the 2026-10-22 records
-         "other"}                            # performance; add new names here in the same PR
+         "saas", "other"}                                                            # SaaS connector pipelines; add new names here in the same PR
 ALLOWED_KEYS = REQUIRED | {"host", "workspace", "setup", "compute", "metrics", "error", "skills", "docs", "notes"}
 # compute: what the run set (serverless), what the latest update ran on (ran_on, from pipelines get-update
 # .update.config.serverless), whether that compute came up (started) and then connected to the source
@@ -36,7 +36,7 @@ ALLOWED_KEYS = REQUIRED | {"host", "workspace", "setup", "compute", "metrics", "
 SERVERLESS = {"unset", "true", "false"}
 RAN_ON = {"serverless", "classic", "not-started", "unknown"}   # unknown: not read back
 BLOCKED_BY = {"compute-not-allowed", "firewall", "feature-gate", "other"}
-PIPELINE_TESTS = {"qbc", "fcqbc", "icdc", "scdc", "dml"}
+PIPELINE_TESTS = {"qbc", "fcqbc", "icdc", "scdc", "dml", "saas"}
 SETUP_KEYS = {"storage", "network", "credentials", "workload", "dml", "tool", "contributor",
               "route", "topology", "sources", "rounds", "bronze", "silver", "layers", "producer"}   # documented; others allowed (warned)
 
