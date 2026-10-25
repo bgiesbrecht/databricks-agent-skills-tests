@@ -230,13 +230,19 @@ Logical replication must be enabled **at the server level** (startup parameter),
 
 ### Create Replication Slot
 
-A replication slot tracks the decoder's position in the WAL stream. LFC creates this automatically during pipeline setup. To create manually:
+A replication slot tracks the decoder's position in the WAL stream. Create it before the first update. Tested 2026-10-25 on PostgreSQL 16 and 17:
+- Pipeline create refuses an empty slot name ("PostgreSQL slot name cannot be empty or null").
+- The gateway doesn't create a missing slot; it fails with `CDC_NOT_ENABLED` "Logical replication slot <name> doesn't exist with pgoutput plugin".
+- The slot must use `pgoutput`, be `logical`, and live in the database the connection opens.
+- A slot that is lost or dropped isn't recreated, even by a full refresh: create it again by hand, then run the full refresh.
 
 ```sql
--- Connect as superuser
-SELECT pg_create_logical_replication_slot('<slot_name>', 'test_decoding');
-SELECT * FROM pg_replication_slots;  -- List existing slots
+-- Connect as superuser, in the database the connection opens
+SELECT pg_create_logical_replication_slot('<slot_name>', 'pgoutput');
+SELECT slot_name, plugin, slot_type, database, active, wal_status FROM pg_replication_slots;
 ```
+
+`invalidation_reason` exists from PostgreSQL 17; on 16, a lost slot shows as `wal_status = 'lost'`.
 
 
 ### Set Replica Identity on Tables

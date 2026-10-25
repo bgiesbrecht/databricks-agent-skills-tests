@@ -17,7 +17,7 @@ P=<PROFILE>
 databricks workspace-settings-v2 list-workspace-settings-metadata --profile $P -o json \
   | yq -p json -o tsv '.[] | select(((.display_name // "") + " " + (.description // "")) | downcase | (test("lakeflow connect") or (test("join pushdown") and test("federat")))) | [.name, .display_name]'
 databricks workspace-settings-v2 get-public-workspace-setting integrated_cdc_oracle_connector --profile $P -o json \
-  | yq -p json 'with(select(has("boolean_val")); .v = .boolean_val.value) | with(select(has("boolean_val") | not); .v = .effective_boolean_val.value) | .v'
+  | yq -p json -oy 'with(select(has("boolean_val")); .v = .boolean_val.value) | with(select(has("boolean_val") | not); .v = .effective_boolean_val.value) | .v'
 databricks workspace-settings-v2 patch-public-workspace-setting integrated_cdc_oracle_connector \
   --json '{"name": "integrated_cdc_oracle_connector", "boolean_val": {"value": true}}' --profile $P                 # enable
 ```
@@ -34,7 +34,7 @@ The same calls work through `databricks api get|patch /api/2.1/settings-metadata
 Query-based pipelines can write to any catalog. CDC pipelines (integrated and standard) need one with its **own managed storage**, not Default Storage, and a working storage credential: see **databricks-lakeflow-connect** SKILL.md, "A Unity Catalog target". Check a candidate:
 
 ```bash
-databricks catalogs get <catalog> --profile $P -o json | yq -p json '{"isolation": .isolation_mode, "storage_root": .storage_root}'
+databricks catalogs get <catalog> --profile $P -o json | yq -p json -oy '{"isolation": .isolation_mode, "storage_root": .storage_root}'
 databricks external-locations get __databricks_managed_storage_location --profile $P -o json | yq -p json .url   # Default Storage starts with this
 ```
 
@@ -49,7 +49,7 @@ Three separate grants, in this order: logging in (an assignment plus entitlement
 ```bash
 P=<PROFILE>; G="account users"                                                     # or an account group's name
 q=$(printf 'displayName eq "%s"' "$G" | jq -sRr @uri)
-ID=$(databricks api get "/api/2.0/account/scim/v2/Groups?filter=$q" --profile $P -o json | yq -p json '.Resources[0].id')
+ID=$(databricks api get "/api/2.0/account/scim/v2/Groups?filter=$q" --profile $P -o json | yq -p json -oy '.Resources[0].id')
 databricks api get /api/2.0/preview/permissionassignments --profile $P -o json \
   | yq -p json -o tsv '.permission_assignments[] | [(.principal.display_name // .principal.user_name), (.permissions | join(","))]'   # who's in now
 databricks api put /api/2.0/preview/permissionassignments/principals/$ID --json '{"permissions": ["USER"]}' --profile $P
@@ -60,7 +60,7 @@ databricks api put /api/2.0/preview/permissionassignments/principals/$ID --json 
 ```bash
 q=$(printf 'displayName eq "%s"' users | jq -sRr @uri)
 databricks api get "/api/2.0/preview/scim/v2/Groups?filter=$q&attributes=entitlements" --profile $P -o json \
-  | yq -p json '[.Resources[0].entitlements[]?.value] | join(", ")'                # empty: USER members get nothing
+  | yq -p json -oy '[.Resources[0].entitlements[]?.value] | join(", ")'                # empty: USER members get nothing
 cat > ent.json <<'EOF'
 {"schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
  "Operations": [{"op": "add", "path": "entitlements", "value": [{"value": "workspace-access"}, {"value": "databricks-sql-access"}]}]}

@@ -122,7 +122,7 @@ Classic clusters leave the workspace through its own NAT / egress IP, which isn'
   printf '# Databricks notebook source\nimport urllib.request\ndbutils.notebook.exit(urllib.request.urlopen("https://api.ipify.org", timeout=10).read().decode())\n' > egress.py
   databricks workspace import /Users/<user>/lfc-egress-ip --file egress.py --format SOURCE --language PYTHON --overwrite --profile <PROFILE>
   # submit with a small single-node new_cluster (a node type with local disk, e.g. m5d.large on AWS), then:
-  databricks jobs get-run-output <task-run-id> --profile <PROFILE> -o json | yq -p json '.notebook_output.result' > classic.ip   # private file
+  databricks jobs get-run-output <task-run-id> --profile <PROFILE> -o json | yq -p json -oy '.notebook_output.result' > classic.ip   # private file
   databricks workspace delete /Users/<user>/lfc-egress-ip --profile <PROFILE>
   ```
   A workspace normally has one NAT IP, but a cluster in another subnet can leave from a second one: if a gateway still can't connect (`INCORRECT_SOURCE_HOSTNAME_OR_PORT_SPECIFIED_FAILURE`), run the job again and compare.

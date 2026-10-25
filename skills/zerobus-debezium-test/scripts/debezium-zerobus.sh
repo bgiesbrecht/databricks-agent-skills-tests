@@ -220,7 +220,7 @@ ME=$(dbx current-user me -o json | yq '.userName') || { echo "profile $PROFILE d
 PREFIX=${PREFIX:-$(echo "$ME" | cut -d@ -f1 | tr -d '.-' | tr 'A-Z' 'a-z')}
 eval "$(dbx metastores current -o json | yq -o shell '{"WS_ID": .workspace_id}')"
 eval "$(dbx metastores summary -o json | yq -o shell '{"REGION": .region, "CLOUD": .cloud}')"
-HOST=$(databricks auth env --profile "$PROFILE" 2>/dev/null | yq -p json '.env.DATABRICKS_HOST' 2>/dev/null)
+HOST=$(databricks auth env --profile "$PROFILE" 2>/dev/null | yq -p json -oy '.env.DATABRICKS_HOST' 2>/dev/null)
 case $CLOUD in azure) ZB="https://$WS_ID.zerobus.$REGION.azuredatabricks.net";; aws) ZB="https://$WS_ID.zerobus.$REGION.cloud.databricks.com";;
   *) echo "cloud $CLOUD: set the Zerobus endpoint form for it"; exit 2;; esac
 [ -n "$HOST" ] && [ "$HOST" != null ] || { echo "no host for profile $PROFILE"; exit 2; }

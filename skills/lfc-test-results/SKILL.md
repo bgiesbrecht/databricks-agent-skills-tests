@@ -37,6 +37,13 @@ jq -c 'select(.subject.engine == "mysql" and .test == "icdc")' results/runs/*.js
 duckdb -c "SELECT test, subject.engine, outcome, count(*) FROM read_json('results/runs/*.jsonl') GROUP BY ALL ORDER BY ALL"
 ```
 
+## Before reading a pipeline result
+
+- **Count rows only once the gateway's snapshot is done.** An ingestion update can report COMPLETED while the gateway is still snapshotting, or while a gateway flow has failed. In the 2026-10-25 round that happened in 7 runs, and a second plain update then completed the rows. So wait until the gateway's events (`bin/lfc-events.sh <profile> <gateway-id>`) show `SNAPSHOT_COMPLETED` for each table before comparing source and destination counts. If you count earlier, say so in `result`.
+- **Read the gateway's events as well as the ingestion pipeline's.** Source-side errors (archive logs gone, slot invalidated, capture instance missing) appear on the gateway; the ingestion update can show none.
+- **Record the build:** `bin/lfc-runtime.sh <profile> <pipeline-id> --summary` for the gateway and the ingestion pipeline goes in `subject` or `setup.runtime`. A result without it can't be compared with the next release.
+- **Check each setup step took effect before reading the result.** A grant, revoke or source change that failed silently makes the case invalid, not a finding. Read the state back: effective permissions, the capture instance, the slot.
+
 ## After testing: record
 
 Record every cell you ran, including the ones that stopped (`expected-stop`) or were refused by the workspace (`blocked`). A record is one line of JSON:

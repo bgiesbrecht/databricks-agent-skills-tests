@@ -46,7 +46,7 @@ else KEY=$(yq -o json -I0 '[.table_constraints[]?.primary_key_constraint.child_c
 echo "run $E: table $TABLE (pipeline ${AP:-none}, $MODE), dbt schema $TC.$DS, share $SHARE"
 done_() { q "DROP SCHEMA IF EXISTS \`$TC\`.\`$DS\` CASCADE" >/dev/null 2>&1; q "DROP SHARE IF EXISTS \`$SHARE\`" >/dev/null 2>&1; rm -rf "${W:?}"; }
 trap done_ EXIT
-api_err() { yq -p json '(.error_code // "") + " " + (.message // "" | .[0:220])' 2>/dev/null; }
+api_err() { yq -p json -oy '(.error_code // "") + " " + (.message // "" | .[0:220])' 2>/dev/null; }
 
 # --- dbt -------------------------------------------------------------------------------------------------------------
 HOST=$(dbx auth describe -o json 2>/dev/null | yq '.details.host // .host // ""' | sed 's#^https://##; s#/$##')
@@ -107,10 +107,10 @@ done
 # --- credential vending and the Iceberg REST catalog --------------------------------------------------------------------
 observe metastore-external-access "external_access_enabled: $(dbx metastores summary -o json | yq '.external_access_enabled')"
 if out=$(dbx api post /api/2.1/unity-catalog/temporary-table-credentials --json "{\"table_id\":\"$TID\",\"operation\":\"READ\"}" 2>&1); then
-  observe vending "credentials issued ($(echo "$out" | yq -p json 'keys | join(",")')); not printed"
+  observe vending "credentials issued ($(echo "$out" | yq -p json -oy 'keys | join(",")')); not printed"
 else observe vending "refused: $(echo "$out" | grep -o 'Error: .*' | head -1 | cut -c1-260)"; fi
 if out=$(dbx api get "/api/2.1/unity-catalog/iceberg-rest/v1/catalogs/$TC/namespaces/$TS/tables/$TT" 2>&1); then
-  observe iceberg-rest "loadTable answered: metadata-location $(echo "$out" | yq -p json '."metadata-location" // "none"' | sed 's#.*/##')"
+  observe iceberg-rest "loadTable answered: metadata-location $(echo "$out" | yq -p json -oy '."metadata-location" // "none"' | sed 's#.*/##')"
 else observe iceberg-rest "refused: $(echo "$out" | grep -o 'Error: .*' | head -1 | cut -c1-260)"; fi
 
 # --- Delta Sharing ------------------------------------------------------------------------------------------------------

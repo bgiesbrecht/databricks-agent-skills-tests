@@ -401,3 +401,13 @@ Before starting LFC ingestion:
    ```sql
    EXEC xp_servicecontrol N'QueryState', N'SQLServerAgent';
    ```
+
+## Checks for tests on a SQL Server source
+
+Harness mistakes from the 2026-10-25 round. Each one made a case invalid, not a finding:
+
+- **Tracing the gateway's statements:** filter the Extended Events session on the gateway's login (`sqlserver.username`), not `database_name`. Its metadata queries run in other databases too, so a database filter catches 0 rows.
+- **`VIEW SERVER STATE` is a server permission:** `GRANT` it in `master`. In a user database it fails with "can only be granted when the current database is master".
+- **Enable CDC on the database first:** run `sys.sp_cdc_enable_db` before the utility's CDC setup. Without it the setup creates no `lakeflow_` capture instance.
+- **Read effective permissions back after every GRANT or REVOKE:** `EXECUTE AS LOGIN = '<login>'; SELECT permission_name FROM fn_my_permissions(NULL, 'DATABASE'); REVERT;`. `CONCAT_WS` needs at least three arguments, which is what broke the listing in that round. A schema-level grant still covers a table after a table-level REVOKE.
+- **Match a literal `_` in `LIKE` with `[_]`:** an `ESCAPE` clause with more than one character fails with Msg 506.
