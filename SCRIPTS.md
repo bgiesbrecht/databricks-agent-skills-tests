@@ -120,7 +120,7 @@ line of its usage. Run a script with no arguments for its full usage instead of 
 ## lfc-test-results
 
 - `skills/lfc-test-results/scripts/finding.py` the findings register, results/findings/<id>.json, one file per finding.
-- `skills/lfc-test-results/scripts/recall.py` look up recorded test results (results/runs.jsonl).
+- `skills/lfc-test-results/scripts/recall.py` look up recorded test results (results/runs/*.jsonl).
 - `skills/lfc-test-results/scripts/record.py` validate test-result records and append them to results/runs/<run>.jsonl.
 
 ## lfc-ui-capture

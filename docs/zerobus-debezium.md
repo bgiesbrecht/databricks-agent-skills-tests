@@ -106,9 +106,9 @@ Each prompt is written the way you'd say it. The skills ask before creating anyt
 ```bash
 cd skills/zerobus-debezium-test
 export PROFILE=<cli-profile> CATALOG=<catalog> VM_IP=<vm-ip>
-C=/tmp/crdb-dbz-$(date +%s).sh; cp scripts/crdb-debezium-zerobus.sh $C && OUT=/tmp/crdb-dbz-result.md bash $C
+C=/tmp/crdb-dbz-$(date +%s).sh; cp scripts/debezium-zerobus.sh $C && OUT=/tmp/crdb-dbz-result.md bash $C
 ```
 
 `PHASE=1` stops after bronze and `PHASE=2` after silver. It exits 0 when every claim passed, 1 when one failed and 2 when a prerequisite is missing. Run a uniquely named copy, as above, so that editing the script can't change a run in progress. Record the result with `record.py` ([lfc-test-results](../skills/lfc-test-results/SKILL.md)).
 
-**Next:** the same flow with YugabyteDB as the source.
+YugabyteDB, Db2, Informix, MySQL, Oracle, PostgreSQL and SQL Server run the same test: [lakeflow-connect-zerobus.md](lakeflow-connect-zerobus.md).

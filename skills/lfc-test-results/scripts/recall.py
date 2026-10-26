@@ -3,7 +3,7 @@
 # requires-python = ">=3.10"
 # dependencies = []
 # ///
-"""recall.py: look up recorded test results (results/runs.jsonl).
+"""recall.py: look up recorded test results (results/runs/*.jsonl).
 
   uv run recall.py                                  # latest result per test x engine x host (the current status)
   uv run recall.py --engine oracle --test icdc      # every Oracle integrated-CDC result, newest first

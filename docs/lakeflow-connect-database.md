@@ -5,9 +5,9 @@ Every ✅ below ran end to end in a real workspace: source database, UC connecti
 | Database | UC connection, queried with [`remote_query`](https://docs.databricks.com/aws/en/query-federation/remote-queries) | Query-based | Query-based via foreign catalog | Integrated CDC | Standard CDC (gateway) |
 |---|---|---|---|---|---|
 | Lakebase | ✅ Azure | [✅ Azure, with a DML round trip](../prompts/lfc-matrix/qbc-lakebase.txt) | [✅ Azure](../prompts/lfc-matrix/fcqbc-lakebase.txt) | not offered | Lakebase refuses `CREATE PUBLICATION`: the skill stops |
-| MySQL 8.4 | ✅ AWS, Azure | [✅ AWS, Azure](../prompts/lfc-matrix/qbc-mysql.txt) | [✅ AWS, Azure](../prompts/lfc-matrix/fcqbc-mysql.txt) | [✅ AWS, Azure](../prompts/lfc-matrix/icdc-mysql.txt) | not enabled on any test workspace |
+| MySQL 8.4 | ✅ AWS, Azure | [✅ AWS, Azure](../prompts/lfc-matrix/qbc-mysql.txt) | [✅ AWS, Azure](../prompts/lfc-matrix/fcqbc-mysql.txt) | [✅ AWS, Azure](../prompts/lfc-matrix/icdc-mysql.txt) | ✅ AWS (serverless gateway); not enabled on the Azure test workspaces |
 | Oracle 23ai Free | ✅ AWS, Azure | [✅ AWS, Azure](../prompts/lfc-matrix/qbc-oracle.txt) | [✅ AWS, Azure](../prompts/lfc-matrix/fcqbc-oracle.txt) | [✅ AWS, Azure](../prompts/lfc-matrix/icdc-oracle.txt) | not offered |
-| PostgreSQL 16 | ✅ AWS, Azure | [✅ AWS, Azure](../prompts/lfc-matrix/qbc-pg.txt) | [✅ AWS, Azure](../prompts/lfc-matrix/fcqbc-pg.txt) | not offered | not enabled on any test workspace |
+| PostgreSQL 16 | ✅ AWS, Azure | [✅ AWS, Azure](../prompts/lfc-matrix/qbc-pg.txt) | [✅ AWS, Azure](../prompts/lfc-matrix/fcqbc-pg.txt) | not offered | ✅ AWS (serverless gateway); not enabled on the Azure test workspaces |
 | SQL Server 2022 | ✅ AWS, Azure | [✅ AWS, Azure](../prompts/lfc-matrix/qbc-sqlserver.txt) | [✅ AWS, Azure](../prompts/lfc-matrix/fcqbc-sqlserver.txt) | [✅ AWS, Azure](../prompts/lfc-matrix/icdc-sqlserver.txt) | [✅ AWS, Azure (serverless gateway)](../prompts/lfc-matrix/scdc-sqlserver.txt) |
 
 The UC connection column has no prompt of its own: the connection comes from step 5 below, and every mode's prompt starts from it. Lakebase runs from one bare "demo" prompt that creates its own project, connection and pipeline ([qbc-lakebase.txt](../prompts/lfc-matrix/qbc-lakebase.txt)). What each cell must show to pass is in [MATRIX.md](../MATRIX.md#pass-criteria-every-cell).

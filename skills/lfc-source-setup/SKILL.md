@@ -26,7 +26,7 @@ Use it for testing and demos. For a customer's production database, the customer
 | How big a source is: total for the infrastructure team, data Lakeflow Connect moves, rows, row size | **lfc-source-sizing** | PostgreSQL, MySQL, SQL Server, Oracle | Catalog only, through the UC connection; no table scans; cross-checks stale statistics |
 | The same connections in many workspaces, and an inventory of what exists | **lfc-connection-sync** | — | One private targets file, an idempotent create-or-update script, per-workspace or account-token logins |
 | A new test workspace: connector previews, a CDC-capable catalog, access for other people | **lfc-workspace-setup** | — | Settings API for previews; Default Storage check; workspace assignment, catalog binding, grants |
-| What's been tested, where, and how it went | **lfc-test-results** | — | `results/runs.jsonl` and dated write-ups in this repo; record every run |
+| What's been tested, where, and how it went | **lfc-test-results** | — | `results/runs/*.jsonl` and dated write-ups in this repo; record every run |
 | Firewall rules for any of the above | **lfc-source-firewall** | — | Laptop IP + workspace serverless egress (+ classic egress when known) |
 | Local Podman (Lima on macOS) | **lfc-source-podman** | MySQL, MariaDB, PostgreSQL, SQL Server (incl. Availability Groups), Oracle, Db2, Informix, MongoDB | **Local testing only:** Databricks serverless can't reach a laptop container, and an SSH tunnel doesn't change that. To ingest from Databricks, use a managed service or a cloud VM |
 
