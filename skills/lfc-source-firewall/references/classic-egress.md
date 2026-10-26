@@ -27,3 +27,7 @@
 2. **Switch to serverless**, which the test matrix does by default (`LFC_SERVERLESS=true`): record `switched_from: unset`, `switch_reason: firewall`.
 
 Use 1 to test what the default does on a classic workspace, and 2 when only the data path matters.
+
+## Classic compute that never starts
+
+A classic standard gateway on `m5.large` or `m6g.large` stayed `PENDING` at "Finding instances" for 40 minutes or more, and creating an instance pool returned "You are not authorized to create instance pools" (tested 2026-10-25, SQL Server 2022 on a classic workspace). Ask a workspace admin for instance-pool permission and for a node type the workspace has capacity for, or run the gateway on serverless.
