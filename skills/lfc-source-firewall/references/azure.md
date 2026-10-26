@@ -2,7 +2,7 @@
 
 Uses `fw.env` and the parent skill's `$Q` and `$FW` (its Step 0). Start every block with `set -a; . ./fw.env`. Also needed: the resource group (`RG`) and the server or NSG.
 
-**Resource group:** ask whether the user has their own. If not, use the shared test group `forgedb-rg` (`az group show -n forgedb-rg`); the user is free to choose a different one. Shared groups can hit quota or resource limits: if a create fails with a quota error there, ask for another group instead of removing other people's resources.
+**Resource group:** ask whether the user has their own. If not, use the team's shared test group, `<resource-group>` (`az group show -n <resource-group>`); the user is free to choose a different one. Shared groups can hit quota or resource limits: if a create fails with a quota error there, ask for another group instead of removing other people's resources.
 
 ## Shared NSG (VMs and the shared VNet): set up once, reuse everywhere
 
@@ -12,7 +12,7 @@ Most test sources run on an Azure VM (often several engines in Podman on one VM)
 
 ```bash
 cat >> fw.env <<'EOF'
-RG=forgedb-rg
+RG=<resource-group>
 LOCATION=<region>
 EOF
 set -a; . ./fw.env
@@ -20,7 +20,7 @@ az network nsg list -g "$RG" -o json \
   | yq -p json -o json -r '.[] | select(.location == strenv(LOCATION)) | .name + "  rules: " + (.securityRules | length | tostring)'
 ```
 
-- **One exists in the region** (in `forgedb-rg`, for example `forgedb-nsg` in centralus): use it. A team NSG often already allows the serverless ranges; the coverage step below finds that.
+- **One exists in the region** (in `<resource-group>`, for example `<nsg-name>` in the source's region): use it. A team NSG often already allows the serverless ranges; the coverage step below finds that.
 - **None exists:** ask, then create one: `az network nsg create -g "$RG" -n lfc-test-nsg-$LOCATION -l "$LOCATION" --tags purpose=lfc-test`.
 
 **Ports.** Podman engines on a VM are published on one range, `30000-30063`, so one set of rules covers every engine on every VM. Native installs use the engine's port (5432, 3306, 1433, 1521). SSH (22) is opened to the laptop only, never to Databricks.

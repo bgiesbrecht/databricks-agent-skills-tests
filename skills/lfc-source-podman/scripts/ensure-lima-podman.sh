@@ -2,7 +2,7 @@
 # ensure-lima-podman.sh <instance> [--create]
 #   Make a Lima VM ready to run test containers with `limactl shell <instance> -- podman --remote ...` (rootful, no sudo):
 #   the instance exists (--create makes it with this skill's command), it's running, and ensure-podman-rootless.sh
-#   passes inside it (Podman installed, which an existing VM can lack: forgedb-lima-rosetta2-podman, an Ubuntu 25.10 VM,
+#   passes inside it (Podman installed, which an existing VM can lack: an existing Ubuntu 25.10 Lima VM,
 #   had none; subordinate IDs; linger).
 #   Prints one line per step, PASS / FIXED / FAIL / WARN; exit 1 if anything FAILs.
 set -uo pipefail
