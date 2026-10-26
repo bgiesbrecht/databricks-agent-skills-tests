@@ -66,9 +66,16 @@ line of its usage. Run a script with no arguments for its full usage instead of 
 - `skills/lfc-schema-change-test/scripts/vm-psql.sh` [database]: run SQL from stdin as postgres on a PostgreSQL Podman container on a cloud VM (lfc-source-cloud-vm). Need...
 - `skills/lfc-schema-change-test/scripts/vm-throttle.sh` <MiB/s | off | show>: limit the disk reads and writes of the source container on its cloud VM, through the container'...
 
+## lfc-source-azure-flexserver
+
+- `skills/lfc-source-azure-flexserver/scripts/flex.sh` pg|mysql plan|create|status|stop|start|delete: an Azure Database for PostgreSQL or MySQL Flexible Server set up for L...
+- `skills/lfc-source-azure-flexserver/scripts/lfc-setup.sh` pg|mysql: the test user and seed tables on an Azure Database for PostgreSQL or MySQL Flexible Server (after flex.sh c...
+
 ## lfc-source-azure-sql
 
+- `skills/lfc-source-azure-sql/scripts/lfc-setup.sh` the test login, seed tables, and change tracking + CDC on an Azure SQL Database or Managed Instance.
 - `skills/lfc-source-azure-sql/scripts/mi.sh` plan|create|wait|status|endpoint|stop|start|delete: an Azure SQL Managed Instance behind its own NSG.
+- `skills/lfc-source-azure-sql/scripts/sqldb.sh` plan|create|status|wake|delete: an Azure SQL Database (serverless, auto-pause) on its own logical server.
 
 ## lfc-source-cloud-vm
 
@@ -93,6 +100,7 @@ line of its usage. Run a script with no arguments for its full usage instead of 
 
 - `skills/lfc-source-firewall/scripts/classic-egress.sh` <profile> [--warehouse <id> [--days N]] [--runs N]: the public IP a workspace's classic compute leaves from.
 - `skills/lfc-source-firewall/scripts/nsg-copy.sh` <from-nsg> <to-nsg> <port> [--apply]: give another NSG the same sources as the region's shared NSG, for one port.
+- `skills/lfc-source-firewall/scripts/server-fw.py` sql|pg|mysql <server> --nsg <shared-nsg> [--profiles p1,p2] [--regions cloud:region,...] [--cidrs c1,c2] [--no-my-ip]...
 - `skills/lfc-source-firewall/scripts/serverless-egress.sh` <cloud> <region> [--state FILE]: the serverless egress ranges a source's firewall must allow, from Databricks' publis...
 
 ## lfc-source-log-state
@@ -147,6 +155,10 @@ line of its usage. Run a script with no arguments for its full usage instead of 
 ## podman-desktop-remove
 
 - `skills/podman-desktop-remove/scripts/remove-podman-desktop.sh` [--yes] [--machines]: remove Podman Desktop from a Mac so it stops starting its own podman machine VM (a second VM ne...
+
+## public-skill-conventions
+
+- `skills/public-skill-conventions/scripts/conventions-check.py` <skills-dir> <skill> [--base <git-ref>]: does one skill in a checkout of the public skills repo follow what the other...
 
 ## shell-json-scripting
 
