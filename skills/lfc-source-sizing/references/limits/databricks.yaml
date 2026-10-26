@@ -40,7 +40,7 @@
   kind: hard
   url: https://docs.databricks.com/aws/en/resources/limits
   quote: Lakeflow pipelines | Number of tables per pipeline | 1,000 | Pipeline | Yes
-  ask: more than about 500 source tables (2 tables each in a pipeline)? split them over pipelines
+  ask: 'more than 999 source tables in one ingestion pipeline? the hidden CDC staging table takes one (tested 2026-10-26): split them over pipelines'
   checked: '2026-10-22'
 - product: Databricks
   limit: Lakeflow pipelines saved pipelines

@@ -10,7 +10,7 @@ Generated from `limits/*.yaml` by `scripts/limits-check.py --markdown`, which pr
 | Databricks | Unity Catalog tables per schema | 10,000 | soft | more than about 5,000 source tables into one schema (each makes 2 silver tables)? split schemas, or ask the account team to raise it | [docs](https://docs.databricks.com/aws/en/resources/limits) |
 | Databricks | Unity Catalog volumes per schema | 10,000 | soft | one staging volume per table or per source? | [docs](https://docs.databricks.com/aws/en/resources/limits) |
 | Databricks | Unity Catalog volumes per metastore | 100,000 | soft | how many volumes across all schemas? | [docs](https://docs.databricks.com/aws/en/resources/limits) |
-| Databricks | Lakeflow pipelines tables per pipeline | 1,000 | hard | more than about 500 source tables (2 tables each in a pipeline)? split them over pipelines | [docs](https://docs.databricks.com/aws/en/resources/limits) |
+| Databricks | Lakeflow pipelines tables per pipeline | 1,000 | hard | more than 999 source tables in one ingestion pipeline? the hidden CDC staging table takes one (tested 2026-10-26): split them over pipelines | [docs](https://docs.databricks.com/aws/en/resources/limits) |
 | Databricks | Lakeflow pipelines saved pipelines | 12,000 | hard | one pipeline per source or per table group: how many in total? | [docs](https://docs.databricks.com/aws/en/resources/limits) |
 | Databricks | Lakeflow pipelines concurrent updates | 1,000 | hard | how many pipelines update at the same time? | [docs](https://docs.databricks.com/aws/en/resources/limits) |
 | Databricks | SQL Statement Execution API result payload | 25 MiB | hard | a result over 25 MiB inline? use EXTERNAL_LINKS | [docs](https://docs.databricks.com/aws/en/dev-tools/sql-execution-tutorial) |
