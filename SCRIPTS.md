@@ -66,6 +66,10 @@ line of its usage. Run a script with no arguments for its full usage instead of 
 - `skills/lfc-schema-change-test/scripts/vm-psql.sh` [database]: run SQL from stdin as postgres on a PostgreSQL Podman container on a cloud VM (lfc-source-cloud-vm). Need...
 - `skills/lfc-schema-change-test/scripts/vm-throttle.sh` <MiB/s | off | show>: limit the disk reads and writes of the source container on its cloud VM, through the container'...
 
+## lfc-source-azure-sql
+
+- `skills/lfc-source-azure-sql/scripts/mi.sh` plan|create|wait|status|endpoint|stop|start|delete: an Azure SQL Managed Instance behind its own NSG.
+
 ## lfc-source-cloud-vm
 
 - `skills/lfc-source-cloud-vm/scripts/add-mssql-container.sh` <port>: one more SQL Server container on the test VM, with the test login and its own Unity Catalog connection, so lo...

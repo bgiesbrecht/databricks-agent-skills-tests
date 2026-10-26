@@ -60,7 +60,7 @@ plan|create)
     --public-data-endpoint-enabled true --minimal-tls-version 1.2 --backup-storage-redundancy Local \
     ${PRICING:+--pricing-model "$PRICING"} --tags "${TAGS[@]}" --no-wait -o none
   echo "creating $MI_NAME (first instance in a subnet: 4-6 hours). Next: mi.sh wait, in the background"
-  echo "then: lfc-source-firewall with target NSG $NSG, port 3342" ;;
+  echo "then: lfc-source-firewall scripts/nsg-copy.sh <shared-nsg> $NSG 3342 --apply" ;;
 wait)
   for w in 60 120 300 600 900 1800 1800 1800 1800 1800 1800 1800 1800 1800; do   # about 6.5 hours
     sleep "$w"

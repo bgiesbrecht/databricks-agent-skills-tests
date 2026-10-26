@@ -97,7 +97,7 @@ bash $S/mi.sh endpoint                                # <name>.public.<zone>.dat
 bash $S/mi.sh stop                                    # pause compute between test runs; start to resume
 ```
 
-Then **lfc-source-firewall** with the target NSG `<subnet>-nsg` and port 3342. `PRICING=Freemium` uses the free offer (one instance per subscription). Details and the private endpoint path: [azure-sql-mi.md](references/azure-sql-mi.md), [mi-networking.md](references/mi-networking.md).
+Then copy the shared NSG's sources into it for port 3342: **lfc-source-firewall**'s `scripts/nsg-copy.sh <shared-nsg> <subnet>-nsg 3342 --apply` (rerun after the shared NSG is synced). `PRICING=Freemium` uses the free offer (one instance per subscription). Details and the private endpoint path: [azure-sql-mi.md](references/azure-sql-mi.md), [mi-networking.md](references/mi-networking.md).
 
 ## Configure for LFC
 
