@@ -48,11 +48,17 @@ Each ✅ ran on a fresh source database and real pipelines, with the destination
 
 ## Tested end to end: Lakeflow Connect Zerobus, by database
 
-Database changes through Zerobus Ingest into bronze, silver (current rows and every version) and gold, each checked against the source after five rounds of changes, a producer restart and schema changes included. The runs, and how to repeat them: [docs/lakeflow-connect-zerobus.md](docs/lakeflow-connect-zerobus.md).
+Database changes through Zerobus Ingest into bronze, silver (current rows and every version) and gold, each checked against the source after each round of changes: inserts, updates and deletes, a producer killed and restarted, then a column added and a column dropped and retyped. The six databases from Db2 to SQL Server each ran all six TPC models (TPC-B, TPC-C, TPC-DI, TPC-DS, TPC-E, TPC-H) on Azure, one source into one set of tables. Several sources into one set of tables (n:1): TPC-H with 2 sources on Db2, Informix, MySQL, PostgreSQL and SQL Server, and the Mautic schema with 2 and 4 MySQL sources. The runs, and how to repeat them: [docs/lakeflow-connect-zerobus.md](docs/lakeflow-connect-zerobus.md).
 
 | Database | Producer into Zerobus | Bronze | Silver SCD 1 and 2 | Gold | Producer restart | Schema changes | No cloud storage (laptop) |
 |---|---|---|---|---|---|---|---|
 | CockroachDB v25.4.13 | Debezium Server, Zerobus sink | ✅ Azure | ✅ Azure | ✅ Azure | ✅ Azure | ✅ Azure | ✅ |
+| Db2 11.5.9 | Debezium Server, Zerobus sink | ✅ Azure | ✅ Azure | no TPC gold yet | ✅ Azure | not run yet | not run yet |
+| Informix 14.10 | Debezium Server, Zerobus sink | ✅ Azure | ✅ Azure | no TPC gold yet | ✅ Azure | not run yet | not run yet |
+| MySQL 8.4 | Debezium Server, Zerobus sink | ✅ Azure | ✅ Azure | no TPC gold yet | ✅ Azure | ✅ Azure | not run yet |
+| Oracle 26ai Free (23.26) | Debezium Server, Zerobus sink | ✅ Azure | ✅ Azure | no TPC gold yet | ✅ Azure | not run yet | not run yet |
+| PostgreSQL 16 | Debezium Server, Zerobus sink | ✅ Azure | ✅ Azure | no TPC gold yet | ✅ Azure | ✅ Azure | not run yet |
+| SQL Server 2022 | Debezium Server, Zerobus sink | ✅ Azure | ✅ Azure | no TPC gold yet | ✅ Azure | not run yet | not run yet |
 | YugabyteDB 2026.1.2.0 | Kafka Connect (no broker), Zerobus Kafka endpoint | ✅ Azure | ✅ Azure | ✅ Azure | ✅ Azure | ✅ Azure | not run yet |
 
 ## Quick start
