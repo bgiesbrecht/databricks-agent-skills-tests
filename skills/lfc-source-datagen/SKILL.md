@@ -17,28 +17,7 @@ Two more scripts use the same drivers (`drivers.py`), for engines whose CLI can'
 - [`scripts/python/sq.py`](scripts/python/sq.py) `<engine>`: SQL on stdin, tab-separated rows out, for Db2 and Informix, whose CLIs pad columns (Db2's CLP) or print no column layout at all (Informix's `dbaccess`). A line `@` ends a statement that can't end at `;` (a trigger body).
 - **Informix:** fill with `--sessions 1`. Each connection sets `SET LOCK MODE TO WAIT 30`, since the default lock mode fails a concurrent writer at once (`-425` / ISAM `-107`), and several sessions still collided.
 
-## How it works
-
-- **Every row comes from one integer `n`.** Each column's value is a cast of `n` to its type, for example `n % 32767` for `smallint`, `date '1970-01-01' + n % 2932896` for `date`, or a zero-padded `n` followed by MD5 filler for text. Every cast in the engine references has been run at `n` = 1, 2, 10⁶, 10¹², 2⁶², and 2⁶³ − 2 on the live engine, and stays valid for all of them.
-- **A planner query reads the catalog once and writes the SQL.** For every table in a schema it emits one `INSERT ... SELECT` with the right cast for each column. That's one round trip, even for 10,000 tables.
-- **Each INSERT resumes by itself.** It reads the table's min and max key (two index probes) and continues above the max. After an interruption, **rerun the same file**: each INSERT is one statement, so a killed one rolls back completely and nothing is duplicated.
-- **Keys only change at the ends.** Inserts append above the max, and deletes remove keys from the head (lowest) or the tail (highest), never the middle. The keys stay contiguous, so **rows = max − min + 1**, with no `COUNT(*)`.
-- **Key order and column data don't have to be sequential.** Each INSERT adds its keys in `random` (default), `asc`, or `desc` order; the range is still exactly max + 1 … max + need, so resume and rows = max − min + 1 still hold. Non-key columns are `seq` (plain `n`), `scramble` (a non-linear function of `n` with a random multiplier and start per column, fixed when the SQL is planned, so a rerun regenerates the same rows), or `random` (one per-row random value, scrambled per column). Key and `UNIQUE` columns always keep plain `n`.
-- **Plain values can be audited from the key alone.** Every cast with plain `n` can be decoded back: text starts with the zero-padded `n` (and, from 38 characters, ends with it, at the exact column length), binary starts with `n`'s 8 bytes (and ends with them from 16 bytes), a uuid holds `n` in its last 16 hex digits, dates and timestamps count days or seconds from 1970, and so on. So a row whose columns hold plain values can be checked on its own: decode each column and compare it with the key. `plain_every = k` with `block = B` keeps every k-th block of B keys plain while the rest are scrambled or random, so a mixed dataset still has rows to audit; the audit planner checks exactly those blocks. Scrambled and random rows can't be audited.
-- **Foreign keys stay valid, dimension first.** A one-column foreign key to a parent's primary key gets `parent_min + scramble(n) mod (parent_max − parent_min + 1)`, cast to the parent key's type, with the parent's range probed when the statement runs: since a key range is always contiguous, every value is an existing key. The planners order tables by level (dimensions 0, a table referencing them one higher; each statement is tagged `/* lfc level N */`): inserts fill the dimensions before the facts, and before a delete trims a dimension's head or tail, it re-points the fact rows that reference those keys into the range that stays (an UPDATE of a non-key column, so the facts' own key ranges don't change). A delete never empties a table, so a dimension always has keys left to point at.
-- **Spec formulas, composite keys, and tables without a key** are described by comment tags, not code: a column's `lfc:v={...}` gives its value as an integer formula in `n` (a sparse key, a value range, a key that follows another table's), a table's `lfc:n={...}` gives `n` back from a row, `lfc:by={...}` names the column `n` rises with, a column's `lfc:e={SQL}` is its value as is (literal strings: a spec's code lists or name formats), and `lfc:len={L}` sets its string length (a source's average width instead of the declared maximum). On MySQL, tags longer than a comment holds (1,024 characters) go to `lfc_seed.tags`, which the MySQL planners read with the comments. That's how the TPC schemas ([references/tpc.md](references/tpc.md)) and copies shaped from a customer's statistics (**lfc-source-statschema**) are built.
-- **A table's target row count lives in its comment** (`lfc:rows=500000`). The planner's `fill` mode tops every table up to its target, at most `rows` per statement, so rerunning it until nothing is left to add finishes the load.
-
-## Why generated values instead of realistic fake data
-
-Tools like Faker make rows that **look** real (names, addresses, sentences), but nothing about a row says what it should be, so after a snapshot and CDC the only check left is "the row counts match". Values derived from the key are different:
-
-- **Every value can be checked from the key alone.** A plain row's columns all decode back to its key, so the target can be audited row by row after the pipeline: a wrong, shifted, or mixed-up value is caught, not just a missing row. Truncation is caught too: long strings and binaries carry the key at **both ends** and have an exact length.
-- **No reference copy is needed.** The audit doesn't compare the target with the source; it recomputes what each value must be. It works on 10,000 tables and after the source has moved on.
-- **Reproducible.** The same plan writes the same rows on every run (except `data=random`), so a failure can be reproduced and a resume never duplicates.
-- **Generated in the database.** Only SQL text crosses the network, and each type's whole valid range can be exercised on purpose (wrapping, 9999-12-31, `bit(64)`, full-length `varchar`), which realistic samples rarely reach.
-
-Where realism matters (non-sequential keys, values with no visible pattern), use `order=random` and `data=scramble` or `random`, and keep `plain_every` blocks so part of every table stays auditable.
+How the planner works (every row from one integer, resuming, keys only at the ends, scrambled and random columns, the audit, foreign keys and the tags), and why generated values instead of realistic fake data: [references/how-it-works.md](references/how-it-works.md).
 
 ## Make a dataset
 
@@ -126,31 +105,11 @@ Operations planned together can clash (one drops a column another modifies), and
 
 Read the error and the table, then fix the cause **in the planner's input** (the cast file, or the table itself), not in the generated SQL, so the fix survives the next plan. This is why the skill is markdown: no fixed program could anticipate every failure.
 
-| Error | Cause | What to do |
-|---|---|---|
-| column or table doesn't exist; column count or type mismatch | DDL after the plan was made | Re-plan and rerun |
-| deadlock, lock timeout, connection lost | concurrency, a restart | Rerun: each INSERT is atomic and resumes from the current max |
-| `NOT NULL` violation on a column the planner filled with `NULL` | a column of a type the cast file doesn't handle | Add the type to the cast file (with a check for the audit, if it can decode), re-plan |
-| value too long, out of range, or a `CHECK` violation | a column narrowed or constrained outside the planner | Look at the new definition; if the cast can't fit it, change the cast or leave the column to its default, then re-plan |
-| a foreign key violation | a foreign key added, or a parent changed, outside the planner | Re-plan (levels and foreign-key ranges come from the catalog); if the parent is empty, fill it first |
-| the table no longer shows up in the plan | its primary key was dropped or changed | Run the skipped-tables query and report it; the planner can only fill tables with a one-column key |
-| anything else | | Read the message, inspect the table (`\d` or `SHOW CREATE TABLE`), decide, and say what you changed |
+Errors and fixes: [references/errors.md](references/errors.md).
 
 ## Quick limits
 
-Answer from this table; don't look the docs up. ✓ = tested on the engine (Postgres 16, MySQL 8.4); the rest come from the vendor docs and aren't tested yet.
-
-| Limit | PostgreSQL | MySQL (InnoDB) | SQL Server | Oracle |
-|---|---|---|---|---|
-| Columns per table | **1,600** ✓ (dropped columns still count) | **1,017** ✓ (the server's 4,096 is unreachable with InnoDB) | 1,024; 30,000 with sparse columns | 1,000; 4,096 with `MAX_COLUMNS = EXTENDED` (recent releases, 23ai/26ai) |
-| Row size | Must fit an 8 KB page: **8,160 bytes** ✓ in-row; long values move out of row (TOAST) | **65,535** bytes declared ✓; about **8,126** in-page ✓ (16 KB pages) | 8,060 bytes in-row; `varchar(max)` and row overflow move off-row | Rows larger than a block chain across blocks |
-| Rows in one `INSERT ... VALUES` | No fixed limit: 1M rows (8.9 MB of SQL) ✓ | Bounded by `max_allowed_packet` (**64 MB** default ✓, 1 GB max): 1M rows ✓ | **1,000** (more only in a `VALUES` derived table) | One row per `VALUES` before 23ai (use `INSERT ALL` or `UNION ALL` from `DUAL`); 23ai allows several |
-| Bind parameters | 65,535 | 65,535 | 2,100 per call | — |
-| Identifier length | 63 bytes | 64 characters | 128 characters | 128 bytes (30 before 12.2) |
-| Row generator | `generate_series` | Recursive CTE (`cte_max_recursion_depth`, default 1,000) | `GENERATE_SERIES` (2022+, compatibility level 160); recursive CTE (`MAXRECURSION` 100 default, up to 32,767 or 0) | `CONNECT BY LEVEL <= n` from `DUAL`; recursive `WITH` |
-| Seed table for big loads | Optional (same speed as `generate_series`) ✓ | Recommended: 1,000-row `VALUES` list, then double with `INSERT ... SELECT` ✓ | Same (`VALUES` limit is 1,000) | Same |
-| Longest exact decimal | `numeric`: 1,000 declared digits | `DECIMAL(65,30)` ✓ | `decimal(38)` | `NUMBER(38)` |
-| Longest in-row string | `varchar(10485760)`; `text` up to 1 GB | `VARCHAR(16383)` in utf8mb4 (but the 65,535-byte row limit applies) ✓ | `varchar(8000)`; `varchar(max)` 2 GB | `VARCHAR2(4000)` bytes; 32,767 with `MAX_STRING_SIZE = EXTENDED` |
+Limits per engine (columns, row size, rows per statement, identifiers, row generators, string and decimal sizes). Answer from that file; don't look the docs up: [references/limits.md](references/limits.md).
 
 ## Rows per statement
 
