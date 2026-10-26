@@ -8,6 +8,17 @@ parent: lfc-source-setup
 
 A fresh workspace usually needs three things before Lakeflow Connect tests run: the connector previews on, a catalog the pipelines can write to, and access for the other people testing in it. Each is a few API calls; this skill lists them, with what was checked on an Azure serverless-only and an AWS classic workspace.
 
+## The one-command check: `ready.sh`
+
+```bash
+bash scripts/ready.sh <PROFILE> [--catalog <catalog>] [--principal "account users"] [--egress-file <file>] [--no-enable]
+```
+
+It checks, in order: login; the metastore's cloud and region (put the sources there); serverless and classic compute; the connector previews (step 1); a target catalog (step 2); access for you and `--principal` through `check.sh` (step 4); the serverless egress ranges for the source's firewall ([lfc-source-firewall](../lfc-source-firewall/SKILL.md)); the connections already here. One line each: `PASS`, `FAIL`, `WARN`, `INFO` or `ASK`, with the next command. `ASK` means stop and ask the user (no writable target catalog). Exit 1 on any `FAIL` or `ASK`.
+
+- The one change it makes: as a workspace admin, it turns on a connector preview that's off. `--no-enable` makes it read-only.
+- `--egress-file <file>` keeps the egress list; a later run shows the ranges added and removed as a `WARN`. Rerun at least monthly.
+
 ## 1. Connector previews (Settings API)
 
 Each Lakeflow Connect connector in preview is a workspace setting. The CLI's `workspace-settings-v2` commands list, read and change them (workspace admin); they page through the list themselves:

@@ -45,6 +45,9 @@ When the workspace profile's OAuth login has expired, `run.sh` mints a token fro
 `run.sh` copies the skills repo's `skills/` into the Claude plugin cache before each run, so
 sessions test your local edits. Sessions run in a scratch `WORK_DIR` under `/tmp`, outside both
 repos, so skills load from the plugin cache and generated bundles stay out of git.
+`PIPELINE_WS` is passed to Claude as `DATABRICKS_CONFIG_PROFILE`, so the Databricks skills
+target that workspace. Sessions run with `--verbose --output-format stream-json`
+(`stream-json` fails without `--verbose`).
 
 ## Script tests
 
@@ -133,8 +136,16 @@ macOS). Don't put rules with spaces in `CLAUDE_ARGS`: it's split on spaces.
 
 When editing in a sandbox (Omnigent, Solution Builder) with no git push access, `sync.sh`
 uploads and downloads individual files through a Databricks workspace (`push` / `pull` for skill
-files, `push-tests` / `pull-tests` for this repo). See "Exporting skill changes from a sandbox" in
-the skills repo's CLAUDE.md.
+files, `push-tests` / `pull-tests` for this repo).
+
+- `workspace import --format SOURCE` stores every file as a notebook with a
+  `# Databricks notebook source` first line; `sync.sh pull` strips it (`tail -n +2`).
+- Don't send a `git format-patch` through the bridge: the notebook round-trip shifts context lines
+  and `git apply` fails. Send the changed files.
+- Keep shell scripts sent this way ASCII (`--`, not an em-dash): the round-trip can mangle
+  other characters.
+- After pulling skill files: `python3 scripts/skills.py generate`, then `validate`, in the
+  skills repo.
 
 ## Test results
 

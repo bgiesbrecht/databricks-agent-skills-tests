@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# ready.sh <profile> [--catalog C] [--principal P] [--no-enable]: is this workspace ready for a Lakeflow Connect demo?
+# ready.sh <profile> [--catalog C] [--principal P] [--egress-file FILE] [--no-enable]: is this workspace ready for a Lakeflow Connect demo?
 #   Checks, in the order a demo needs them: the profile logs in; the workspace's cloud and region (where the sources
 #   should be); serverless and classic compute; the connector previews; a target catalog that works for CDC; access for
 #   you (and --principal, e.g. "account users") through check.sh; the serverless egress ranges the source firewall must
-#   allow; the Lakeflow Connect connections already here; a SQL warehouse for remote_query. One line each, PASS / FAIL /
+#   allow (with --egress-file, saved, and on a later run, what changed); the Lakeflow Connect connections already here; a SQL warehouse for remote_query. One line each, PASS / FAIL /
 #   WARN / INFO / ASK, with the next command for anything to fix; ASK means stop and ask the user (the target
 #   catalog isn't writable, or there is none). Exit 1 if anything FAILs or ASKs.
 #   The one change it makes: a connector preview that's off is turned on (as a workspace admin), with a line saying so
 #   first. --no-enable makes it read-only. Turn one off again with the same patch and "value": false.
 set -uo pipefail
-P=$1; shift; CAT=; WHO=
+P=$1; shift; CAT=; WHO=; EGRESS=
 ENABLE=yes
-while [ $# -gt 0 ]; do case $1 in --catalog) CAT=$2; shift 2;; --principal) WHO=$2; shift 2;; --no-enable) ENABLE=no; shift;; *) echo "unknown $1"; exit 2;; esac; done
+while [ $# -gt 0 ]; do case $1 in --catalog) CAT=$2; shift 2;; --principal) WHO=$2; shift 2;; --egress-file) EGRESS=$2; shift 2;; --no-enable) ENABLE=no; shift;; *) echo "unknown $1"; exit 2;; esac; done
 D=$(cd "$(dirname "$0")" && pwd); T=$(mktemp -d); trap 'rm -rf "${T:?}"' EXIT; fails=0
 row() { printf "%-5s %-40s %s\n" "$1" "$2" "$3" | tee -a $T/rows; case $1 in FAIL|ASK) fails=$((fails + 1));; esac; [ -n "${4:-}" ] && printf "      next: %s\n" "$4"; return 0; }
 j() { databricks "$@" --profile $P -o json 2> $T/err; }
@@ -133,9 +133,13 @@ done
 
 # 7. serverless egress the source's firewall must allow (lfc-source-firewall)
 if [ -n "$CLOUD" ]; then
-  n=$(curl -fsSL https://www.databricks.com/networking/v1/ip-ranges.json 2>/dev/null | C="$CLOUD" R="$REGION" yq -p json -o tsv '[.prefixes[] | select(.type == "outbound" and .platform == strenv(C) and .region == strenv(R)) | .ipv4Prefixes[]] | unique | length' 2>/dev/null)
-  [ "${n:-0}" -gt 0 ] && row PASS "7 serverless egress ranges ($CLOUD $REGION)" "$n IPv4 CIDRs in ip-ranges.json: lfc-source-firewall" \
-                      || row WARN "7 serverless egress ranges ($CLOUD $REGION)" "region not in ip-ranges.json (or not reachable)" "don't guess the IPs: check lfc-source-firewall"
+  bash "$D/../../lfc-source-firewall/scripts/serverless-egress.sh" "$CLOUD" "$REGION" ${EGRESS:+--state "$EGRESS"} > $T/eg.txt 2> $T/eg.err; erc=$?
+  n=$(grep -cv '^[#+-]' $T/eg.txt)
+  case $erc in
+    0) row PASS "7 serverless egress ranges ($CLOUD $REGION)" "$n IPv4 CIDRs in ip-ranges.json$([ -n "$EGRESS" ] && grep -q '^# unchanged' $T/eg.txt && echo ', unchanged since the saved list'): lfc-source-firewall";;
+    3) row WARN "7 serverless egress ranges ($CLOUD $REGION)" "CHANGED since $EGRESS: $(grep -c '^+' $T/eg.txt) added, $(grep -c '^-' $T/eg.txt) removed" "sync the source firewall (lfc-source-firewall)";;
+    *) row WARN "7 serverless egress ranges ($CLOUD $REGION)" "region not in ip-ranges.json (or not reachable)" "don't guess the IPs: check lfc-source-firewall";;
+  esac
 fi
 
 # 8. Lakeflow Connect connections already here (lfc-connection-sync makes them)
