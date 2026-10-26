@@ -117,8 +117,8 @@ Server and instance names combine these, for example `<pfx>-<service>-<location>
    databricks connections create --json @conn.json --profile <PROFILE> && rm conn.json
    ```
 
-   - **A self-signed certificate** (a VM or container install): add `"trustServerCertificate": "true"` to `options`. SQL Server needs it for every query (otherwise `FAILED_JDBC.CONNECTION`); MySQL needs it for CDC (the extractor fails with `TLS_VALIDATION_FAILURE`), although query-based ingestion works without it. Managed services (Azure SQL, RDS) have trusted certificates and don't need it.
-   - **Oracle:** `user` in uppercase (`C##LFC_USER`), and `"service_name"` set to the root container's service, which is the CDB's name (`FREE` on Oracle Free; `lsnrctl status` lists the services). Integrated CDC refuses a connection without it. The docs' "`CDB$ROOT`" means that service, not the literal name: the listener doesn't serve `CDB$ROOT`, and queries fail. Pipelines reach the PDB through `source_catalog` (`FREEPDB1`). SQL through the connection (`remote_query`, step 3, sizing) runs in the connection's service and ignores a `service_name =>` argument, so for the PDB's tables register a second connection, `<firstname><lastname>-orapdb-<target>`, with `"service_name": "<PDB>"`.
+   - **A self-signed certificate** (a VM or container install): add `"trustServerCertificate": "true"` to `options`. SQL Server needs it for every query (otherwise `FAILED_JDBC.CONNECTION`); MySQL needs it for CDC (the extractor fails with `TLS_VALIDATION_FAILURE`), although query-based ingestion works without it. PostgreSQL with `verify-ca` needs it too (`TLS_CONNECTION_FAILURE`; [engine-postgres.md](references/engine-postgres.md)). Managed services (Azure SQL, RDS) have trusted certificates and don't need it.
+   - **Oracle:** `user` in uppercase (`C##LFC_USER`), and `"service_name"` set to the root container's service, which is the CDB's name (`FREE` on Oracle Free; `lsnrctl status` lists the services). Integrated CDC refuses a connection without it. The docs' "`CDB$ROOT`" means that service, not the literal name: the listener doesn't serve `CDB$ROOT`, and queries fail. Pipelines reach the PDB through `source_catalog` (`FREEPDB1`). The gateway takes the base service name in `connection_parameters` (`{"source_catalog": "FREE"}`), not the literal `CDB$ROOT` its message names: [engine-oracle.md](references/engine-oracle.md). SQL through the connection (`remote_query`, step 3, sizing) runs in the connection's service and ignores a `service_name =>` argument, so for the PDB's tables register a second connection, `<firstname><lastname>-orapdb-<target>`, with `"service_name": "<PDB>"`.
 
 3. **Verify** from serverless with a read-only `remote_query` through the connection. Write it to a file and run `databricks experimental aitools tools query --file ping.sql --profile <PROFILE> -o csv`:
 
@@ -130,7 +130,7 @@ Server and instance names combine these, for example `<pfx>-<service>-<location>
    | Oracle | `SELECT * FROM remote_query('<PDB connection>', query => "SELECT sys_context('USERENV', 'CON_NAME') AS con, banner_full AS v FROM v$version")`: `con` must be the PDB |
 
    `FAILED_JDBC.CONNECTION ... Failed to connect to the database` means the network path (firewall, NSG not attached, wrong port) or, for SQL Server, an untrusted certificate. Check from the laptop first (`nc -z <host> <port>`): if that fails too, it's the firewall. More in Step 0 of `references/3-query-based-connectors.md` in **databricks-lakeflow-connect**.
-4. **Hand off** to **databricks-lakeflow-connect** for the pipeline, its pre-flight checks, and the rows-per-run report.
+4. **Hand off** to **databricks-lakeflow-connect** for the pipeline, its pre-flight checks, and the rows-per-run report. Gateway create: `spark_conf` can't set `spark.databricks.cluster.profile` or `spark.master` (refused: "The Gateway pipeline does not allow spark config [...]"); `num_workers: 0` is accepted (tested 2026-10-25, SQL Server 2022). A zero-worker gateway on classic compute never completed an update, so check the classic egress first (**lfc-source-firewall**).
 5. **Record the results** of every test you ran (passes, failures, and cells the workspace refused) with **lfc-test-results**, and check it first for what's already been tested.
 
 ## Lifecycle
@@ -138,7 +138,7 @@ Server and instance names combine these, for example `<pfx>-<service>-<location>
 | Action | Where |
 |---|---|
 | Stop / start (to stop billing compute) | Each child skill; not every target supports it |
-| Delete | Each child skill. Delete the UC connection too (`databricks connections delete <connection>`), and drop any Postgres replication slot first |
+| Delete | Each child skill. Delete the UC connection too (`databricks connections delete <connection>`). Drop any Postgres replication slot first; a slot the pipeline named stays after the delete, so drop it by hand if you forgot (tested 2026-10-25). Deleting an integrated MySQL pipeline drops its destination tables (tested 2026-10-25): copy them out first |
 | Find leftovers | List resources by the owner tag and `<pfx>` in each cloud |
 
 Each child skill is a plain-CLI recipe (`aws`, `az`, `gcloud`, SQL clients, and the Databricks CLI), derived from provisioning logic that's been used to stand up these sources for Lakeflow Connect testing.

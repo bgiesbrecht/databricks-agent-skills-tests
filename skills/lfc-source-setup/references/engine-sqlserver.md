@@ -153,6 +153,8 @@ The [public setup](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect
    ```
    `@Tables` also takes `'ALL'` and `'SCHEMAS:Sales,HR'`. CDC needs SQL Server Agent running; in the `mcr.microsoft.com/mssql/server` image, set `MSSQL_AGENT_ENABLED=true`.
 4. The ingestion user doesn't need `db_owner` once this is done: `ALTER ROLE db_owner DROP MEMBER [<lfc_user>]`. `db_owner` is only for whoever runs the setup.
+5. **Integrated CDC on many tables:** `lakeflowFixPermissions` doesn't grant `VIEW DATABASE PERFORMANCE STATE`. A 450-table integrated pipeline failed its first update with `PIPELINE_NON_RETRYABLE_ANALYSIS_INTERNAL_ERROR` and `GENERIC_SNAPSHOT_FAILURE` ("STREAM_FAILED ... VIEW DATABASE PERFORMANCE STATE permission denied in database <database>"). A 20-row table ran without it. Grant it, then start a new update, since the failed one doesn't create one: `GRANT VIEW DATABASE PERFORMANCE STATE TO [<lfc_user>];` (tested 2026-10-25, SQL Server 2022 CU27).
+6. **Utility 1.5 installed, then 1.7 with no flag:** the update fails with `INGESTION_GATEWAY_DDL_OBJECTS_MISSING` ("DDL objects missing on table ... Execute the DDL objects script and full refresh the table"), then `PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR`. Tested 2026-10-25, SQL Server 2022 CU27, on a database with a non-default collation. Run the DDL objects script the message names, then full refresh the table. A rerun with the flag on the change-tracking setup passed; the cause isn't isolated.
 
 ## Change Tracking (CT) Configuration
 
@@ -330,6 +332,8 @@ ALTER DATABASE [<database>] SET CHANGE_TRACKING = ON;
 SELECT capture_instance FROM cdc.change_tables WHERE source_table = 'dtix';
 ```
 
+On a case-insensitive database, a capture instance named in a different case from its table fails the update with `INGESTION_GATEWAY_CDC_LOG_TRUNCATED` ("CDC log truncated, full refresh required"), not a missing-table error (tested 2026-10-25, SQL Server 2022 CU27). Fix the name from `cdc.change_tables`, then full refresh the table.
+
 ### Cannot Alter User Role (RDS/Managed)
 
 **Symptom:** `ALTER ROLE db_owner ADD MEMBER` fails; permission denied.
@@ -359,6 +363,40 @@ SELECT 1 FROM sys.sql_logins WHERE name = '<lfc_user>';
 USE [<database>];
 SELECT 1 FROM sys.database_principals WHERE name = '<lfc_user>';
 ```
+
+### TRUNCATE on a Change-Tracking Table
+
+**Symptom:** After `TRUNCATE TABLE` on a change-tracking table and five inserts, the update FAILED with `INGESTION_GATEWAY_UNTRACEABLE_TABLE_MODIFICATION`, and no new rows arrived (tested 2026-10-25, SQL Server 2022 CU27).
+
+**Fix:** Full refresh that table. The full refresh matched the source.
+
+### Capture Instance Dropped
+
+**Symptom:** After `sp_cdc_disable_table` on a table's capture instance, two updates COMPLETED with no error event, and a changed row didn't arrive (tested 2026-10-25, SQL Server 2022 CU27). After CDC was re-enabled, a full refresh of the table delivered the row.
+
+**Fix:** After changing a capture instance, full refresh the table.
+
+### Query-Based Cursor on datetime2(7)
+
+**Symptom:** A query-based pipeline with a `datetime2(7)` cursor missed rows whose seventh fractional digit changed: 0 of 3 arrived, while the same data with a `datetime2(6)` cursor arrived 2 of 2. The update COMPLETED (tested 2026-10-25, SQL Server 2022 CU27, one run).
+
+**Fix:** Use a `datetime2(6)` or lower cursor until the case is checked.
+
+### Governor Limits on the Gateway's Login
+
+**Symptom:** Two cases, tested 2026-10-25 on SQL Server 2022 CU27 (Developer, scaled down):
+- The query governor cost limit (`sp_configure 'query governor cost limit'`) refused the snapshot's full read at compile with error 8649 (estimated cost 91); nothing ran.
+- A Resource Governor `REQUEST_MAX_CPU_TIME_SEC` of 1 ended a 10,000,000-row keyless snapshot early. The update reported COMPLETED with 3,574,695 rows and no error event.
+
+Both limits count compile cost or CPU time, not elapsed time.
+
+**Fix:** Remove or raise the limits for the gateway's login, then count the rows after `SNAPSHOT_COMPLETED` (see the checks below).
+
+### Scoping to One Schema
+
+**Symptom:** A pipeline scoped to one 100-table schema of three still shows "Found 300 table(s) in the connection" in Schema Exploration (tested 2026-10-25, SQL Server 2022 CU27). Discovery reads the whole connection; the scope cuts the ingestion reads.
+
+**Fix:** Expect discovery to count the whole connection. Scope the pipeline's tables to limit what is read.
 
 ## Platform-Specific Notes
 
@@ -411,3 +449,4 @@ Harness mistakes from the 2026-10-25 round. Each one made a case invalid, not a 
 - **Enable CDC on the database first:** run `sys.sp_cdc_enable_db` before the utility's CDC setup. Without it the setup creates no `lakeflow_` capture instance.
 - **Read effective permissions back after every GRANT or REVOKE:** `EXECUTE AS LOGIN = '<login>'; SELECT permission_name FROM fn_my_permissions(NULL, 'DATABASE'); REVERT;`. `CONCAT_WS` needs at least three arguments, which is what broke the listing in that round. A schema-level grant still covers a table after a table-level REVOKE.
 - **Match a literal `_` in `LIKE` with `[_]`:** an `ESCAPE` clause with more than one character fails with Msg 506.
+- **Lag can read healthy with an empty destination:** an integrated pipeline showed lag 5 seconds and zero pending snapshots for about 5 hours while its destination tables had 0 rows (tested 2026-10-25, 450 tables, SQL Server 2022). Count the destination rows and read the table's history: `DESCRIBE HISTORY` showed MERGE versions with `numTargetRowsInserted` 0. The grant had been added after a failed first start, so the cause isn't isolated; the gateway's snapshot events show whether rows were read.

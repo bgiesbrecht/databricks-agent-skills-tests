@@ -143,6 +143,8 @@ BEGIN DBX_ORACLE_SETUP_UTIL.VALIDATE_SETUP('C##LFC_USER'); END;
 
 `GRANT_SELECT_PERMISSIONS` grants only the tables that exist when it runs: rerun it after adding tables. The same user works for query-based ingestion and CDC: UC connection `user` `C##LFC_USER` with `service_name` `FREE` (the CDB), and the PDB (`FREEPDB1`) as `source_catalog` in pipelines. For SQL through a connection (`remote_query`), use a second connection with `service_name` `FREEPDB1`: a `service_name =>` argument doesn't override the connection's. The manual grants below are the older way and are kept for reference.
 
+**Gateway `source_catalog`:** set it in the gateway's `connection_parameters` as the base service name, `{"source_catalog": "FREE"}`. The gateway's message (`NO_CONNECTION_PARAMETER`) says to use the literal `CDB$ROOT`, which fails with `INGESTION_GATEWAY_CONNECTION_ERROR.SOURCE_AUTHENTICATION_FAILURE` ("Oracle service name 'CDB$ROOT' is invalid"). A `source_catalog` set under `gateway_definition` is dropped by the CLI ("unknown field: source_catalog"), and the gateway then fails with `NO_CONNECTION_PARAMETER` again. Tested 2026-10-25 on Oracle Free 23.26.3: with `FREE` the gateway ran and the snapshot completed with 10 rows.
+
 ## LFC User Setup
 
 ### Platform-Specific User Strategies
@@ -286,6 +288,8 @@ ALTER TABLE <owner>.intpk ADD SUPPLEMENTAL LOG DATA (PRIMARY KEY) COLUMNS;
 ALTER TABLE <owner>.dtix ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS;
 ```
 
+**Restart the gateway after a logging change.** The gateway keeps the connection's supplemental-logging state until it restarts. After primary-key logging was added to two tables (checked in `DBA_LOG_GROUPS`), updates kept failing with `INGESTION_GATEWAY_CDC_NOT_ENABLED` ("Primary Key supplemental logging is not enabled on this table."); after a restart, other tables reported it (tested 2026-10-25, Oracle Free 23.26.3). Restart the gateway after each logging change, then start the update.
+
 ## CDC via LogMiner
 
 ### Open LogMiner and Query Changes
@@ -396,13 +400,42 @@ ALTER SYSTEM SWITCH LOGFILE;
 
 ### Archive Logs Deleted Too Quickly
 
-**Symptom:** "Specified Log not in dictionary" error.
+**Symptom:** "Specified Log not in dictionary" error. LogMiner's text can also be `No complete archived dictionary found before SCN: <scn>`. With the archive logs removed, the gateway reports `ORACLE_ARCHIVE_LOG_FILES_UNAVAILABLE` ("... Please perform full refresh on all destination tables mapped to catalog <catalog> ..."), and the update can still COMPLETE with the flows failed (tested 2026-10-25, Oracle Free 23.26.3).
 
-**Fix:** Increase FRA retention:
+**Fix:** Increase FRA retention. If logs are already gone, full refresh the destination tables the message names, and read the gateway's flow events rather than the update's status.
 ```sql
 ALTER SYSTEM SET db_recovery_file_dest_size = 50G SCOPE=BOTH;
 ALTER SYSTEM SET db_flashback_retention_target = 2880 SCOPE=BOTH;
 ```
+
+### PDB Service Shows INTERNAL_ERROR
+
+**Symptom:** A gateway connected through the PDB's service name (`FREEPDB1`) fails with `INGESTION_GATEWAY_INTERNAL_ERROR` ("The Ingestion Gateway has encountered an internal error and cannot recover"). Direct SQL on that service fails at `DBMS_LOGMNR.ADD_LOGFILE` with `ORA-65040`; the pipeline events don't show it (tested 2026-10-25, Oracle Free 23.26.3).
+
+**Fix:** Connect with the CDB's service (`FREE`) and name the PDB in `source_catalog` (see above).
+
+### Missing Privileges Fail in Order
+
+**Symptom:** Four users with different grants (tested 2026-10-25, Oracle Free 23.26.3):
+- No `CREATE SESSION`: `ORA-01045: Login denied` at connection (`INGESTION_GATEWAY_CONNECTION_ERROR.SOURCE_AUTHENTICATION_FAILURE`).
+- `CREATE SESSION` only: `ORA-00942: table or view SYS.V_$DATABASE does not exist` ("Could not fetch database name").
+- A table without `SELECT`: `GENERIC_SNAPSHOT_FAILURE`, "Snapshot failed for table <catalog>.<schema>.<table>", with `ORA-00942`.
+
+None of the three reaches the missing-privilege list.
+
+**Fix:** Grant in this order: `CREATE SESSION`, then the full grant list above (the validator's objects), then `SELECT` on each table. Check with `VALIDATE_SETUP`.
+
+### Restricted User Finds No Tables
+
+**Symptom:** A user with `SELECT` on ten tables only: Schema Exploration says "Found 0 table(s)", and the update stays `INITIALIZING` with every snapshot `SCHEDULED` for more than 10 minutes and no error event. The same database's all-visible user found 4,500 tables in 6.95 s. The restricted user lacked about 45 view grants (tested 2026-10-25, Oracle Free 23.26.3).
+
+**Fix:** Apply the full grant list, then check that exploration finds the tables before starting the update.
+
+### Triggered Update Stays RUNNING
+
+**Symptom:** A triggered integrated update ran 23 minutes without a `COMPLETED` event. Its lag grew from 232 s at 5 minutes to 1,258 s at 23 minutes with no source changes after one probe row; the progress text said "Will stop once the lag converges" (tested 2026-10-25, Oracle Free 23.26.3, one run).
+
+**Fix:** Watch a longer run with a steady trickle of changes, and record the lag over time before stopping it.
 
 ## Verification Checklist
 

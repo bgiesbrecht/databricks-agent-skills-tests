@@ -206,6 +206,12 @@ SHOW BINARY LOGS;
 SHOW VARIABLES LIKE 'binlog_expire_logs_seconds';
 ```
 
+### Gateway Connections on the Source
+
+Each gateway holds one binlog connection: a `Binlog Dump` row in `SHOW PROCESSLIST`, with the gateway's address as the host. `SHOW REPLICAS` stays empty for gateways (tested 2026-10-25, MySQL 8.4.13, with six gateways and with one).
+
+After a gateway stops, its row can stay 5 to 25 minutes after the pipeline shows `IDLE` and the update `CANCELED`; it closed after `KILL <id>` on the source. Wait for it, or kill it, before a run you measure (tested 2026-10-25, MySQL 8.4.13).
+
 ## MariaDB-Specific Configuration
 
 ### Enable Binlog at Startup (MariaDB)
@@ -279,6 +285,18 @@ CALL mysql.rds_set_configuration('binlog retention hours', 168);
 CALL mysql.rds_show_configuration;
 ```
 Cloud SQL and Azure Flexible Server set retention through their own flags / server parameters (`binlog_expire_logs_seconds`).
+
+### Keyless Table Short After COMPLETED
+
+**Symptom:** A keyless table of 10,000,000 rows: the update reports `COMPLETED` and the destination holds 2,512,013 rows, in a regular gap pattern. Two full refreshes kept the same count, and the gateway had staged all 10,000,000 ids (tested 2026-10-25, MySQL 8.4.13, one run). In another run a keyless table reached its full count on a plain second update.
+
+**Fix:** Count the destination after the gateway's `SNAPSHOT_COMPLETED` event, not at `COMPLETED`. Run the update again and count. If it's still short, record both counts with the gateway's events.
+
+### Server max_execution_time Doesn't Bound the Snapshot
+
+**Symptom:** With a global `max_execution_time` of 180 s, the gateway's snapshot `SELECT` on a 10,000,000-row keyless table ran about 20 s and wasn't ended. The gateway's pool sessions run with `max_execution_time` 0 (`performance_schema.variables_by_thread`). A separate session with a 2 s limit was ended with `ERROR 3024` (tested 2026-10-25, MySQL 8.4.13).
+
+**Fix:** Don't use the server limit to bound a snapshot. Count rows after `SNAPSHOT_COMPLETED`, as above.
 
 ### AWS RDS: Replication Privileges Denied
 
