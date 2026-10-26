@@ -1,0 +1,35 @@
+{
+  "id": "mysql-binlog-dump-lingers-after-stop",
+  "title": "MySQL: a stopped gateway's Binlog Dump thread stays 5 to 25 minutes",
+  "kind": "connector-behavior",
+  "status": "open",
+  "applies": {
+    "source": [
+      "mysql"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "expected-entry test round 2026-10-25: MySQL 8.4.13, six gateways on one instance, serverless"
+  },
+  "symptom": "The Binlog Dump thread stayed in SHOW PROCESSLIST for 5 to 25 minutes after the pipeline showed IDLE and the update CANCELED. It closed after KILL on the source.",
+  "cause": "Not established. It may be MySQL's net_write_timeout.",
+  "effect": "The source keeps a connection to a stopped gateway.",
+  "fix": "Wait for it to close, or KILL it on the source, before a measured run.",
+  "versions": [
+    "MySQL 8.4.13"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-mysql.md"
+  ],
+  "notes": "Stopped through the pipeline API only. net_write_timeout and wait_timeout weren't recorded."
+}

@@ -1,0 +1,35 @@
+{
+  "id": "gateway-spark-conf-profile-refused",
+  "title": "Gateway create refuses spark.databricks.cluster.profile and spark.master in spark_conf",
+  "kind": "databricks-limit",
+  "status": "by-design",
+  "applies": {
+    "source": [
+      "*"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "expected-entry test round 2026-10-25: SQL Server 2022 CU27, serverless and classic gateways"
+  },
+  "symptom": "\"The Gateway pipeline does not allow spark config [spark.databricks.cluster.profile, spark.master]\". num_workers 0 was accepted without them.",
+  "cause": "Not stated by the product.",
+  "effect": "A gateway can't set those keys through spark_conf.",
+  "fix": "Leave those keys out; set num_workers to 0 instead.",
+  "versions": [
+    "SQL Server 2022 CU27"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/SKILL.md"
+  ],
+  "notes": "A zero-worker gateway on classic compute stayed PENDING at Starting Spark and never completed an update (see classic-egress-blocks-source)."
+}

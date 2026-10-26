@@ -1,0 +1,38 @@
+{
+  "id": "oracle-restricted-user-needs-views",
+  "title": "Oracle: a restricted user needs about 45 more views; exploration finds no tables",
+  "kind": "connector-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "oracle"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "source"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "expected-entry test round 2026-10-25: Oracle Free 23.26.3, restricted user with SELECT on ten tables"
+  },
+  "symptom": "CDC_NOT_ENABLED requires SELECT on GV_$INSTANCE, GV_$SESSION and DBA_SEGMENTS for the setup-guide grants; a restricted user needs about 45 more views. With SELECT on ten tables only, Schema Exploration says \"Found 0 table(s)\" and the update stays INITIALIZING with no event for more than 10 minutes.",
+  "cause": "The restricted user's grants lacked the views the connector reads; the manual grant list was incomplete.",
+  "effect": "Exploration finds no tables and the update waits silently.",
+  "fix": "Grant the full list (the validator's objects), then check that exploration finds the tables.",
+  "versions": [
+    "Oracle Free 23.26.3"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-oracle.md"
+  ],
+  "notes": "The rerun with the full list isn't recorded. The all-visible user found 4,500 tables in 6.95 s.",
+  "refs": [
+    "https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/oracle-limits"
+  ]
+}

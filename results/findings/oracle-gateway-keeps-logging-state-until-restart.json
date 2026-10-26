@@ -1,0 +1,35 @@
+{
+  "id": "oracle-gateway-keeps-logging-state-until-restart",
+  "title": "Oracle: the gateway keeps supplemental-logging state until it restarts",
+  "kind": "connector-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "oracle"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "expected-entry test round 2026-10-25: Oracle Free 23.26.3"
+  },
+  "symptom": "INGESTION_GATEWAY_CDC_NOT_ENABLED: \"Primary Key supplemental logging is not enabled on this table.\" after primary-key logging was added and checked in DBA_LOG_GROUPS. Later updates kept failing.",
+  "cause": "The gateway keeps the connection's logging state until it restarts.",
+  "effect": "Updates fail until a restart; after the restart other tables reported the error.",
+  "fix": "Restart the gateway after each logging change, then start the update.",
+  "versions": [
+    "Oracle Free 23.26.3"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-oracle.md"
+  ],
+  "notes": "One run. The picture after the restart isn't clean: different tables failed."
+}

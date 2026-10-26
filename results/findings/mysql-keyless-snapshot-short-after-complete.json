@@ -1,0 +1,35 @@
+{
+  "id": "mysql-keyless-snapshot-short-after-complete",
+  "title": "MySQL keyless table: the update COMPLETED with 2,512,013 of 10,000,000 rows",
+  "kind": "connector-behavior",
+  "status": "open",
+  "applies": {
+    "source": [
+      "mysql"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "expected-entry test round 2026-10-25: MySQL 8.4.13, keyless 10M-row table, one run"
+  },
+  "symptom": "The update COMPLETED with the destination at 2,512,013 of 10,000,000 rows, in a regular gap pattern in each block of 10,000. The gateway had staged all 10,000,000 ids. Two full refreshes kept the same count.",
+  "cause": "Not isolated. That run had a server max_execution_time set; another run without it reached 10,000,000 on a plain second update.",
+  "effect": "A silently partial table.",
+  "fix": "Count after the SNAPSHOT_COMPLETED event; rerun without the server timeout; record the counts with the gateway's events.",
+  "versions": [
+    "MySQL 8.4.13"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-mysql.md"
+  ],
+  "notes": "One run for the short count; the 10M reach was a different run."
+}

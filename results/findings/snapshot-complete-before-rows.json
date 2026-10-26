@@ -1,0 +1,39 @@
+{
+  "id": "snapshot-complete-before-rows",
+  "title": "An update reports COMPLETED while rows or gateway flows are still missing",
+  "kind": "connector-behavior",
+  "status": "open",
+  "applies": {
+    "source": [
+      "sqlserver",
+      "mysql",
+      "oracle",
+      "postgres"
+    ],
+    "route": [
+      "lfc-scdc",
+      "lfc-icdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "expected-entry test round 2026-10-25: four engines, seven occurrences"
+  },
+  "symptom": "Most cases show no error event. The destination was short after COMPLETED in seven occurrences across the engines; a second plain update completed five of them.",
+  "cause": "Not established. The update may run ahead of the gateway's snapshot or flows.",
+  "effect": "Row counts look complete in the update's status when they aren't.",
+  "fix": "Count after the gateway's SNAPSHOT_COMPLETED events, not at COMPLETED; run the update again, then count again.",
+  "where": [
+    "skills/lfc-source-setup/references/engine-mysql.md",
+    "skills/lfc-source-setup/references/engine-oracle.md",
+    "skills/lfc-source-setup/references/engine-postgres.md",
+    "skills/lfc-source-setup/references/engine-sqlserver.md"
+  ],
+  "notes": "Not all of these self-heal: a MySQL keyless table stayed short through two full refreshes. Causes seen: a lost PostgreSQL slot, removed Oracle archive logs, a SQL Server CPU governor limit."
+}

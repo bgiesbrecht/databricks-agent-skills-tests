@@ -1,0 +1,36 @@
+{
+  "id": "pg-gateway-does-not-create-slot",
+  "title": "PostgreSQL: the gateway doesn't create the slot, and create refuses an empty slot name",
+  "kind": "databricks-limit",
+  "status": "open",
+  "applies": {
+    "source": [
+      "postgres"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "expected-entry test round 2026-10-25: PostgreSQL 16.15 and 17.11"
+  },
+  "symptom": "Pipeline create: \"PostgreSQL slot name cannot be empty or null\". With a named slot absent: CDC_NOT_ENABLED, \"Logical replication slot <slot> doesn't exist with pgoutput plugin\". No slot appeared after two gateway runs.",
+  "cause": "Not established whether automatic creation is intended.",
+  "effect": "The first update can't start until the slot exists.",
+  "fix": "Create the slot by hand (pg_create_logical_replication_slot with pgoutput) before the first update.",
+  "versions": [
+    "PostgreSQL 16.15",
+    "PostgreSQL 17.11"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-postgres.md"
+  ],
+  "notes": "The no-name path couldn't be run, because create refuses it."
+}

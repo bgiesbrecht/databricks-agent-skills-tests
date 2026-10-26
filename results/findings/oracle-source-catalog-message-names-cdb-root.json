@@ -1,0 +1,35 @@
+{
+  "id": "oracle-source-catalog-message-names-cdb-root",
+  "title": "Oracle: the gateway's source_catalog message names CDB$ROOT, which fails",
+  "kind": "databricks-bug",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "oracle"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "expected-entry test round 2026-10-25: Oracle Free 23.26.3; the CLI version was not recorded"
+  },
+  "symptom": "NO_CONNECTION_PARAMETER says to set source_catalog to the CDB$ROOT service name. The literal CDB$ROOT gives INGESTION_GATEWAY_CONNECTION_ERROR.SOURCE_AUTHENTICATION_FAILURE (\"Oracle service name 'CDB$ROOT' is invalid\"). A source_catalog under gateway_definition is dropped by the CLI (\"unknown field: source_catalog\").",
+  "cause": "The message gives a literal name, and the field belongs in connection_parameters.",
+  "effect": "The gateway doesn't run with the literal name.",
+  "fix": "Set connection_parameters to {\"source_catalog\": \"<base service name>\"} (FREE here).",
+  "versions": [
+    "Oracle Free 23.26.3"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-oracle.md",
+    "skills/lfc-source-setup/SKILL.md"
+  ]
+}

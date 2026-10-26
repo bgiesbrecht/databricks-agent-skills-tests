@@ -1,0 +1,37 @@
+{
+  "id": "classic-egress-blocks-source",
+  "title": "Classic gateway can't reach the source; serverless on the same connection can",
+  "kind": "databricks-limit",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "*"
+    ],
+    "route": [
+      "lfc-qbc",
+      "lfc-icdc",
+      "lfc-scdc"
+    ],
+    "layer": [
+      "source"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "expected-entry test round 2026-10-25: SQL Server 2022 CU27 in a container, classic gateway and a serverless probe"
+  },
+  "symptom": "The extractor started, then FAILED with INGESTION_GATEWAY_CONNECTION_ERROR.INCORRECT_SOURCE_HOSTNAME_OR_PORT_SPECIFIED_FAILURE (\"Could not connect to the source database\"). A serverless probe on the same connection connected.",
+  "cause": "The source's firewall had no rule for the classic compute's egress address.",
+  "effect": "A classic gateway can't read the source.",
+  "fix": "Allow the classic egress address (lfc-source-firewall, classic-egress.md), then rerun.",
+  "versions": [
+    "SQL Server 2022 CU27"
+  ],
+  "where": [
+    "skills/lfc-source-firewall/references/classic-egress.md"
+  ],
+  "notes": "The rerun with the rule added isn't recorded yet."
+}

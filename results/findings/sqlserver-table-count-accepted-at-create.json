@@ -1,0 +1,38 @@
+{
+  "id": "sqlserver-table-count-accepted-at-create",
+  "title": "SQL Server: a pipeline over 300 tables is accepted at create",
+  "kind": "databricks-limit",
+  "status": "documented-limit",
+  "applies": {
+    "source": [
+      "sqlserver"
+    ],
+    "route": [
+      "lfc-scdc",
+      "lfc-icdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "expected-entry test round 2026-10-25: SQL Server 2022 CU27, three schemas of 100 tables"
+  },
+  "symptom": "Create accepted 300 objects, and the pipeline ran its snapshots. No error.",
+  "cause": "The documented figure is advice: Databricks recommends 250 or fewer tables per pipeline.",
+  "effect": "Nothing stops a pipeline over the recommendation at create.",
+  "fix": "Plan several pipelines above 250 tables.",
+  "versions": [
+    "SQL Server 2022 CU27"
+  ],
+  "where": [
+    "skills/lfc-source-sizing/references/limits.md"
+  ],
+  "refs": [
+    "https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/sql-server-limits"
+  ]
+}

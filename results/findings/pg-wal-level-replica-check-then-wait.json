@@ -1,0 +1,34 @@
+{
+  "id": "pg-wal-level-replica-check-then-wait",
+  "title": "PostgreSQL: wal_level = replica gives CDC_NOT_ENABLED and an update that waits",
+  "kind": "connector-behavior",
+  "status": "open",
+  "applies": {
+    "source": [
+      "postgres"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "source"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "expected-entry test round 2026-10-25: PostgreSQL 16.15, DBR 18.3.8"
+  },
+  "symptom": "INGESTION_GATEWAY_CDC_ERROR.CDC_NOT_ENABLED: \"CDC is not enabled on User <user> ... wal_level is set to 'replica'. It should be set to 'logical'\". The ingestion update stayed INITIALIZING for 20+ minutes with no events.",
+  "cause": "Not established. The class the entry expected (PG_WAL_LEVEL_NOT_LOGICAL) wasn't seen.",
+  "effect": "The update waits with no event.",
+  "fix": "Set wal_level = logical and restart the server.",
+  "versions": [
+    "PostgreSQL 16.15"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-postgres.md"
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "id": "sqlserver-integrated-lag-with-empty-destination",
+  "title": "SQL Server integrated: lag reads healthy while the destination is empty",
+  "kind": "databricks-bug",
+  "status": "open",
+  "applies": {
+    "source": [
+      "sqlserver"
+    ],
+    "route": [
+      "lfc-icdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "expected-entry test round 2026-10-25: SQL Server 2022 CU27, integrated, 450 tables, continuous"
+  },
+  "symptom": "The event log showed \"CDC extraction IN_PROGRESS ... Zero snapshots are pending ... lag 5 seconds\" for about five hours. The destination tables had 0 rows against 3 in the source. DESCRIBE HISTORY showed MERGE versions with numTargetRowsInserted 0. A stop and start didn't change it.",
+  "cause": "Not established. The grant was added after a failed first start, and earlier records show state kept from a failed start.",
+  "effect": "The pipeline looks healthy while no rows arrive.",
+  "fix": "Count the destination rows and read DESCRIBE HISTORY (see the checks in engine-sqlserver.md). Rerun with the grant in place before create.",
+  "versions": [
+    "SQL Server 2022 CU27"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-sqlserver.md"
+  ],
+  "notes": "One run. The 10-table rerun is not yet recorded."
+}

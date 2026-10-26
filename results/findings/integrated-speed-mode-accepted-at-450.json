@@ -1,0 +1,35 @@
+{
+  "id": "integrated-speed-mode-accepted-at-450",
+  "title": "SQL Server integrated: runMode SPEED is accepted with 450 tables",
+  "kind": "databricks-limit",
+  "status": "open",
+  "applies": {
+    "source": [
+      "sqlserver"
+    ],
+    "route": [
+      "lfc-icdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "expected-entry test round 2026-10-25: SQL Server 2022, integrated, 450 tables, runMode SPEED"
+  },
+  "symptom": "Create accepted 450 objects with runMode SPEED. Within about two hours: 37 flow_progress events and 12 gc_pressure warnings. No table-limit error at create.",
+  "cause": "Not established. A 50-table figure for SPEED wasn't found on the public SQL Server limits page (checked 2026-10-25).",
+  "effect": "SPEED runs above that figure without an error.",
+  "fix": "Check the current runMode limits before a large SPEED run.",
+  "versions": [
+    "SQL Server 2022"
+  ],
+  "where": [
+    "skills/lfc-source-sizing/references/limits.md"
+  ],
+  "notes": "The destination stayed at 0 rows for about two hours (see sqlserver-integrated-lag-with-empty-destination)."
+}

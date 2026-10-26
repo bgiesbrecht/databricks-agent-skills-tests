@@ -1,0 +1,36 @@
+{
+  "id": "mysql-integrated-delete-drops-destination",
+  "title": "MySQL integrated pipeline: deleting it drops its destination tables",
+  "kind": "databricks-limit",
+  "status": "open",
+  "applies": {
+    "source": [
+      "mysql"
+    ],
+    "route": [
+      "lfc-icdc"
+    ],
+    "layer": [
+      "bronze"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "expected-entry test round 2026-10-25: MySQL 8.4.13, serverless, two tables"
+  },
+  "symptom": "The destination tables were not found 1 s after the integrated pipeline was deleted (TABLE_OR_VIEW_NOT_FOUND). A pipeline recreated on the same source tables created new tables whose Delta history starts at version 0.",
+  "cause": "Not established. The pipeline may own its streaming tables.",
+  "effect": "The destination data goes with the pipeline.",
+  "fix": "Copy the destination tables out before the delete.",
+  "versions": [
+    "MySQL 8.4.13"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/SKILL.md",
+    "skills/lfc-source-setup/references/engine-mysql.md"
+  ],
+  "notes": "The entry expected the tables to stay. Possibly intended; check the public docs on deleting a pipeline."
+}

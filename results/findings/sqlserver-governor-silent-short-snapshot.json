@@ -1,0 +1,36 @@
+{
+  "id": "sqlserver-governor-silent-short-snapshot",
+  "title": "SQL Server: governor limits on the gateway's login end a snapshot early or refuse it",
+  "kind": "source-behavior",
+  "status": "open",
+  "applies": {
+    "source": [
+      "sqlserver"
+    ],
+    "route": [
+      "lfc-scdc",
+      "lfc-icdc"
+    ],
+    "layer": [
+      "source"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "expected-entry test round 2026-10-25: SQL Server 2022 CU27 Developer, scaled-down limits"
+  },
+  "symptom": "Query governor cost limit: error 8649 at compile on the full read; nothing ran. Resource Governor REQUEST_MAX_CPU_TIME_SEC = 1: the keyless snapshot reported COMPLETED with 3,574,695 of 10,000,000 rows and no error event.",
+  "cause": "The governors limit compile cost and CPU time, not elapsed time.",
+  "effect": "A silently short snapshot.",
+  "fix": "Remove or raise the limits for the gateway's login; count after SNAPSHOT_COMPLETED.",
+  "versions": [
+    "SQL Server 2022 CU27"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-sqlserver.md"
+  ],
+  "notes": "A 50-minute elapsed-time limit can't be reproduced with these governors, so that case isn't tested."
+}
