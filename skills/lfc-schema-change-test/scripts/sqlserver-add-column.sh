@@ -158,7 +158,7 @@ cleanup() {
   done
   [ "${left//[[:space:]]/}" = 0 ] || { echo "source database $DB not dropped:"; tail -3 "$W/drop.out"; }
   echo "cleanup: pipelines and schemas deleted; source database left: ${left//[[:space:]]/}"
-  rm -rf "$W"
+  rm -rf "${W:?}"
 }
 trap cleanup EXIT
 

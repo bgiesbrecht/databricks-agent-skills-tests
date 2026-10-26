@@ -319,7 +319,7 @@ cleanup() {
   fi
   if [ "${KEEP_SOURCE:-0}" = 1 ]; then echo "cleanup: pipelines and schemas deleted; source database $DB kept"
   else echo "cleanup: pipelines and schemas deleted; source database left: ${left//[[:space:]]/}"; fi
-  rm -rf "$W"
+  rm -rf "${W:?}"
 }
 
 # metric <name> <number>: a number this run measured (seconds, rows, tables, ...). record_run saves them with the run's

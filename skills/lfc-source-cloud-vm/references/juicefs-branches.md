@@ -87,7 +87,7 @@ juicefs clone -p $M/<name> $B/test-1                       # branch: 0.1 s for a
 podman run -d --name <container> -v $B/test-1:<data path> ... <image>
 # ... test ...
 podman stop -t 60 <container>; podman rm <container>
-rm -rf $B/test-1                                           # throw it away (0.1 s)
+rm -rf "${B:?}/test-1"                                           # throw it away (0.1 s)
 mv $B/test-1 $M/<name>-v2                                  # or keep it as a new master (instant)
 ```
 
