@@ -341,6 +341,24 @@ sqlplus <lfc_user>/"<new-password>"@<service_name>
 SELECT 1 FROM DUAL;
 ```
 
+**A wrong password:** if the source password changed and the connection still has the old one, the gateway fails with `INGESTION_GATEWAY_CONNECTION_ERROR.SOURCE_AUTHENTICATION_FAILURE` ("Error while creating connection pool for catalog <catalog>. ORA-01017: invalid credential or not authorized; logon denied"). The retries repeat the same error. Update the connection with the current password, then start an update (the fix wasn't run in this round; tested 2026-10-26, Oracle Free 23.26.3).
+
+## Column Types
+
+Tested 2026-10-26 on Oracle Free 23.26.3, standard gateway: the snapshot rows and the CDC rows that arrived.
+
+| Oracle type | Lands as | Notes |
+|---|---|---|
+| `NUMBER(38,0)`, `NUMBER(10,2)` | decimal, same value | |
+| `NUMBER` with no precision or scale | string with the exact digits | not a decimal: `1234.5678`, `0.000001` |
+| `TIMESTAMP(9) WITH LOCAL TIME ZONE` | string with the zone name inside | 12:00:00.123456789 in a +00:00 session arrives as `2026-10-25 12:00:00 Etc/UTC.123456789` |
+| `TIMESTAMP WITH TIME ZONE` | timestamp, same UTC instant | offset dropped |
+| `INTERVAL DAY TO SECOND` | interval | |
+| `BINARY_FLOAT`, `BINARY_DOUBLE` | float, double | |
+| `RAW(16)` | binary | |
+| `NCLOB` | string | |
+| `XMLTYPE` | the table is skipped on CDC | [XMLTYPE Column Skips the Table](#xmltype-column-skips-the-table) |
+
 ## Troubleshooting
 
 ### Database Not in ARCHIVELOG Mode
@@ -402,7 +420,7 @@ ALTER SYSTEM SWITCH LOGFILE;
 
 **Symptom:** "Specified Log not in dictionary" error. LogMiner's text can also be `No complete archived dictionary found before SCN: <scn>`. With the archive logs removed, the gateway reports `ORACLE_ARCHIVE_LOG_FILES_UNAVAILABLE` ("... Please perform full refresh on all destination tables mapped to catalog <catalog> ..."), and the update can still COMPLETE with the flows failed (tested 2026-10-25, Oracle Free 23.26.3).
 
-**Fix:** Increase FRA retention. If logs are already gone, full refresh the destination tables the message names, and read the gateway's flow events rather than the update's status.
+**Fix:** Increase FRA retention. If logs are already gone, full refresh the destination tables the message names, and read the gateway's flow events rather than the update's status. The removal is container-wide: a second gateway on the same container, whose CDC had finished, went to `INGESTION_GATEWAY_INTERNAL_ERROR` ("cannot recover") (tested 2026-10-26, Oracle Free 23.26.3).
 ```sql
 ALTER SYSTEM SET db_recovery_file_dest_size = 50G SCOPE=BOTH;
 ALTER SYSTEM SET db_flashback_retention_target = 2880 SCOPE=BOTH;
@@ -436,6 +454,24 @@ None of the three reaches the missing-privilege list.
 **Symptom:** A triggered integrated update ran 23 minutes without a `COMPLETED` event. Its lag grew from 232 s at 5 minutes to 1,258 s at 23 minutes with no source changes after one probe row; the progress text said "Will stop once the lag converges" (tested 2026-10-25, Oracle Free 23.26.3, one run).
 
 **Fix:** Watch a longer run with a steady trickle of changes, and record the lag over time before stopping it.
+
+### Common User Without Container Grants Shows as Missing Table
+
+**Symptom:** A common user (`C##`) without `SET CONTAINER` and `CONTAINER_DATA=ALL`: the gateway found 0 tables and reported `MISSING_TABLE_IN_SOURCE` ("No catalog or schema was found for replication. Please check your filter file"). The message doesn't name the privilege (tested 2026-10-26, Oracle Free 23.26.3).
+
+**Fix:** Grant the two multi-container privileges from the grant list above (`GRANT SET CONTAINER` and `ALTER USER ... SET CONTAINER_DATA=ALL CONTAINER=CURRENT`), then restart the pipelines. The re-run found the tables.
+
+### XMLTYPE Column Skips the Table
+
+**Symptom:** The gateway's flow reported `TABLE_SKIPPED_DUE_TO_UNSUPPORTED_COLUMN_DATA_TYPE`: "Table contains unsupported column types: XMLTYPE. Oracle LogMiner skips the entire table when any column has these types". The table got no snapshot, and the ingestion update stayed `RUNNING` with its snapshot `SCHEDULED` for about 20 minutes, until the table was removed. A companion table without the column ran normally (tested 2026-10-26, Oracle Free 23.26.3, one run).
+
+**Fix:** Remove the table from the pipeline (tested). Keeping the XML in a table of its own wasn't tested.
+
+### Dropped Table Blocks the Ingestion Pipeline
+
+**Symptom:** After `DROP TABLE`, the first ingestion update with no change to that table COMPLETED with no error. After changes reached the gateway, the gateway reported the table's flow with `TABLE_DROPPED`, and the next update FAILED at analysis: `[INGESTION_GATEWAY_TABLE_DROPPED] Source table <catalog>.<schema>.<table> has been dropped on source`, "A new pipeline update will not be created". Every table in the pipeline stopped until the dropped table was removed (tested 2026-10-26, Oracle Free 23.26.3, one run).
+
+**Fix:** Remove the dropped table from the ingestion pipeline. The pipeline ran again after that.
 
 ## Verification Checklist
 

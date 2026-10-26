@@ -298,6 +298,35 @@ Cloud SQL and Azure Flexible Server set retention through their own flags / serv
 
 **Fix:** Don't use the server limit to bound a snapshot. Count rows after `SNAPSHOT_COMPLETED`, as above.
 
+### Integrated CDC: Schema Changes
+
+**Symptom:** Tested 2026-10-26, MySQL 8.4.13, integrated CDC (one run per case unless noted):
+- `ADD COLUMN ... FIRST` and `ADD COLUMN ... AFTER <column>`: the destination column lands at the end of the table, not in the named position. Values arrive under their column names.
+- `ADD COLUMN ... AFTER`: the running update was cancelled and restarted with cause `SCHEMA_CHANGE`.
+- `RENAME COLUMN`: the ingestion update FAILED at analysis with "Failed to resolve flow" for the table's applier flows. The destination keeps the old name, and no new row arrived in 20 minutes. Two fresh tables both failed.
+- `DROP COLUMN`: applied at the source; the destination kept the column through two later updates, with NULL in new rows. No schema-change event for the drop appeared.
+- `VARCHAR` length widened or narrowed: supported. The destination type stays `STRING`, and new rows carry the value.
+
+**Fix:** Select columns by name, not by position. For a rename or a drop, check the destination after each change; the fix for either wasn't tested.
+
+### Dropped Table: Flow Messages Are Raw Text
+
+**Symptom:** A table dropped at the source (`TABLE_DROPPED`), and a binlog file purged before the gateway read it (`MYSQL_BINLOG_FILE_DELETED`), show the flow's own text, "Flow ... has failed because of a fatal error during realtime phase", not the catalog's messages ("Table has been dropped on source", "MySQL binlog file ... has been deleted from the source server"). The event type in the gateway's events is the name to look up (tested 2026-10-26, MySQL 8.4.13, standard gateway, one run each).
+
+**Fix:** Read the event type and the flow's table name from the gateway's events. For a dropped table, the ingestion pipeline also fails until the table is removed: see the next section.
+
+### Dropped Table Blocks the Ingestion Pipeline
+
+**Symptom:** After a source table is dropped, every ingestion update fails at analysis ("Failed to resolve flow" for that table's flow) until the table is removed from the pipeline (tested 2026-10-26, MySQL 8.4.13, standard gateway, one run).
+
+**Fix:** Remove the dropped table from the ingestion pipeline. The other tables in the pipeline stop updating until then.
+
+### Revoked SELECT Shows as Missing Table
+
+**Symptom:** SELECT revoked from the LFC login on one table (tested 2026-10-26, MySQL 8.4.13, standard gateway, one run). Schema exploration listed one table fewer (`Found 1 table(s)`). The table's flow reported `MISSING_TABLE_IN_SOURCE` ("has failed because of a fatal error during realtime phase"), and the ingestion update FAILED at analysis. No privilege message appeared. With no visible tables at all, the gateway reported `INGESTION_GATEWAY_CONNECTION_ERROR.SOURCE_CONNECTION_FAILURE` ("Connection failure to the Source storage during operation"), which is misleading.
+
+**Fix:** Grant SELECT on the table again, then check that schema exploration lists it. The regrant wasn't run in this round.
+
 ### AWS RDS: Replication Privileges Denied
 
 **Symptom:** `GRANT REPLICATION SLAVE` fails.

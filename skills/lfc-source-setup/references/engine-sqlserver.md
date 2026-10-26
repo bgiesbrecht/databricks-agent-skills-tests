@@ -153,7 +153,7 @@ The [public setup](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect
    ```
    `@Tables` also takes `'ALL'` and `'SCHEMAS:Sales,HR'`. CDC needs SQL Server Agent running; in the `mcr.microsoft.com/mssql/server` image, set `MSSQL_AGENT_ENABLED=true`.
 4. The ingestion user doesn't need `db_owner` once this is done: `ALTER ROLE db_owner DROP MEMBER [<lfc_user>]`. `db_owner` is only for whoever runs the setup.
-5. **Integrated CDC on many tables:** `lakeflowFixPermissions` doesn't grant `VIEW DATABASE PERFORMANCE STATE`. A 450-table integrated pipeline failed its first update with `PIPELINE_NON_RETRYABLE_ANALYSIS_INTERNAL_ERROR` and `GENERIC_SNAPSHOT_FAILURE` ("STREAM_FAILED ... VIEW DATABASE PERFORMANCE STATE permission denied in database <database>"). A 20-row table ran without it. Grant it, then start a new update, since the failed one doesn't create one: `GRANT VIEW DATABASE PERFORMANCE STATE TO [<lfc_user>];` (tested 2026-10-25, SQL Server 2022 CU27).
+5. **Integrated CDC on many tables:** `lakeflowFixPermissions` doesn't grant `VIEW DATABASE PERFORMANCE STATE`. A 450-table integrated pipeline failed its first update with `PIPELINE_NON_RETRYABLE_ANALYSIS_INTERNAL_ERROR` and `GENERIC_SNAPSHOT_FAILURE` ("STREAM_FAILED ... VIEW DATABASE PERFORMANCE STATE permission denied in database <database>"). A 20-row table ran without it. Grant it, then start a new update, since the failed one doesn't create one: `GRANT VIEW DATABASE PERFORMANCE STATE TO [<lfc_user>];` (tested 2026-10-25, SQL Server 2022 CU27). `VIEW DATABASE STATE` implies `VIEW DATABASE PERFORMANCE STATE`: while the login holds the first, revoking the second alone changes nothing (tested 2026-10-26, SQL Server 2022 CU27).
 6. **Utility 1.5 installed, then 1.7 with no flag:** the update fails with `INGESTION_GATEWAY_DDL_OBJECTS_MISSING` ("DDL objects missing on table ... Execute the DDL objects script and full refresh the table"), then `PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR`. Tested 2026-10-25, SQL Server 2022 CU27, on a database with a non-default collation. Run the DDL objects script the message names, then full refresh the table. A rerun with the flag on the change-tracking setup passed; the cause isn't isolated.
 
 ## Change Tracking (CT) Configuration
@@ -396,7 +396,54 @@ Both limits count compile cost or CPU time, not elapsed time.
 
 **Symptom:** A pipeline scoped to one 100-table schema of three still shows "Found 300 table(s) in the connection" in Schema Exploration (tested 2026-10-25, SQL Server 2022 CU27). Discovery reads the whole connection; the scope cuts the ingestion reads.
 
-**Fix:** Expect discovery to count the whole connection. Scope the pipeline's tables to limit what is read.
+**Fix:** Expect discovery to count the whole connection. Scope the pipeline's tables to limit what is read. The count also includes every other database the login can see in the container: with two pipeline databases of two and three tables, Schema Exploration reported 5 (tested 2026-10-26, SQL Server 2022 CU27).
+
+### Keyless Tables: Duplicate Rows Collapse
+
+**Symptom:** A CDC table without a primary key holds two identical rows, `(1,a)` and `(1,a)`. The snapshot lands one row. After one copy is updated to `(1,c)`, the destination holds `(1,c)` and `(2,b)`, and the other copy is gone; the source still has three rows (tested 2026-10-26, SQL Server 2022 CU27, standard gateway, one run).
+
+**Cause:** For a keyless table the applier uses all non-LOB columns as the merge key, so identical rows count as one key.
+
+**Fix:** Add a primary key before the first load (not tested here). Until then, compare the destination with the distinct source rows.
+
+### Column Added After the First Load
+
+**Symptom:** A column added with `ALTER TABLE ... ADD` after the first load (tested 2026-10-26, SQL Server 2022 CU27, one run per mode):
+- Standard CDC and change tracking (standard gateway): the gateway logs `Detected a schema change`; the next update COMPLETED with the column added. Earlier rows are NULL in it, and the new row carries its value. No full refresh.
+- Integrated CDC: the running update was cancelled with "... due to a schema change ... will be restarted", and the pipeline started a new one with cause `SCHEMA_CHANGE`. The restart replayed the table's applier snapshot flow; the column and the new row arrived in it, with no full refresh.
+
+**Fix:** No full refresh is needed for the column. On integrated CDC, wait for the restarted update before you count rows.
+
+### Revoked VIEW DATABASE STATE: Added Column's Row Never Arrives
+
+**Symptom:** With `VIEW DATABASE STATE` revoked from the ingestion login, a column was added and one row written. The gateway logged `Detected a schema change`, and the row was absent after two updates. No error appeared in the events or the updates. The control, without the revoke, delivered the row after the second update (tested 2026-10-26, SQL Server 2022 CU27, one run per arm).
+
+**Fix:** Keep `VIEW DATABASE STATE` on the ingestion login, and check the new row's count after each schema change. Whether a full refresh recovers the row wasn't tested.
+
+### Change Tracking DDL Objects Warned as Removable
+
+**Symptom:** With the utility's `@CreateDdlSupportingObjects = 1`, the gateway logs a WARN: "Non-trigger-based DDL for Change Tracking is active and CT DDL support objects were detected ... may be safely removed". The update still COMPLETED (tested 2026-10-26, SQL Server 2022 CU27, change tracking, standard gateway).
+
+**Fix:** Nothing is needed for the run. Removing the objects wasn't tested.
+
+## Column Types
+
+Tested 2026-10-26 on SQL Server 2022 CU27, standard and integrated CDC, with the same destination types in both.
+
+| Source type | Lands as | Notes |
+|---|---|---|
+| `HIERARCHYID` | string of the binary's hex | `/1/2/` arrives as `5B40`; the root `/` arrives as an empty string. No warning. |
+| `GEOGRAPHY` | binary (WKB) | POINT with SRID 4326 arrives as WKB without the SRID |
+| `DATETIMEOFFSET(7)` | timestamp (UTC instant) | the offset and the 100 ns digit are dropped: `2026-10-25 12:34:56.1234567 +05:30` arrives as `2026-10-25 07:04:56.123456` |
+| `DATETIME2(7)` | timestamp at microseconds | the 100 ns digit is dropped: `...9999999` arrives as `...999999` |
+| `TIME(7)` | string `HH:mm:ss.fffffff` | all 7 digits kept |
+| `MONEY` | decimal(19,4) | both extremes exact |
+| `UNIQUEIDENTIFIER` | string, upper-case GUID | |
+| `XML`, `SQL_VARIANT` | string | `SQL_VARIANT` values arrive as text |
+| `ROWVERSION` | binary | never NULL |
+| `NVARCHAR(MAX)` | string | Unicode kept |
+
+The losses are silent: the events show no warning. If the offset or the 100 ns digit matters, keep it in another column (not tested).
 
 ## Platform-Specific Notes
 
