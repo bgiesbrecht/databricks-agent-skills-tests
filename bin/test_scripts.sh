@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # bin/test_scripts.sh: regression tests for the skills' scripts.
-#   Offline (always): shell syntax, every markdown link, the six TPC schemas through shape.py and ddl.py for seven
+#   Offline (always): shell syntax, every markdown link, the script rules (bin/lint_scripts.py) and SCRIPTS.md, the six TPC schemas through shape.py and ddl.py for seven
 #   dialects, a DDL import round trip, the Python fill planner compiles, and the shared DuckDB runners.
 #   With databases (PSQL and/or MYSQL set, e.g. PSQL="podman exec -i dg-pg psql -U postgres",
 #   MYSQL="podman exec -i dg-my mysql -uroot"): fill TPC-C (1 warehouse) and the TPC-H spec schema (SF 0.1) on each, and
@@ -16,6 +16,8 @@ check() { local name=$1; shift; if "$@" > "$T/out" 2>&1; then ok "$name"; else n
 echo "== offline"
 for f in $(find "$SK" -name '*.sh'); do check "bash -n ${f#$SK/}" bash -n "$f"; done
 check "links in every skill" python3 "$R/bin/check_links.py" "$SK"
+check "script rules: headers, SKILL.md size, rm guards, first-argument flags, jq for one value" python3 "$R/bin/lint_scripts.py"
+check "SCRIPTS.md is current" python3 "$R/bin/scripts_index.py" --check
 for w in tpcb tpcc tpch tpcdi tpcds tpce; do
   check "shape.py $w" sh -c "uv run -q '$SS/shape.py' '$SK/lfc-source-statschema/schemas/$w.yaml' --sf 0.1 --expected '$T/$w.exp.json' > '$T/$w.yaml'"
   for d in postgres mysql tsql oracle db2 informix databricks; do
