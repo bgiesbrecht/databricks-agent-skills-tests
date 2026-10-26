@@ -11,7 +11,7 @@ From `results/runs/*.jsonl`, 2026-10. Each line is a value that passed at least 
 | Axis | Tested and works |
 |---|---|
 | Where the source runs | Azure managed databases (Azure SQL Database; Flexible Server for MySQL and PostgreSQL); Lakebase; Podman on an AWS VM and on an Azure VM; Podman in a laptop Lima VM (data generation only) |
-| Database and version | Lakebase, MySQL 8.4, Oracle 23ai Free, PostgreSQL 16, SQL Server 2022. For data generation and branch layers only: CockroachDB 25, Db2 11.5, Informix 14.10, YugabyteDB 2025 |
+| Database and version | Lakeflow Connect: Lakebase, MySQL 8.4, Oracle 23ai Free (the same image reports itself as 26ai Free 23.26), PostgreSQL 16, SQL Server 2022. Zerobus (Debezium or Kafka Connect): CockroachDB 25.4, Db2 11.5, Informix 14.10, MySQL 8.4, Oracle, PostgreSQL 16, SQL Server 2022, YugabyteDB 2026.1 |
 | Workspace | AWS and Azure field sandboxes (FEVM), each serverless-only and with classic compute; target catalog with its own managed storage (every mode) or on Default Storage (query-based only) |
 | Compute | `serverless: true` on every pipeline and gateway. Left unset: query-based ran serverless; integrated CDC and the gateway ran classic on a classic workspace (Azure), which needs the classic egress IP in the source's firewall: that path isn't tested yet |
 | Network path | public IP, firewall open to the workspace's serverless egress ranges; also cross-cloud (an AWS workspace reading the Azure VM) |
