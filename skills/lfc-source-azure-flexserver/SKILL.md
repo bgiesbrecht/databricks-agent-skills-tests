@@ -24,7 +24,7 @@ Provision a managed MySQL or PostgreSQL Flexible Server instance on Azure and co
 |-------|---------|-------|
 | Azure subscription ID | `12345678-1234-1234-1234-123456789012` | Run `az account show --query id -o tsv` |
 | Azure region | `eastus`, `westeurope` | Keep close to Databricks workspace |
-| Resource group | `forgedb-rg` | Ask whether the user has their own; otherwise the shared test group `forgedb-rg` (check with `az group show -n forgedb-rg`). The user is free to choose a different one. Don't create one without asking |
+| Resource group | `<resource-group>` | Ask whether the user has their own; otherwise the team's shared test group, `<resource-group>` (check it with `az group show -n <resource-group>`). The user is free to choose a different one. Don't create one without asking |
 | Engine | `mysql` or `postgres` | Binlog (MySQL) or logical replication (PostgreSQL) |
 | Version | MySQL `8.0` / PostgreSQL `15`, `16` | Use LTS for stability |
 | SKU | `Standard_B1s` or `Standard_B2ms` | Compute size; verify availability in region |
@@ -42,7 +42,7 @@ Confirm with the user what will be created (Flexible Server, VNet, firewall/PE r
 ```bash
 # Set environment variables (see flexserver-create-details.md for full setup)
 export LOCATION="eastus"
-export RESOURCE_GROUP="forgedb-rg"     # or the user's own group: they are free to choose
+export RESOURCE_GROUP="<resource-group>"     # or the user's own group: they are free to choose
 export ENGINE="mysql"                   # or "postgres"
 export VERSION="8.0"
 export PREFIX="jane-doe"
@@ -53,7 +53,7 @@ export ADMIN_USER="mysqladmin"          # "pgadmin" for PostgreSQL
 export SKU="Standard_B2ms"
 export STORAGE_GB="32"
 
-# Resource group: the user's own, or the shared forgedb-rg. Check it exists; create one only if the user asks
+# Resource group: the user's own, or the team's shared test group. Check it exists; create one only if the user asks
 az group show --name "${RESOURCE_GROUP}" --query name -o tsv
 
 # Create VNet and subnet

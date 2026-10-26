@@ -22,7 +22,7 @@ Both support Change Tracking (CT) and CDC. Both incur data transfer costs if Dat
 | Input | Source | Example |
 |-------|--------|---------|
 | Azure region | `az account list-locations` | `eastus`, `westeurope` |
-| Resource group | Ask whether the user has their own; otherwise the shared test group `forgedb-rg` (check with `az group show -n forgedb-rg`). The user is free to choose a different one. Don't create one without asking | `forgedb-rg` |
+| Resource group | Ask whether the user has their own; otherwise the team's shared test group, `<resource-group>` (check it with `az group show -n <resource-group>`). The user is free to choose a different one. Don't create one without asking | `<resource-group>` |
 | Subscription ID | `az account show` | Confirm with user |
 | Owner tag | Your name/email prefix | `jane-doe` |
 | Replication mode | Query-based only / CT / CDC / BOTH | See parent [engine-sqlserver.md](../lfc-source-setup/references/engine-sqlserver.md) |
@@ -48,7 +48,7 @@ az account show --query "{Name: name, SubscriptionId: id, State: state}" -o tabl
 # Set the subscription if needed
 az account set --subscription <subscription_id>
 
-# Resource group: the user's own, or the shared forgedb-rg. Check it exists; create one only if the user asks
+# Resource group: the user's own, or the team's shared test group. Check it exists; create one only if the user asks
 az group exists --name <resource_group>
 ```
 

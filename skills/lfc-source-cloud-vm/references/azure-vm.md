@@ -4,7 +4,7 @@
 
 ```bash
 SUBSCRIPTION="<your-subscription-id>"
-RESOURCE_GROUP="forgedb-rg"     # or the user's own group: they are free to choose
+RESOURCE_GROUP="<resource-group>"     # or the user's own group: they are free to choose
 LOCATION="eastus"
 ZONE="1"                             # Premium SSD v2 needs a zonal VM
 VM_NAME="jane-doe-mysql-vm-eastus-1779207800"

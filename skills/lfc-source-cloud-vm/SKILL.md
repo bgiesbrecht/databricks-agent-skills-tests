@@ -77,7 +77,7 @@ Quick command:
 
 ```bash
 SUBSCRIPTION="<sub-id>"
-RESOURCE_GROUP="forgedb-rg"     # or the user's own group: they are free to choose
+RESOURCE_GROUP="<resource-group>"     # or the user's own group: they are free to choose
 LOCATION="eastus"
 ZONE="1"                        # Premium SSD v2 attaches only to a VM in an availability zone
 VM_NAME="jane-doe-mysql-vm-eastus-$(date +%s)"

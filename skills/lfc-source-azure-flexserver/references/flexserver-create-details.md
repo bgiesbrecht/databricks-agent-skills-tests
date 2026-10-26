@@ -112,7 +112,7 @@ az network private-dns zone delete -n privatelink.mysql.database.azure.com -g {r
 
 ```bash
 export LOCATION="eastus"                           # Azure region
-export RESOURCE_GROUP="forgedb-rg"     # or the user's own group: they are free to choose
+export RESOURCE_GROUP="<resource-group>"     # or the user's own group: they are free to choose
 eval "$(az account show -o json | yq -p json -o shell '{"SUBSCRIPTION_ID": (.id // "")}')"; export SUBSCRIPTION_ID
 export ENGINE="mysql"                             # or "postgres"
 export VERSION="8.0"                              # MySQL 5.7/8.0 or PostgreSQL 12-16
