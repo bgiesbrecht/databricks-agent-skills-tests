@@ -1,0 +1,3 @@
+# Leftovers
+
+**Leftovers.** A run removes what it created when it exits, but a killed run, or one kept with `KEEP=1`, leaves its containers, pipeline, connection, service principal, folder and schema. Every name carries the run's epoch, and [`scripts/sweep.sh`](../scripts/sweep.sh) finds them by name, on the VM (`VM_IP`) or the laptop (`LIMA`) and in the workspace. It prints its plan and removes nothing without `--apply`. It leaves runs younger than `MIN_AGE` seconds (default 7200, as one may still be running) and the epochs in `KEEP_RUNS`; `ONLY_RUNS="<epoch> ..."` sweeps just those runs, whatever their age. It covers every source the harness runs.

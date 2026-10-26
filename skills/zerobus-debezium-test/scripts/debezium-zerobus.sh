@@ -220,7 +220,7 @@ ME=$(dbx current-user me -o json | yq '.userName') || { echo "profile $PROFILE d
 PREFIX=${PREFIX:-$(echo "$ME" | cut -d@ -f1 | tr -d '.-' | tr 'A-Z' 'a-z')}
 eval "$(dbx metastores current -o json | yq -o shell '{"WS_ID": .workspace_id}')"
 eval "$(dbx metastores summary -o json | yq -o shell '{"REGION": .region, "CLOUD": .cloud}')"
-HOST=$(databricks auth env --profile "$PROFILE" 2>/dev/null | yq -p json '.env.DATABRICKS_HOST' 2>/dev/null)
+HOST=$(databricks auth env --profile "$PROFILE" 2>/dev/null | jq -r '.env.DATABRICKS_HOST' 2>/dev/null)
 case $CLOUD in azure) ZB="https://$WS_ID.zerobus.$REGION.azuredatabricks.net";; aws) ZB="https://$WS_ID.zerobus.$REGION.cloud.databricks.com";;
   *) echo "cloud $CLOUD: set the Zerobus endpoint form for it"; exit 2;; esac
 [ -n "$HOST" ] && [ "$HOST" != null ] || { echo "no host for profile $PROFILE"; exit 2; }
@@ -1224,7 +1224,7 @@ producers() { # ROUNDS=0: the producers after the run: streaming (Debezium Serve
 have() { q "SELECT destination, operation, COUNT(*) FROM $LOGQ GROUP BY 1, 2 ORDER BY 1, 2" 2>/dev/null; }
 short() { # short <round><part>: the destinations and operations with fewer events than every source's manifest expects
   have > "$W/have.tsv"
-  for i in $(seq 1 "$NSRC"); do DP=${DESTP[$i]} yq -p json -oy -r '.expect | to_entries[] | .key as $t | .value | to_entries[]
+  for i in $(seq 1 "$NSRC"); do DP=${DESTP[$i]} jq -r '.expect | to_entries[] | .key as $t | .value | to_entries[]
     | select(.value > 0) | [strenv(DP) + "." + $t, .key, .value] | @tsv' "$W/m$1-$i.json"; done \
     | awk -F'\t' 'FILENAME == ARGV[1] {h[$1 FS $2] = $3; next} (h[$1 FS $2] + 0) < $3 {printf "%s %s %d of %d; ", $1, $2, h[$1 FS $2], $3}' "$W/have.tsv" -; }
 # (FILENAME, not NR == FNR: with no events yet, have.tsv is empty, and NR == FNR held for every expected line, so a
@@ -1243,7 +1243,7 @@ round() { # round <n> [after]: model-sql.py's changes for round n on every sourc
       && src > "$W/r$1$part-$i.out" 2>&1 < "$W/r$1$part-$i.sql" || claim "workload-$1${2:+-$2}" FAIL "the round's changes failed on $SRC_NAME, $SRC_DB: $(grep -m1 -i -E 'ORA-|SP2-|SQLSTATE|error|Msg [0-9]' "$W/r$1$part-$i.out" | cut -c1-200)"
   done; use 1; }
 probes() { # probes <round><part>: every source's probe for that part (its own destinations), "ok" when all arrived
-  local i p r=ok; for i in $(seq 1 "$NSRC"); do p=$(yq -p json -oy -r '.probe' "$W/m$1-$i.json")
+  local i p r=ok; for i in $(seq 1 "$NSRC"); do p=$(jq -r '.probe' "$W/m$1-$i.json")
     [ "$(probe "($p) AND destination LIKE '${DESTP[$i]}.%'")" = ok ] || r=; done; echo $r; }
 sleep 30   # let the change feed start
 R=$(q "SELECT COUNT(*) FROM $LOGQ WHERE operation = 'read'" 2>/dev/null)
@@ -1808,7 +1808,7 @@ if [ "$PHASE" -ge 2 ]; then
     case $r in ok*) ;; *) claim changes-3 FAIL "fewer events than expected before the restart: $r$(capture_note)";; esac
     vm "$PODMAN kill $DBZS >/dev/null && $PODMAN start $DBZS >/dev/null" || claim retry-restart FAIL "producer restart failed"
     sleep 40
-    round 3 after; N3=$(for i in $(seq 1 "$NSRC"); do yq -p json -oy '.events' "$W/m3before-$i.json" "$W/m3after-$i.json"; done | awk '{n += $1} END {print n}')
+    round 3 after; N3=$(for i in $(seq 1 "$NSRC"); do jq -r '.events' "$W/m3before-$i.json" "$W/m3after-$i.json"; done | awk '{n += $1} END {print n}')
     r=$(probes 3after); sleep 10
     R=$(q "SELECT COUNT(*) - $N0, COUNT(*) - COUNT(DISTINCT idempotency_key), (SELECT COUNT(*) FROM (SELECT 1 FROM $LOGQ GROUP BY destination, TO_JSON(key), TO_JSON(value:after), operation HAVING COUNT(*) > 1)) FROM $LOGQ" 2>&1 | tr '\t' ' ')
     observe retry-bronze "after the kill and restart, rows added since round 3 began ($N3 changes), rows sharing an idempotency key, change contents seen more than once: $R"
@@ -1871,8 +1871,8 @@ if [ "$PHASE" -ge 2 ]; then
     [ "$ROUNDS" = 5 ] && {
     use 1
     msql alter 4 --part ddl --state "$W/state-$I.tsv" --manifest "$W/a4.json" | src >/dev/null || observe schema-add-ddl "the ALTER failed on $SRC_NAME"
-    A4=$(yq -p json -oy -r '.table' "$W/a4.json"); C4=$(yq -p json -oy -r '.column' "$W/a4.json"); V4=$(yq -p json -oy -r '.value' "$W/a4.json")
-    D4=$(yq -p json -oy -r '.default' "$W/a4.json"); P4="($(yq -p json -oy -r '.probe' "$W/a4.json")) AND destination LIKE '$DEST_PREFIX.%'"
+    A4=$(jq -r '.table' "$W/a4.json"); C4=$(jq -r '.column' "$W/a4.json"); V4=$(jq -r '.value' "$W/a4.json")
+    D4=$(jq -r '.default' "$W/a4.json"); P4="($(jq -r '.probe' "$W/a4.json")) AND destination LIKE '$DEST_PREFIX.%'"
     audit_redo "$A4"
     sleep 15
     msql alter 4 --part after --state "$W/state-$I.tsv" | src >/dev/null
@@ -1891,8 +1891,8 @@ if [ "$PHASE" -ge 2 ]; then
     # only, then a value only the new type holds
     use "$NSRC"
     msql alter 5 --part ddl --state "$W/state-$I.tsv" --manifest "$W/a5.json" ${GOLD_FILE:+--gold "$GOLD_FILE"} | src >/dev/null || observe schema-change-ddl "the ALTERs failed on $SRC_NAME"
-    A5=$(yq -p json -oy -r '.table' "$W/a5.json"); X5=$(yq -p json -oy -r '.drop // ""' "$W/a5.json"); P5=$(yq -p json -oy -r '.probe' "$W/a5.json")
-    C5=$(yq -p json -oy -r '.retype.column // ""' "$W/a5.json"); R5="$C5 $(yq -p json -oy -r '.retype.to // ""' "$W/a5.json")"
+    A5=$(jq -r '.table' "$W/a5.json"); X5=$(jq -r '.drop // ""' "$W/a5.json"); P5=$(jq -r '.probe' "$W/a5.json")
+    C5=$(jq -r '.retype.column // ""' "$W/a5.json"); R5="$C5 $(jq -r '.retype.to // ""' "$W/a5.json")"
     audit_redo "$A5"
     sleep 15
     msql alter 5 --part after --state "$W/state-$I.tsv" ${GOLD_FILE:+--gold "$GOLD_FILE"} | src >/dev/null

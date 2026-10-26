@@ -153,6 +153,8 @@ The [public setup](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect
    ```
    `@Tables` also takes `'ALL'` and `'SCHEMAS:Sales,HR'`. CDC needs SQL Server Agent running; in the `mcr.microsoft.com/mssql/server` image, set `MSSQL_AGENT_ENABLED=true`.
 4. The ingestion user doesn't need `db_owner` once this is done: `ALTER ROLE db_owner DROP MEMBER [<lfc_user>]`. `db_owner` is only for whoever runs the setup.
+5. **Integrated CDC on many tables:** `lakeflowFixPermissions` doesn't grant `VIEW DATABASE PERFORMANCE STATE`. A 450-table integrated pipeline failed its first update with `PIPELINE_NON_RETRYABLE_ANALYSIS_INTERNAL_ERROR` and `GENERIC_SNAPSHOT_FAILURE` ("STREAM_FAILED ... VIEW DATABASE PERFORMANCE STATE permission denied in database <database>"). A 20-row table ran without it. Grant it, then start a new update, since the failed one doesn't create one: `GRANT VIEW DATABASE PERFORMANCE STATE TO [<lfc_user>];` (tested 2026-10-25, SQL Server 2022 CU27). `VIEW DATABASE STATE` implies `VIEW DATABASE PERFORMANCE STATE`: while the login holds the first, revoking the second alone changes nothing (tested 2026-10-26, SQL Server 2022 CU27).
+6. **Utility 1.5 installed, then 1.7 with no flag:** the update fails with `INGESTION_GATEWAY_DDL_OBJECTS_MISSING` ("DDL objects missing on table ... Execute the DDL objects script and full refresh the table"), then `PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR`. Tested 2026-10-25, SQL Server 2022 CU27, on a database with a non-default collation. Run the DDL objects script the message names, then full refresh the table. A rerun with the flag on the change-tracking setup passed; the cause isn't isolated.
 
 ## Change Tracking (CT) Configuration
 
@@ -330,6 +332,8 @@ ALTER DATABASE [<database>] SET CHANGE_TRACKING = ON;
 SELECT capture_instance FROM cdc.change_tables WHERE source_table = 'dtix';
 ```
 
+On a case-insensitive database, a capture instance named in a different case from its table fails the update with `INGESTION_GATEWAY_CDC_LOG_TRUNCATED` ("CDC log truncated, full refresh required"), not a missing-table error (tested 2026-10-25, SQL Server 2022 CU27). Fix the name from `cdc.change_tables`, then full refresh the table.
+
 ### Cannot Alter User Role (RDS/Managed)
 
 **Symptom:** `ALTER ROLE db_owner ADD MEMBER` fails; permission denied.
@@ -359,6 +363,99 @@ SELECT 1 FROM sys.sql_logins WHERE name = '<lfc_user>';
 USE [<database>];
 SELECT 1 FROM sys.database_principals WHERE name = '<lfc_user>';
 ```
+
+### TRUNCATE on a Change-Tracking Table
+
+**Symptom:** After `TRUNCATE TABLE` on a change-tracking table and five inserts, the update FAILED with `INGESTION_GATEWAY_UNTRACEABLE_TABLE_MODIFICATION`, and no new rows arrived (tested 2026-10-25, SQL Server 2022 CU27).
+
+**Fix:** Full refresh that table. The full refresh matched the source.
+
+### Capture Instance Dropped
+
+**Symptom:** After `sp_cdc_disable_table` on a table's capture instance, two updates COMPLETED with no error event, and a changed row didn't arrive (tested 2026-10-25, SQL Server 2022 CU27). After CDC was re-enabled, a full refresh of the table delivered the row.
+
+**Fix:** After changing a capture instance, full refresh the table.
+
+### Query-Based Cursor on datetime2(7)
+
+**Symptom:** A query-based pipeline with a `datetime2(7)` cursor missed rows whose seventh fractional digit changed: 0 of 3 arrived, while the same data with a `datetime2(6)` cursor arrived 2 of 2. The update COMPLETED (tested 2026-10-25, SQL Server 2022 CU27, one run).
+
+**Fix:** Use a `datetime2(6)` or lower cursor until the case is checked.
+
+### Governor Limits on the Gateway's Login
+
+**Symptom:** Two cases, tested 2026-10-25 on SQL Server 2022 CU27 (Developer, scaled down):
+- The query governor cost limit (`sp_configure 'query governor cost limit'`) refused the snapshot's full read at compile with error 8649 (estimated cost 91); nothing ran.
+- A Resource Governor `REQUEST_MAX_CPU_TIME_SEC` of 1 ended a 10,000,000-row keyless snapshot early. The update reported COMPLETED with 3,574,695 rows and no error event.
+
+Both limits count compile cost or CPU time, not elapsed time.
+
+**Fix:** Remove or raise the limits for the gateway's login, then count the rows after `SNAPSHOT_COMPLETED` (see the checks below).
+
+### Scoping to One Schema
+
+**Symptom:** A pipeline scoped to one 100-table schema of three still shows "Found 300 table(s) in the connection" in Schema Exploration (tested 2026-10-25, SQL Server 2022 CU27). Discovery reads the whole connection; the scope cuts the ingestion reads.
+
+**Fix:** Expect discovery to count the whole connection. Scope the pipeline's tables to limit what is read. The count also includes every other database the login can see in the container: with two pipeline databases of two and three tables, Schema Exploration reported 5 (tested 2026-10-26, SQL Server 2022 CU27).
+
+### Keyless Tables: Duplicate Rows Collapse
+
+**Symptom:** A CDC table without a primary key holds two identical rows, `(1,a)` and `(1,a)`. The snapshot lands one row. After one copy is updated to `(1,c)`, the destination holds `(1,c)` and `(2,b)`, and the other copy is gone; the source still has three rows (tested 2026-10-26, SQL Server 2022 CU27, standard gateway, one run).
+
+**Cause:** For a keyless table the applier uses all non-LOB columns as the merge key, so identical rows count as one key.
+
+**Fix:** Add a primary key before the first load (not tested here). Until then, compare the destination with the distinct source rows.
+
+### Column Added After the First Load
+
+**Symptom:** A column added with `ALTER TABLE ... ADD` after the first load (tested 2026-10-26, SQL Server 2022 CU27, one run per mode):
+- Standard CDC and change tracking (standard gateway): the gateway logs `Detected a schema change`; the next update COMPLETED with the column added. Earlier rows are NULL in it, and the new row carries its value. No full refresh.
+- Integrated CDC: the running update was cancelled with "... due to a schema change ... will be restarted", and the pipeline started a new one with cause `SCHEMA_CHANGE`. The restart replayed the table's applier snapshot flow; the column and the new row arrived in it, with no full refresh.
+
+**Fix:** No full refresh is needed for the column. On integrated CDC, wait for the restarted update before you count rows.
+
+### Revoked VIEW DATABASE STATE: Added Column's Row Never Arrives
+
+**Symptom:** With `VIEW DATABASE STATE` revoked from the ingestion login, a column was added and one row written. The gateway logged `Detected a schema change`, and the row was absent after two updates. No error appeared in the events or the updates. The control, without the revoke, delivered the row after the second update (tested 2026-10-26, SQL Server 2022 CU27, one run per arm).
+
+**Fix:** Keep `VIEW DATABASE STATE` on the ingestion login, and check the new row's count after each schema change. Whether a full refresh recovers the row wasn't tested.
+
+### Change Tracking With Many Tables: Each Table Read About Every 17 s
+
+**Symptom:** With 150 change-tracking tables in one gateway, a table changed every 2 s was read every 16.6-18.5 s, up to 10 rows a read, and changes lagged 11-12 s (p50) to 20 s from commit to the gateway's staged change. Idle tables lagged 2-20 s. Every change arrived; no table was starved (tested 2026-10-26, SQL Server 2022 CU27-GDR, one run).
+
+**Fix:** None tested. To measure a read interval, insert a new key per change: change tracking returns one net change per key between reads, so updating one row again and again shows one change per read. Compare at your table count before splitting the tables over gateways.
+
+### Gateway Stopped and Started During CDC: No Re-snapshot
+
+**Symptom:** None. The gateway pipeline was stopped for 5 minutes during steady changes, then started. It resumed each table's CDC flow from its position, with no snapshot flow; the rows written meanwhile arrived in the next ingestion update, and counts matched (tested 2026-10-26, SQL Server 2022 CU27-GDR, CDC, one run). `RESETTING` shows in every gateway update, the first one included; it isn't a reinit.
+
+**Fix:** None needed, as long as the source keeps the changes for the time the gateway is stopped (longer stops not tested).
+
+### Change Tracking DDL Objects Warned as Removable
+
+**Symptom:** With the utility's `@CreateDdlSupportingObjects = 1`, the gateway logs a WARN: "Non-trigger-based DDL for Change Tracking is active and CT DDL support objects were detected ... may be safely removed". The update still COMPLETED (tested 2026-10-26, SQL Server 2022 CU27, change tracking, standard gateway).
+
+**Fix:** Nothing is needed for the run. Removing the objects wasn't tested.
+
+## Column Types
+
+Tested 2026-10-26 on SQL Server 2022 CU27, standard and integrated CDC, with the same destination types in both.
+
+| Source type | Lands as | Notes |
+|---|---|---|
+| `HIERARCHYID` | string of the binary's hex | `/1/2/` arrives as `5B40`; the root `/` arrives as an empty string. No warning. |
+| `GEOGRAPHY` | binary (WKB) | POINT with SRID 4326 arrives as WKB without the SRID |
+| `DATETIMEOFFSET(7)` | timestamp (UTC instant) | the offset and the 100 ns digit are dropped: `2026-10-25 12:34:56.1234567 +05:30` arrives as `2026-10-25 07:04:56.123456` |
+| `DATETIME2(7)` | timestamp at microseconds | the 100 ns digit is dropped: `...9999999` arrives as `...999999` |
+| `TIME(7)` | string `HH:mm:ss.fffffff` | all 7 digits kept |
+| `MONEY` | decimal(19,4) | both extremes exact |
+| `UNIQUEIDENTIFIER` | string, upper-case GUID | |
+| `XML`, `SQL_VARIANT` | string | `SQL_VARIANT` values arrive as text |
+| `ROWVERSION` | binary | never NULL |
+| `NVARCHAR(MAX)` | string | Unicode kept |
+
+The losses are silent: the events show no warning. If the offset or the 100 ns digit matters, keep it in another column (not tested).
 
 ## Platform-Specific Notes
 
@@ -401,3 +498,14 @@ Before starting LFC ingestion:
    ```sql
    EXEC xp_servicecontrol N'QueryState', N'SQLServerAgent';
    ```
+
+## Checks for tests on a SQL Server source
+
+Harness mistakes from the 2026-10-25 round. Each one made a case invalid, not a finding:
+
+- **Tracing the gateway's statements:** filter the Extended Events session on the gateway's login (`sqlserver.username`), not `database_name`. Its metadata queries run in other databases too, so a database filter catches 0 rows.
+- **`VIEW SERVER STATE` is a server permission:** `GRANT` it in `master`. In a user database it fails with "can only be granted when the current database is master".
+- **Enable CDC on the database first:** run `sys.sp_cdc_enable_db` before the utility's CDC setup. Without it the setup creates no `lakeflow_` capture instance.
+- **Read effective permissions back after every GRANT or REVOKE:** `EXECUTE AS LOGIN = '<login>'; SELECT permission_name FROM fn_my_permissions(NULL, 'DATABASE'); REVERT;`. `CONCAT_WS` needs at least three arguments, which is what broke the listing in that round. A schema-level grant still covers a table after a table-level REVOKE.
+- **Match a literal `_` in `LIKE` with `[_]`:** an `ESCAPE` clause with more than one character fails with Msg 506.
+- **Lag can read healthy with an empty destination:** an integrated pipeline showed lag 5 seconds and zero pending snapshots for about 5 hours while its destination tables had 0 rows (tested 2026-10-25, 450 tables, SQL Server 2022). Count the destination rows and read the table's history: `DESCRIBE HISTORY` showed MERGE versions with `numTargetRowsInserted` 0. The grant had been added after a failed first start, so the cause isn't isolated; the gateway's snapshot events show whether rows were read.

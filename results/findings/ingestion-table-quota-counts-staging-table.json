@@ -1,0 +1,39 @@
+{
+  "id": "ingestion-table-quota-counts-staging-table",
+  "title": "Ingestion pipeline: 1,000 objects is refused; 999 is the most (the hidden staging table counts)",
+  "kind": "databricks-limit",
+  "status": "documented-limit",
+  "applies": {
+    "source": [
+      "*"
+    ],
+    "route": [
+      "*"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "2026-10-26 test round: SQL Server 2022 CU27, change tracking, 1,000 / 1,001 / 999 objects in one ingestion pipeline"
+  },
+  "symptom": "Analysis fails: \"The number of tables in this pipeline (1001 tables) exceeds the quota of 1000 tables per pipeline. Please reduce the number of tables defined in this pipeline.\" With 999 source objects, analysis passes.",
+  "cause": "The count includes one internal table, the pipeline's shared CDC staging table.",
+  "effect": "A pipeline built to the documented 1,000 never starts a table.",
+  "fix": "Keep one ingestion pipeline to 999 source tables or fewer, and split the rest over pipelines.",
+  "versions": [
+    "SQL Server 2022 CU27"
+  ],
+  "where": [
+    "skills/lfc-source-sizing/SKILL.md",
+    "skills/lfc-source-sizing/references/limits.md"
+  ],
+  "refs": [
+    "https://docs.databricks.com/aws/en/resources/limits"
+  ],
+  "notes": "RETRY_ON_FAILURE retried the same analysis error four more times over about 20 minutes, so a deterministic quota error doesn't clear by itself. The 999-object pipeline passed analysis and its snapshots were scheduled; it was stopped before any table started (one run)."
+}

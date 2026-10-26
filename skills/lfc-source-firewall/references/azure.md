@@ -79,10 +79,10 @@ For a shared NSG serving workspaces in many regions, set `SCOPE=all` in Step 1 (
 **Attach** the NSG to each new VM's NIC, or to the subnet the VM is in:
 
 ```bash
-NSG_ID=$(az network nsg show -g "$RG" -n "$NSG" -o json | yq -p json '.id')
-az network nic update -g "$RG" -n <vm-nic> --network-security-group "$NSG_ID" -o json | yq -p json '.networkSecurityGroup.id'
+NSG_ID=$(az network nsg show -g "$RG" -n "$NSG" -o json | jq -r '.id')
+az network nic update -g "$RG" -n <vm-nic> --network-security-group "$NSG_ID" -o json | jq -r '.networkSecurityGroup.id'
 # or
-az network vnet subnet update -g "$RG" --vnet-name <vnet> -n <subnet> --network-security-group "$NSG_ID" -o json | yq -p json '.networkSecurityGroup.id'
+az network vnet subnet update -g "$RG" --vnet-name <vnet> -n <subnet> --network-security-group "$NSG_ID" -o json | jq -r '.networkSecurityGroup.id'
 ```
 
 Pass the NSG's full resource ID, and check the ID the command prints ends in `$NSG`. With the bare name, `az network nic update` exited 0 but left the VM's own NSG attached, so the new rules had no effect. A VM created with `az vm create` gets its own NSG on the NIC; attaching the shared one replaces it, so the shared NSG needs the SSH rule (`lfc-myip-ssh` above) before you attach it. Then check from the laptop: `nc -z <vm-ip> <port>`.

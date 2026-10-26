@@ -10,7 +10,7 @@ for a in "$@"; do case $a in --apply) APPLY=yes;; core) WANT+=(zerobus_ingest_co
   mqtt) WANT+=(zerobus_mqtt_endpoint);; default-storage) WANT+=(zerobus_default_storage_write);; rescue) WANT+=(zerobus_rescue_column_json);;
   *) WANT+=("$a");; esac; done
 value() { databricks workspace-settings-v2 get-public-workspace-setting "$1" --profile "$P" -o json 2>/dev/null \
-  | yq -p json 'with(select(has("boolean_val")); .v = .boolean_val.value | .src = "set here") | with(select(has("boolean_val") | not); .v = .effective_boolean_val.value | .src = "inherited") | (.v | tostring) + " (" + .src + ")"'; }
+  | jq -r 'if has("boolean_val") then "\(.boolean_val.value) (set here)" else "\(.effective_boolean_val.value) (inherited)" end'; }
 if [ ${#WANT[@]} -eq 0 ]; then
   databricks workspace-settings-v2 list-workspace-settings-metadata --profile "$P" -o json \
     | yq -p json -o tsv '.[] | select(((.name // "") + " " + (.display_name // "")) | downcase | test("zerobus")) | [.name, .display_name]' \

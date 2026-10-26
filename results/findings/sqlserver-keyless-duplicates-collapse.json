@@ -1,0 +1,35 @@
+{
+  "id": "sqlserver-keyless-duplicates-collapse",
+  "title": "SQL Server keyless CDC table: duplicate rows collapse, and an update removes the other copy",
+  "kind": "connector-behavior",
+  "status": "open",
+  "applies": {
+    "source": [
+      "sqlserver"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "2026-10-26 test round: SQL Server 2022 CU27, standard CDC through a gateway, one run"
+  },
+  "symptom": "A table with two identical rows (1,a) lands one row at the snapshot. After one copy is updated to (1,c), the destination holds (1,c) and (2,b); the source holds (1,a), (1,c) and (2,b).",
+  "cause": "For a keyless table the merge key is all its non-LOB columns, so identical rows count as one key.",
+  "effect": "Duplicate rows are missing from the destination, and an update to one copy removes the other from it.",
+  "fix": "Add a primary key before the first load (not tested here). Until then, compare the destination with the distinct source rows.",
+  "versions": [
+    "SQL Server 2022 CU27"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-sqlserver.md"
+  ],
+  "notes": "One run. Which writer collapses the rows wasn't measured. The transaction replay in the same run matched the source."
+}

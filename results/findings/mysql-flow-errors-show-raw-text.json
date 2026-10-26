@@ -1,0 +1,35 @@
+{
+  "id": "mysql-flow-errors-show-raw-text",
+  "title": "MySQL: TABLE_DROPPED and MYSQL_BINLOG_FILE_DELETED show the flow's raw text, not the catalog message",
+  "kind": "databricks-bug",
+  "status": "open",
+  "applies": {
+    "source": [
+      "mysql"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "2026-10-26 test round: MySQL 8.4.13, standard gateway, one run each"
+  },
+  "symptom": "A dropped table: flow error eventType TABLE_DROPPED, \"Flow ... has failed because of a fatal error during realtime phase\". A binlog file purged past the gateway's position: eventType MYSQL_BINLOG_FILE_DELETED, with the same raw text. The catalog texts (\"Table has been dropped on source\", \"MySQL binlog file ... has been deleted from the source server.\") didn't appear.",
+  "cause": "Not established.",
+  "effect": "The customer sees the event type and the flow's name, not the explanation.",
+  "fix": "Read the eventType and the flow's table name from the gateway's events, and look the type up in this reference.",
+  "versions": [
+    "MySQL 8.4.13"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-mysql.md"
+  ],
+  "notes": "The binlog case needed the gateway stopped while its binlogs were purged. The position-unreadable case didn't fire in this run."
+}

@@ -230,13 +230,21 @@ Logical replication must be enabled **at the server level** (startup parameter),
 
 ### Create Replication Slot
 
-A replication slot tracks the decoder's position in the WAL stream. LFC creates this automatically during pipeline setup. To create manually:
+A replication slot tracks the decoder's position in the WAL stream. Create it before the first update. Tested 2026-10-25 on PostgreSQL 16 and 17:
+- Pipeline create refuses an empty slot name ("PostgreSQL slot name cannot be empty or null").
+- The gateway doesn't create a missing slot; it fails with `CDC_NOT_ENABLED` "Logical replication slot <name> doesn't exist with pgoutput plugin".
+- The slot must use `pgoutput`, be `logical`, and live in the database the connection opens.
+- A slot that is lost or dropped isn't recreated, even by a full refresh: create it again by hand, then run the full refresh.
+- A dropped slot is reported as `CDC_NOT_ENABLED` ("Logical replication slot <name> doesn't exist with pgoutput plugin"), not as a deleted-slot error. A lost slot (WAL kept past `max_slot_wal_keep_size`) fails the next update with `INGESTION_GATEWAY_PG_SLOT_IS_INVALIDATED`. Tested 2026-10-25 on PostgreSQL 16.15.
+- Deleting the pipeline doesn't drop a slot it named: the slot was still listed 6 minutes after the delete (tested 2026-10-25, PostgreSQL 16.15). Drop it by hand once the pipeline is gone.
 
 ```sql
--- Connect as superuser
-SELECT pg_create_logical_replication_slot('<slot_name>', 'test_decoding');
-SELECT * FROM pg_replication_slots;  -- List existing slots
+-- Connect as superuser, in the database the connection opens
+SELECT pg_create_logical_replication_slot('<slot_name>', 'pgoutput');
+SELECT slot_name, plugin, slot_type, database, active, wal_status FROM pg_replication_slots;
 ```
+
+`invalidation_reason` exists from PostgreSQL 17; on 16, a lost slot shows as `wal_status = 'lost'`.
 
 
 ### Set Replica Identity on Tables
@@ -257,6 +265,8 @@ SELECT schemaname, tablename, reptoptions FROM pg_tables
   WHERE schemaname = 'public' AND tablename IN ('intpk', 'dtix');
 ```
 
+
+**A primary key with a TOAST-able column:** the gateway can refuse a table that has a primary key and a text column under `DEFAULT`: `INGESTION_GATEWAY_CDC_NOT_ENABLED` with "does not have primary key or has a TOAST-able type column, and needs FULL REPLICA IDENTITY". The same message says to use `DEFAULT` when there is a primary key. Tested 2026-10-25 on PostgreSQL 16.15 and 17.11. On one gateway pair, `ALTER TABLE <table> REPLICA IDENTITY FULL` cleared it; on others it stayed, and a new gateway and ingestion pipeline pair with the same settings passed. So: set `FULL` on the table; if the same message stays, create a new gateway and ingestion pair. The cause isn't isolated.
 
 ## Password Rotation
 
@@ -309,6 +319,24 @@ SELECT pg_drop_replication_slot('<slot_name>');  -- if inactive
 ALTER TABLE public.intpk OWNER TO <lfc_user>;
 ALTER TABLE public.dtix OWNER TO <lfc_user>;
 ```
+
+### wal_level Is replica
+
+**Symptom:** The gateway fails with `INGESTION_GATEWAY_CDC_ERROR.CDC_NOT_ENABLED`: "CDC is not enabled on User <user> ... wal_level is set to 'replica'. It should be set to 'logical' for CDC to work." The ingestion update can sit in `INITIALIZING` for 20 minutes or more with no events (tested 2026-10-25, PostgreSQL 16.15).
+
+**Fix:** Set `wal_level = logical`, restart (see Enable Logical Replication above), then start the update again.
+
+### Lowering wal_level With Slots Present
+
+**Symptom:** After `wal_level` is lowered, the server won't start: `FATAL: logical replication slot "<slot>" exists, but wal_level < logical`, and the container exits. PostgreSQL 16 doesn't invalidate the slots (tested 2026-10-25, PostgreSQL 16.15).
+
+**Fix:** Stop the gateway, drop the logical slots, then lower `wal_level`. On PostgreSQL 16 check a lost slot with `wal_status`; `invalidation_reason` exists from PostgreSQL 17.
+
+### TLS With a Self-Signed Certificate
+
+**Symptom:** `INGESTION_GATEWAY_CONNECTION_ERROR.TLS_CONNECTION_FAILURE` with the `verify-ca` SSL mode and a self-signed server certificate (tested 2026-10-25, PostgreSQL 17.11, self-hosted).
+
+**Fix:** Add `"trustServerCertificate": "true"` to the connection's options, as SKILL.md step 2 describes for SQL Server and MySQL, or use a certificate from a CA. One run also logged a TLS connection while `pg_stat_ssl` showed no SSL for the gateway's sessions; that wasn't resolved.
 
 ### Connection Timeout (Network/Security)
 

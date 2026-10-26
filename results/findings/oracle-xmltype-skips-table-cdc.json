@@ -1,0 +1,35 @@
+{
+  "id": "oracle-xmltype-skips-table-cdc",
+  "title": "Oracle: a table with an XMLTYPE column is skipped on CDC, and the update waits for its snapshot",
+  "kind": "connector-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "oracle"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "2026-10-26 test round: Oracle Free 23.26.3, standard gateway, one run"
+  },
+  "symptom": "The gateway's flow reported TABLE_SKIPPED_DUE_TO_UNSUPPORTED_COLUMN_DATA_TYPE: \"Table contains unsupported column types: XMLTYPE. Oracle LogMiner skips the entire table when any column has these types\". The table got no snapshot, and the ingestion update stayed RUNNING with its snapshot SCHEDULED for about 20 minutes, until the table was removed.",
+  "cause": "LogMiner skips the whole table when any column has an unsupported type.",
+  "effect": "The table is missing from the destination, and the update doesn't finish.",
+  "fix": "Remove the table from the pipeline (tested). Keeping the XML in a table of its own wasn't tested.",
+  "versions": [
+    "Oracle Free 23.26.3"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-oracle.md"
+  ],
+  "notes": "A companion table without the column ran normally."
+}

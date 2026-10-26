@@ -1,0 +1,35 @@
+{
+  "id": "gateway-max-connections-out-of-range-accepted",
+  "title": "Gateway pipeline: maxConnections -1, 0 and 100000 are accepted, and the update COMPLETES",
+  "kind": "databricks-bug",
+  "status": "open",
+  "applies": {
+    "source": [
+      "sqlserver"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "2026-10-26 test round: SQL Server 2022 CU27, standard gateway, one run per value"
+  },
+  "symptom": "pipelines.gateway.realtime.maxConnections of -1, 0 and 100000: the create and the update succeeded, with all 10 rows. snapshot.maxConnections of 0 was also accepted. No error.",
+  "cause": "Not established. The code reading found no range check for these settings.",
+  "effect": "A bad value reaches the connection pool with no message, and its effect wasn't measured.",
+  "fix": "Set a positive integer you've sized for the source's connection limit.",
+  "versions": [
+    "SQL Server 2022 CU27"
+  ],
+  "where": [
+    "skills/lfc-source-setup/SKILL.md"
+  ],
+  "notes": "One run per value. The gateway log wasn't read, so the value's effect on the pool isn't confirmed."
+}

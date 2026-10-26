@@ -1,0 +1,37 @@
+{
+  "id": "sqlserver-schema-scope-does-not-reduce-discovery",
+  "title": "SQL Server: scoping to one schema doesn't reduce schema exploration",
+  "kind": "connector-behavior",
+  "status": "by-design",
+  "applies": {
+    "source": [
+      "sqlserver"
+    ],
+    "route": [
+      "lfc-scdc",
+      "lfc-icdc",
+      "lfc-qbc"
+    ],
+    "layer": [
+      "source"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "expected-entry test round 2026-10-25: SQL Server 2022 CU27, three schemas of 100 tables, one run"
+  },
+  "symptom": "Schema Exploration says \"Found 300 table(s) in the connection\" with the pipeline scoped to one 100-table schema. The same catalog statements ran per pass at 300 tables and at 100.",
+  "cause": "Discovery reads the whole connection; the scope applies to the ingestion reads.",
+  "effect": "The discovery count doesn't show the scope.",
+  "fix": "Expect discovery to count the whole connection; the scope cuts the ingestion reads.",
+  "versions": [
+    "SQL Server 2022 CU27"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-sqlserver.md"
+  ],
+  "notes": "The optimized metadata path wasn't tested. Discovery also counts every database the login can see in the container: with two pipeline databases of two and three tables, it reported 5 (tested 2026-10-26)."
+}

@@ -1,0 +1,34 @@
+{
+  "id": "oracle-missing-privileges-fail-in-order",
+  "title": "Oracle: missing privileges fail at login or at the first query, before the grant list",
+  "kind": "connector-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "oracle"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "source"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "expected-entry test round 2026-10-25: Oracle Free 23.26.3, four users with different grants"
+  },
+  "symptom": "No CREATE SESSION: ORA-01045 at login. CREATE SESSION only: ORA-00942 on SYS.V_$DATABASE (\"Could not fetch database name\"). A table without SELECT: GENERIC_SNAPSHOT_FAILURE with ORA-00942. None of the three reaches the missing-privilege list.",
+  "cause": "The checks run in connection order.",
+  "effect": "The first error hides the rest of the required grants.",
+  "fix": "Grant CREATE SESSION, then the full grant list, then SELECT on each table; check with VALIDATE_SETUP.",
+  "versions": [
+    "Oracle Free 23.26.3"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-oracle.md"
+  ]
+}

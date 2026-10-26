@@ -1,0 +1,7 @@
+# matrix.sh: many sources and models at once
+
+- **Isolation:** each run gets its own copy of the skills folder, its own log, result file and port.
+- **Output:** `summary.md` has one row per run: exit status, claims passed and failed, the first failure, minutes.
+- **Coverage records:** each run writes the combination it tested and its outcome as an **lfc-test-results** record (`RECORD_OUT`); `records.jsonl` collects them. Look them over, then `record.py < records.jsonl`, so `recall.py --coverage` shows the combination as tested.
+- **Choosing `PARALLEL`:** one run per two vCPUs of the VM (2 on the 4-vCPU test VM), when memory allows. Check first: `nproc`, `free -m` (available), `podman stats --no-stream` for other sessions' containers (they share the VM), and that the disk is idle (`iostat -dx`). Memory per run: the database (PostgreSQL about 0.5 GB, MySQL 1 GB, Db2 and Informix 1 to 2 GB, SQL Server and Oracle 2 to 4 GB: **lfc-source-podman**'s engines.md), plus about 0.4 GB per Debezium Server, one per source database (`NSRC=4` Mautic: about 5 GB in all). Leave 2 GB free. Two Oracle databases starting at once can time out a connector's start (`ORA-17002`); the harness restarts it, but mixing engines in a pair avoids it.
+- **Runs on a laptop-driven VM stop when the laptop sleeps.** The harness drives the VM over SSH and waits out an outage for `VM_RETRY_MIN` minutes; start long matrices when the laptop stays awake, or from a host that does.

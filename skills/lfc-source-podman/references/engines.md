@@ -117,6 +117,11 @@ Keep `mssql.env`: it's how you (and scripts) get the password later, without it 
   - Most versions are x86_64-only; 19c Enterprise is ARM64-only
   - First run: 20–60 min (DBCA creates database from scratch)
 
+**CDB or non-CDB:**
+- `gvenzl/oracle-free` (23ai/26ai) and `gvenzl/oracle-xe:18` / `:21` are CDB-only: the CDB plus one PDB (`FREEPDB1` / `XEPDB1`), and `ORACLE_DATABASE` adds more PDBs, never a non-CDB.
+- The one gvenzl non-CDB image is `gvenzl/oracle-xe:11` (11.2.0.2, "11g does not support pluggable databases"), older than the connector's oldest version, 12c.
+- A non-CDB that the connector supports needs 12c to 19c, since 19c is the last release that allows a non-CDB. That means the OCI Enterprise image with DBCA `createAsContainerDatabase=false` (not tested).
+
 **Image examples:**
 - `docker.io/gvenzl/oracle-xe:21` (gvenzl 21c XE)
 - `docker.io/gvenzl/oracle-free:latest` (gvenzl 23ai/26ai Free)

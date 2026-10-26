@@ -1,0 +1,35 @@
+{
+  "id": "mysql-revoked-select-shows-missing-table",
+  "title": "MySQL: a table the LFC login can't SELECT shows as MISSING_TABLE_IN_SOURCE, not as a privilege error",
+  "kind": "connector-behavior",
+  "status": "open",
+  "applies": {
+    "source": [
+      "mysql"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "2026-10-26 test round: MySQL 8.4.13, standard gateway, one run"
+  },
+  "symptom": "With SELECT revoked on one table, schema exploration listed one table fewer (Found 1 table(s)). Its flow reported MISSING_TABLE_IN_SOURCE, \"has failed because of a fatal error during realtime phase\", and the ingestion update FAILED at analysis. No privilege message appeared.",
+  "cause": "Schema exploration lists only the tables the login can read, so the flow finds the table missing.",
+  "effect": "The message says the table is missing, not that a grant is missing.",
+  "fix": "Grant SELECT on the table again, and check that schema exploration lists it. The regrant wasn't run in this round.",
+  "versions": [
+    "MySQL 8.4.13"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-mysql.md"
+  ],
+  "notes": "With no visible tables at all, the gateway reported INGESTION_GATEWAY_CONNECTION_ERROR.SOURCE_CONNECTION_FAILURE, which is misleading."
+}

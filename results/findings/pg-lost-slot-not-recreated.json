@@ -1,0 +1,38 @@
+{
+  "id": "pg-lost-slot-not-recreated",
+  "title": "PostgreSQL: a lost or dropped slot isn't recreated by a full refresh",
+  "kind": "connector-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "postgres"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "expected-entry test round 2026-10-25: PostgreSQL 16.15, DBR 18.3.8 gateway"
+  },
+  "symptom": "After the slot was lost (WAL kept past max_slot_wal_keep_size) or dropped, the next update FAILED with INGESTION_GATEWAY_PG_SLOT_IS_INVALIDATED, or CDC_NOT_ENABLED (\"doesn't exist\"). A dropped slot is reported as CDC_NOT_ENABLED, not as a deleted-slot class.",
+  "cause": "The gateway doesn't recreate a slot it was given.",
+  "effect": "A full refresh of the table completes, and the updates keep failing.",
+  "fix": "Create the slot by hand, then full refresh the table.",
+  "versions": [
+    "PostgreSQL 16.15"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-postgres.md"
+  ],
+  "notes": "One run: the first update after the loss reported COMPLETED with no error, while the gateway log showed PG_SLOT_IS_INVALIDATED (see snapshot-complete-before-rows).",
+  "refs": [
+    "https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/postgresql-limits"
+  ]
+}

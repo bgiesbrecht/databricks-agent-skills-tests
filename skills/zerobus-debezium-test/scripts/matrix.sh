@@ -26,6 +26,8 @@ SOURCES=${SOURCES:-pg}; MODELS=${MODELS:-tpch}; NSRCS=${NSRCS:-1}; PARALLEL=${PA
 SKILLS=$(cd "$MATRIX_SELF/../.." && pwd); rm -f "$0"
 RESULTS=${RESULTS:-$HOME/.lfc-test/results/matrix-$(date -u +%Y%m%dT%H%M%SZ)}; mkdir -p "$RESULTS"
 echo "matrix: sources [$SOURCES] x models [$MODELS] x NSRC [$NSRCS], $PARALLEL at a time, into $RESULTS"
+# the runs' numbers go only where LFC_PERF_DIR points (debezium-zerobus.sh); unset, nothing records them
+[ -n "${LFC_PERF_DIR:-}" ] || echo "matrix: LFC_PERF_DIR isn't set: the runs' timings won't be recorded anywhere but their logs"
 
 run_one() { # run_one <source> <model> <nsrc> <port>
   local s=$1 m=$2 n=$3 port=$4 name="$1-$2-n$3" dir t0=$SECONDS rc

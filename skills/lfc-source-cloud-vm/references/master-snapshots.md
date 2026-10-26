@@ -86,7 +86,7 @@ Data directory paths, users and stop commands for each engine are in [engine-mas
 **Throw it away:**
 
 ```bash
-podman rm -f <container>; rm -rf $D/run-1
+podman rm -f <container>; rm -rf "${D:?}/run-1"
 ```
 
 **Save it**, under a **new name** so you don't change a master other people are cloning, then make it the local cache:

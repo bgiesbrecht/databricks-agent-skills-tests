@@ -10,7 +10,14 @@ Every ✅ ran end to end on Azure, into a serverless workspace, from the committ
 |---|---|---|---|---|---|---|---|---|---|
 | CockroachDB v25.4.13 | Debezium Server 3.7.0.Final, Zerobus sink (gRPC) | ✅ | ✅ | ✅ replays removed | ✅ incremental | ✅ replays 4 of 5 changes; silver right | ✅ backfilled by the source | ✅ | ✅ |
 | YugabyteDB 2026.1.2.0 | Kafka Connect 3.7.2 (standalone, no broker), Yugabyte's connector, into the Zerobus Kafka-compatible endpoint | ✅ | ✅ | ✅ | ✅ incremental | ✅ no replays | ✅ from the column's default | ✅ | not run yet |
+| Db2 11.5.9 | Debezium Server 3.7, Zerobus sink | ✅ | ✅ | ✅ | no TPC gold yet | ✅ | not run yet | not run yet | not run yet |
+| Informix 14.10 | Debezium Server 3.7, Zerobus sink | ✅ | ✅ | ✅ | no TPC gold yet | ✅ | not run yet | not run yet | not run yet |
+| MySQL 8.4.11 | Debezium Server 3.7, Zerobus sink | ✅ | ✅ | ✅ | no TPC gold yet | ✅ | ✅ | ✅ | not run yet |
+| Oracle 26ai Free 23.26.3 | Debezium Server 3.7, Zerobus sink | ✅ | ✅ | ✅ | no TPC gold yet | ✅ | not run yet | not run yet | not run yet |
+| PostgreSQL 16.15 | Debezium Server 3.7, Zerobus sink | ✅ | ✅ | ✅ | no TPC gold yet | ✅ | ✅ | ✅ | not run yet |
+| SQL Server 2022 (16.0.4305) | Debezium Server 3.7, Zerobus sink | ✅ | ✅ | ✅ | no TPC gold yet | ✅ | not run yet | not run yet | not run yet |
 
+- **The six databases from Db2 to SQL Server** each ran the six TPC models (TPC-B, TPC-C, TPC-DI, TPC-DS, TPC-E, TPC-H) at scale factor 0.001, one source into one set of tables, on Azure serverless. MySQL and PostgreSQL ran all five rounds; the other four ran rounds 1 to 3 (their schema-change rounds are next). Several sources into one set of tables passed too: TPC-H with 2 sources on Db2, Informix, MySQL, PostgreSQL and SQL Server, and the Mautic schema with 2 and 4 MySQL sources. The grid per model: `uv run skills/lfc-test-results/scripts/recall.py --combos --test zerobus`.
 - **Each ✅ is a claim the test checks**, not a guess. Silver and gold are compared with the source table by table, after each of five rounds of changes. Every SCD 2 version is compared with the source's own change history, in commit order. Each round's changes:
 
   | Round | Changes |

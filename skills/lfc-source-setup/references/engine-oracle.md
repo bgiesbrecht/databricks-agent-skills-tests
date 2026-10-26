@@ -143,6 +143,8 @@ BEGIN DBX_ORACLE_SETUP_UTIL.VALIDATE_SETUP('C##LFC_USER'); END;
 
 `GRANT_SELECT_PERMISSIONS` grants only the tables that exist when it runs: rerun it after adding tables. The same user works for query-based ingestion and CDC: UC connection `user` `C##LFC_USER` with `service_name` `FREE` (the CDB), and the PDB (`FREEPDB1`) as `source_catalog` in pipelines. For SQL through a connection (`remote_query`), use a second connection with `service_name` `FREEPDB1`: a `service_name =>` argument doesn't override the connection's. The manual grants below are the older way and are kept for reference.
 
+**Gateway `source_catalog`:** set it in the gateway's `connection_parameters` as the base service name, `{"source_catalog": "FREE"}`. The gateway's message (`NO_CONNECTION_PARAMETER`) says to use the literal `CDB$ROOT`, which fails with `INGESTION_GATEWAY_CONNECTION_ERROR.SOURCE_AUTHENTICATION_FAILURE` ("Oracle service name 'CDB$ROOT' is invalid"). A `source_catalog` set under `gateway_definition` is dropped by the CLI ("unknown field: source_catalog"), and the gateway then fails with `NO_CONNECTION_PARAMETER` again. Tested 2026-10-25 on Oracle Free 23.26.3: with `FREE` the gateway ran and the snapshot completed with 10 rows.
+
 ## LFC User Setup
 
 ### Platform-Specific User Strategies
@@ -163,10 +165,19 @@ GRANT CONNECT, RESOURCE, CREATE TABLE, CREATE VIEW, CREATE SEQUENCE, UNLIMITED T
 
 -- Grant CDC / LogMiner privileges
 GRANT CREATE SESSION, SELECT ANY TRANSACTION, EXECUTE_CATALOG_ROLE, SELECT ANY DICTIONARY, LOGMINING, FLASHBACK ANY TABLE, SELECT ANY TABLE TO C##<lfc_user> CONTAINER=ALL;
-GRANT SELECT ON V_$DATABASE TO C##<lfc_user> CONTAINER=ALL;
-GRANT SELECT ON GV_$DATABASE TO C##<lfc_user> CONTAINER=ALL;
-GRANT SELECT ON GV_$TRANSACTION TO C##<lfc_user> CONTAINER=ALL;
-GRANT SELECT ON GV_$LOGMNR_CONTENTS TO C##<lfc_user> CONTAINER=ALL;
+-- Every object the gateway's validator checks, one by one: SELECT ANY DICTIONARY doesn't satisfy the check
+-- (without these, CDC_NOT_ENABLED "Requires following permissions : SELECT on GV_$INSTANCE, SELECT on GV_$SESSION, SELECT on DBA_SEGMENTS")
+GRANT EXECUTE ON DBMS_LOGMNR TO C##<lfc_user> CONTAINER=ALL;
+GRANT EXECUTE ON DBMS_LOGMNR_D TO C##<lfc_user> CONTAINER=ALL;
+GRANT SELECT ON DBA_SEGMENTS TO C##<lfc_user> CONTAINER=ALL;
+BEGIN
+  FOR v IN (SELECT column_value n FROM TABLE(sys.odcivarchar2list('TRANSACTION','DATABASE','CONTAINERS','PDBS','SESSION',
+            'INSTANCE','LOGFILE','LOG','ARCHIVED_LOG','LOGMNR_CONTENTS','PARAMETER'))) LOOP
+    EXECUTE IMMEDIATE 'GRANT SELECT ON V_$' || v.n || ' TO C##<lfc_user> CONTAINER=ALL';
+    EXECUTE IMMEDIATE 'GRANT SELECT ON GV_$' || v.n || ' TO C##<lfc_user> CONTAINER=ALL';
+  END LOOP;
+END;
+/
 
 -- Multi-PDB access (optional):
 ALTER USER C##<lfc_user> SET CONTAINER_DATA=ALL CONTAINER=CURRENT;
@@ -277,6 +288,8 @@ ALTER TABLE <owner>.intpk ADD SUPPLEMENTAL LOG DATA (PRIMARY KEY) COLUMNS;
 ALTER TABLE <owner>.dtix ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS;
 ```
 
+**Restart the gateway after a logging change.** The gateway keeps the connection's supplemental-logging state until it restarts. After primary-key logging was added to two tables (checked in `DBA_LOG_GROUPS`), updates kept failing with `INGESTION_GATEWAY_CDC_NOT_ENABLED` ("Primary Key supplemental logging is not enabled on this table."); after a restart, other tables reported it (tested 2026-10-25, Oracle Free 23.26.3). Restart the gateway after each logging change, then start the update.
+
 ## CDC via LogMiner
 
 ### Open LogMiner and Query Changes
@@ -327,6 +340,24 @@ ALTER USER C##<lfc_user> IDENTIFIED BY "<new-password>" CONTAINER=ALL;
 sqlplus <lfc_user>/"<new-password>"@<service_name>
 SELECT 1 FROM DUAL;
 ```
+
+**A wrong password:** if the source password changed and the connection still has the old one, the gateway fails with `INGESTION_GATEWAY_CONNECTION_ERROR.SOURCE_AUTHENTICATION_FAILURE` ("Error while creating connection pool for catalog <catalog>. ORA-01017: invalid credential or not authorized; logon denied"). The retries repeat the same error. Update the connection with the current password, then start an update (the fix wasn't run in this round; tested 2026-10-26, Oracle Free 23.26.3).
+
+## Column Types
+
+Tested 2026-10-26 on Oracle Free 23.26.3, standard gateway: the snapshot rows and the CDC rows that arrived.
+
+| Oracle type | Lands as | Notes |
+|---|---|---|
+| `NUMBER(38,0)`, `NUMBER(10,2)` | decimal, same value | |
+| `NUMBER` with no precision or scale | string with the exact digits | not a decimal: `1234.5678`, `0.000001` |
+| `TIMESTAMP(9) WITH LOCAL TIME ZONE` | string with the zone name inside | 12:00:00.123456789 in a +00:00 session arrives as `2026-10-25 12:00:00 Etc/UTC.123456789` |
+| `TIMESTAMP WITH TIME ZONE` | timestamp, same UTC instant | offset dropped |
+| `INTERVAL DAY TO SECOND` | interval | |
+| `BINARY_FLOAT`, `BINARY_DOUBLE` | float, double | |
+| `RAW(16)` | binary | |
+| `NCLOB` | string | |
+| `XMLTYPE` | the table is skipped on CDC | [XMLTYPE Column Skips the Table](#xmltype-column-skips-the-table) |
 
 ## Troubleshooting
 
@@ -387,13 +418,60 @@ ALTER SYSTEM SWITCH LOGFILE;
 
 ### Archive Logs Deleted Too Quickly
 
-**Symptom:** "Specified Log not in dictionary" error.
+**Symptom:** "Specified Log not in dictionary" error. LogMiner's text can also be `No complete archived dictionary found before SCN: <scn>`. With the archive logs removed, the gateway reports `ORACLE_ARCHIVE_LOG_FILES_UNAVAILABLE` ("... Please perform full refresh on all destination tables mapped to catalog <catalog> ..."), and the update can still COMPLETE with the flows failed (tested 2026-10-25, Oracle Free 23.26.3).
 
-**Fix:** Increase FRA retention:
+**Fix:** Increase FRA retention. If logs are already gone, full refresh the destination tables the message names, and read the gateway's flow events rather than the update's status. The removal is container-wide: a second gateway on the same container, whose CDC had finished, went to `INGESTION_GATEWAY_INTERNAL_ERROR` ("cannot recover") (tested 2026-10-26, Oracle Free 23.26.3).
 ```sql
 ALTER SYSTEM SET db_recovery_file_dest_size = 50G SCOPE=BOTH;
 ALTER SYSTEM SET db_flashback_retention_target = 2880 SCOPE=BOTH;
 ```
+
+### PDB Service Shows INTERNAL_ERROR
+
+**Symptom:** A gateway connected through the PDB's service name (`FREEPDB1`) fails with `INGESTION_GATEWAY_INTERNAL_ERROR` ("The Ingestion Gateway has encountered an internal error and cannot recover"). Direct SQL on that service fails at `DBMS_LOGMNR.ADD_LOGFILE` with `ORA-65040`; the pipeline events don't show it (tested 2026-10-25, Oracle Free 23.26.3).
+
+**Fix:** Connect with the CDB's service (`FREE`) and name the PDB in `source_catalog` (see above).
+
+### Missing Privileges Fail in Order
+
+**Symptom:** Four users with different grants (tested 2026-10-25, Oracle Free 23.26.3):
+- No `CREATE SESSION`: `ORA-01045: Login denied` at connection (`INGESTION_GATEWAY_CONNECTION_ERROR.SOURCE_AUTHENTICATION_FAILURE`).
+- `CREATE SESSION` only: `ORA-00942: table or view SYS.V_$DATABASE does not exist` ("Could not fetch database name").
+- A table without `SELECT`: `GENERIC_SNAPSHOT_FAILURE`, "Snapshot failed for table <catalog>.<schema>.<table>", with `ORA-00942`.
+
+None of the three reaches the missing-privilege list.
+
+**Fix:** Grant in this order: `CREATE SESSION`, then the full grant list above (the validator's objects), then `SELECT` on each table. Check with `VALIDATE_SETUP`.
+
+### Restricted User Finds No Tables
+
+**Symptom:** A user with `SELECT` on ten tables only: Schema Exploration says "Found 0 table(s)", and the update stays `INITIALIZING` with every snapshot `SCHEDULED` for more than 10 minutes and no error event. The same database's all-visible user found 4,500 tables in 6.95 s. The restricted user lacked about 45 view grants (tested 2026-10-25, Oracle Free 23.26.3).
+
+**Fix:** Apply the full grant list, then check that exploration finds the tables before starting the update.
+
+### Triggered Update Stays RUNNING
+
+**Symptom:** A triggered integrated update ran 23 minutes without a `COMPLETED` event. Its lag grew from 232 s at 5 minutes to 1,258 s at 23 minutes with no source changes after one probe row; the progress text said "Will stop once the lag converges" (tested 2026-10-25, Oracle Free 23.26.3, one run).
+
+**Fix:** Watch a longer run with a steady trickle of changes, and record the lag over time before stopping it.
+
+### Common User Without Container Grants Shows as Missing Table
+
+**Symptom:** A common user (`C##`) without `SET CONTAINER` and `CONTAINER_DATA=ALL`: the gateway found 0 tables and reported `MISSING_TABLE_IN_SOURCE` ("No catalog or schema was found for replication. Please check your filter file"). The message doesn't name the privilege (tested 2026-10-26, Oracle Free 23.26.3).
+
+**Fix:** Grant the two multi-container privileges from the grant list above (`GRANT SET CONTAINER` and `ALTER USER ... SET CONTAINER_DATA=ALL CONTAINER=CURRENT`), then restart the pipelines. The re-run found the tables.
+
+### XMLTYPE Column Skips the Table
+
+**Symptom:** The gateway's flow reported `TABLE_SKIPPED_DUE_TO_UNSUPPORTED_COLUMN_DATA_TYPE`: "Table contains unsupported column types: XMLTYPE. Oracle LogMiner skips the entire table when any column has these types". The table got no snapshot, and the ingestion update stayed `RUNNING` with its snapshot `SCHEDULED` for about 20 minutes, until the table was removed. A companion table without the column ran normally (tested 2026-10-26, Oracle Free 23.26.3, one run).
+
+**Fix:** Remove the table from the pipeline (tested). Keeping the XML in a table of its own wasn't tested.
+
+### Dropped Table Blocks the Ingestion Pipeline
+
+**Symptom:** After `DROP TABLE`, the first ingestion update with no change to that table COMPLETED with no error. After changes reached the gateway, the gateway reported the table's flow with `TABLE_DROPPED`, and the next update FAILED at analysis: `[INGESTION_GATEWAY_TABLE_DROPPED] Source table <catalog>.<schema>.<table> has been dropped on source`, "A new pipeline update will not be created". Every table in the pipeline stopped until the dropped table was removed (tested 2026-10-26, Oracle Free 23.26.3, one run).
+
+**Fix:** Remove the dropped table from the ingestion pipeline. The pipeline ran again after that.
 
 ## Verification Checklist
 

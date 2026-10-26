@@ -1,0 +1,36 @@
+{
+  "id": "sqlserver-type-mappings-as-tested",
+  "title": "SQL Server: TIME(7), MONEY, UNIQUEIDENTIFIER, XML, SQL_VARIANT, ROWVERSION and NVARCHAR(MAX) land as listed",
+  "kind": "connector-behavior",
+  "status": "by-design",
+  "applies": {
+    "source": [
+      "sqlserver"
+    ],
+    "route": [
+      "lfc-scdc",
+      "lfc-icdc"
+    ],
+    "layer": [
+      "bronze"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "2026-10-26 test round: SQL Server 2022 CU27, standard and integrated CDC, one run"
+  },
+  "symptom": "TIME(7) as a string HH:mm:ss.fffffff with all 7 digits. MONEY as decimal(19,4), both extremes exact. UNIQUEIDENTIFIER as an upper-case string. XML and SQL_VARIANT as strings. ROWVERSION as binary, never NULL. NVARCHAR(MAX) as a string with Unicode kept. All matched the source.",
+  "cause": "The connector's type mapping.",
+  "effect": "Nothing is lost for these types.",
+  "fix": "None needed. Check a destination's types against this list.",
+  "versions": [
+    "SQL Server 2022 CU27"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-sqlserver.md"
+  ],
+  "notes": "One run per mode with the same types in both."
+}

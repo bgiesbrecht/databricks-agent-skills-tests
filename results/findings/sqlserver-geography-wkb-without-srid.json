@@ -1,0 +1,36 @@
+{
+  "id": "sqlserver-geography-wkb-without-srid",
+  "title": "SQL Server: GEOGRAPHY arrives as WKB binary, and the SRID is dropped",
+  "kind": "connector-behavior",
+  "status": "open",
+  "applies": {
+    "source": [
+      "sqlserver"
+    ],
+    "route": [
+      "lfc-scdc",
+      "lfc-icdc"
+    ],
+    "layer": [
+      "bronze"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "2026-10-26 test round: SQL Server 2022 CU27, standard and integrated CDC, one run"
+  },
+  "symptom": "POINT(-122.3 47.6) with SRID 4326 arrives as binary WKB with no SRID. The destination has no geography type.",
+  "cause": "Not established.",
+  "effect": "The coordinates are kept; the SRID is not.",
+  "fix": "Not tested: store the SRID in its own column on the source.",
+  "versions": [
+    "SQL Server 2022 CU27"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-sqlserver.md"
+  ],
+  "notes": "One run per mode."
+}

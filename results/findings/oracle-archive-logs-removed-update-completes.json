@@ -1,0 +1,35 @@
+{
+  "id": "oracle-archive-logs-removed-update-completes",
+  "title": "Oracle: archive logs removed; the update reports COMPLETED while flows fail",
+  "kind": "connector-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "oracle"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "expected-entry test round 2026-10-25: Oracle Free 23.26.3, gateway runtime 18.3"
+  },
+  "symptom": "ORACLE_ARCHIVE_LOG_FILES_UNAVAILABLE on the gateway's flows: \"... Please perform full refresh on all destination tables mapped to catalog <catalog> ...\". The ingestion update reported COMPLETED.",
+  "cause": "The archive logs the CDC needed were removed.",
+  "effect": "Rows are missing while the update status says COMPLETED.",
+  "fix": "Full refresh the destination tables; read the gateway's flow events, not the update status.",
+  "versions": [
+    "Oracle Free 23.26.3"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-oracle.md"
+  ],
+  "notes": "LogMiner's text in another case: No complete archived dictionary found before SCN. The removal is container-wide: a second gateway on the same container, whose CDC had finished, went to INGESTION_GATEWAY_INTERNAL_ERROR (\"cannot recover\") (tested 2026-10-26)."
+}

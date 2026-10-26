@@ -1,0 +1,36 @@
+{
+  "id": "pg-verify-ca-self-signed-refused",
+  "title": "PostgreSQL: verify-ca refuses a self-signed server certificate",
+  "kind": "connector-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "postgres"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "source"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "expected-entry test round 2026-10-25: PostgreSQL 17.11, self-hosted, DBR 18.3"
+  },
+  "symptom": "INGESTION_GATEWAY_CONNECTION_ERROR.TLS_CONNECTION_FAILURE with the verify-ca SSL mode and a self-signed server certificate.",
+  "cause": "The certificate isn't trusted by the gateway.",
+  "effect": "The connection fails; no snapshot runs.",
+  "fix": "Set trustServerCertificate to true in the connection options, or use a certificate from a CA.",
+  "versions": [
+    "PostgreSQL 17.11"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-postgres.md",
+    "skills/lfc-source-setup/SKILL.md"
+  ],
+  "notes": "One run logged a TLS connection while pg_stat_ssl showed ssl=false for the gateway's sessions. Not resolved."
+}

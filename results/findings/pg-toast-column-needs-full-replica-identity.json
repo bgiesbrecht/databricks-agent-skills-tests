@@ -1,0 +1,35 @@
+{
+  "id": "pg-toast-column-needs-full-replica-identity",
+  "title": "PostgreSQL: a primary key with a text column is refused under DEFAULT replica identity",
+  "kind": "connector-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "postgres"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "expected-entry test round 2026-10-25: PostgreSQL 16.15 and 17.11, gateway runtime 18.3"
+  },
+  "symptom": "INGESTION_GATEWAY_CDC_NOT_ENABLED: does not have primary key or has a TOAST-able type column, and needs FULL REPLICA IDENTITY. The same message says to use DEFAULT when there is a primary key.",
+  "cause": "Not isolated. The reason stayed on one table after a drop and recreate.",
+  "effect": "The table isn't captured; the update fails at analysis and no snapshot runs.",
+  "fix": "ALTER TABLE ... REPLICA IDENTITY FULL. If the same message stays, create a new gateway and ingestion pipeline pair with the same settings.",
+  "notes": "FULL cleared it on one pair; on two others it stayed until a new pair was created.",
+  "where": [
+    "skills/lfc-source-setup/references/engine-postgres.md"
+  ],
+  "refs": [
+    "https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/postgresql-limits"
+  ]
+}

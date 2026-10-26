@@ -10,6 +10,7 @@
 #   obj <table> [json]         one ingestion object (SCD=SCD_TYPE_2 for type 2; extra table_configuration JSON)
 #   pipelines_create <objs>    MODE=standard: gateway + ingestion pipeline; MODE=integrated: one pipeline. Sets GW, AP
 #   update [t1,t2]             start an update (full refresh of the listed tables), follow the chain until idle
+#                              (LFC_DEADLINE epoch seconds or LFC_DEADLINE_MIN minutes: stop and report "timed out")
 #   settle <table> <column>    after a source change, update until an error or <column> shows in the destination
 #   expect <want> <sql>        query; after an early stop that didn't give <want>, one more update and query again
 #   errs_for <table>, needs_refresh <table>, q <sql>, claim, observe, result_md <title>
@@ -55,7 +56,8 @@ lfc_init() {
   [ "$(dbx connections get "$CONNECTION" -o json | yq '.connection_type')" = $ct ] || { echo "$CONNECTION is not $ct"; exit 2; }
   WAREHOUSE=${WAREHOUSE:-$(dbx warehouses list -o json | yq '[.[] | select(.enable_serverless_compute)][0].id')}
   export WAREHOUSE
-  E=$(date +%s); DB=${PREFIX}_$1_$E; BASE=${PREFIX}_$(echo "$CONNECTION" | tr -- '-' '_' | sed "s/^${PREFIX}_//")
+  E=$(date +%s); [ -n "${LFC_DEADLINE_MIN:-}" ] && [ -z "${LFC_DEADLINE:-}" ] && LFC_DEADLINE=$((E + LFC_DEADLINE_MIN * 60))
+  DB=${PREFIX}_$1_$E; BASE=${PREFIX}_$(echo "$CONNECTION" | tr -- '-' '_' | sed "s/^${PREFIX}_//")
   S=${BASE}_$E; STG=${S}_stg; GWN=${BASE}_gw_$E; APN=${BASE}_ap_$E; W=$(mktemp -d)
   T="\`$CATALOG\`.$S"; SLOT=${PREFIX}_$1_$E
   echo "run $E ($MODE): source database $DB, catalog $CATALOG, schemas $S and $STG"
@@ -204,12 +206,21 @@ expect() {
 # while it does, so for a refresh the early stop only counts stable polls after this. ("Snapshot of ... has been
 # APPLIED" is no use here: it comes when the update closes.)
 snaps_done() {
-  local t n; dbx api get "/api/2.0/pipelines/$AP/events?max_results=250" -o json > "$W/ev_snap.json"
+  local t n tok="" pg; : > "$W/ev_snap.jsonl"
+  for pg in 1 2 3 4; do   # newest first, 250 a page: read on until a page has this update's oldest events
+    dbx api get "/api/2.0/pipelines/$AP/events?max_results=250${tok:+&page_token=$tok}" -o json > "$W/ev_snap_page.json"
+    yq -o json -I0 '.events[]' "$W/ev_snap_page.json" >> "$W/ev_snap.jsonl"
+    tok=$(yq '.next_page_token // ""' "$W/ev_snap_page.json"); [ -z "$tok" ] && break
+  done
+  yq -p json -o json ea '[.] | {"events": .}' "$W/ev_snap.jsonl" > "$W/ev_snap.json"
   for t in ${2//,/ }; do
     n=$(U=$1 T1=$t yq '[.events[] | select(.origin.update_id == strenv(U) and .event_type == "flow_progress" and .details.flow_progress.status == "COMPLETED" and ((.origin.flow_name // "") | test("^extractor_.*_" + strenv(T1) + "_snapshot_flow$")))] | length' "$W/ev_snap.json")
     [ "${n:-0}" -ge 1 ] || return 1
   done
 }
+# past_deadline: LFC_DEADLINE (epoch seconds; or LFC_DEADLINE_MIN minutes after lfc_init) has passed. update() then
+# stops the running update and reports it as "timed out (deadline)", so a batch with a hard stop ends on time.
+past_deadline() { [ -n "${LFC_DEADLINE:-}" ] && [ "$(date +%s)" -ge "$LFC_DEADLINE" ]; }
 newest() { dbx pipelines list-updates "$AP" --max-results 1 -o json | yq '.updates[0].update_id'; }
 update() {
   local body='{}' out u ids=() p tok=""; [ -n "${1:-}" ] && body=$(echo "$1" | yq -o json -I0 'split(",") | {"full_refresh_selection": .}')
@@ -223,6 +234,9 @@ update() {
     for _ in $(seq 1 90); do
       STATE=$(dbx pipelines get-update "$AP" "$u" -o json | yq '.update.state')
       case $STATE in COMPLETED|FAILED|CANCELED) break;; esac
+      if past_deadline; then
+        dbx pipelines stop "$AP" >/dev/null 2>&1; early=" (timed out: deadline)"; break
+      fi
       if [ "$MODE" = integrated ] && [ "${EARLY_STOP:-1}" = 1 ] && [ "$STATE" = RUNNING ]; then
         f=$(fp); if [ -n "$f" ] && [ "$f" = "$pf" ]; then stable=$((stable + 1)); else stable=0; fi; pf=$f
         [ -n "${1:-}" ] && ! snaps_done "$u" "$1" && stable=0   # a refresh: count only after the extractor read the tables
@@ -319,7 +333,7 @@ cleanup() {
   fi
   if [ "${KEEP_SOURCE:-0}" = 1 ]; then echo "cleanup: pipelines and schemas deleted; source database $DB kept"
   else echo "cleanup: pipelines and schemas deleted; source database left: ${left//[[:space:]]/}"; fi
-  rm -rf "$W"
+  rm -rf "${W:?}"
 }
 
 # metric <name> <number>: a number this run measured (seconds, rows, tables, ...). record_run saves them with the run's

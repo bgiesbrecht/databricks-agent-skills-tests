@@ -1,0 +1,23 @@
+# Production findings
+
+Behaviors these tests found in the sources, Debezium, and the bronze and silver layers. Each would break the same pipeline outside the test; the fix the harness uses is in the scripts named. Every finding, with the combination it applies to (source, route, layer, topology), is also in the findings register, [docs/findings.md](../../../docs/findings.md): record a new one with **lfc-test-results** `finding.py add` as it's found, and look up a customer's combination with `finding.py --source <s> --route debezium-zerobus --topology <t>`.
+
+**Source and change capture**
+- **MySQL through 9.5 and MariaDB don't log foreign key actions.** InnoDB's own `ON DELETE CASCADE` and `SET NULL` changes aren't in the binlog, so no binlog reader sees them, and silver keeps child rows the source deleted. PostgreSQL, SQL Server, Oracle and MySQL 9.6+ log them. Silver applies them after each update and records each one ([MySQL and an application's schema](../SKILL.md#mysql-and-an-applications-schema-sourcemysql-appmautic), `scripts/fk-actions.py`).
+- **Oracle 23+ and Db2 tables with a `BOOLEAN` column aren't captured, and nothing says so.** Debezium's Oracle connector doesn't support Oracle 23's native `BOOLEAN`, and Db2's SQL Replication can't capture `BOOLEAN` (both documented). On Oracle those tables simply never change in bronze; on Db2 the first change to such a table stops the capture program for every table (`ASN0552E` SQLCODE -804, then `ASN0008I` in `ASNCDC.IBMSNAP_CAPTRACE`), while the registrations still show active and Debezium still reports streaming. Check the schema for `BOOLEAN` columns first; use `NUMBER(1)` (with Debezium's `NumberOneToBooleanConverter`) or `SMALLINT` 0/1. The harness maps the models' booleans to `SMALLINT` 0/1 on both.
+- **SQL Server logs no update that changes nothing**, so CDC and Debezium have no event for it; PostgreSQL and Oracle send one. Nothing is lost (the row didn't change), but an event count or a trigger-based audit won't match the change log.
+- **A column added on SQL Server needs a new CDC capture instance**, and Oracle's LogMiner with the online catalog doesn't follow DDL (the redo-log catalog does). Plan schema changes before relying on them.
+- **Db2's capture agent:** started through `ASNCDC.ASNCDCSERVICES` from a driver, the call never returns. Start `asncap` as the instance user, and register tables (`ADDTABLE`) with the agent running, then reinitialize it (`asnccmd ... reinit`); registrations made otherwise stay inactive.
+- **Informix ignores a string's trailing blanks** in comparisons and in `LENGTH`; the change stream and silver keep them as stored.
+- **The snapshot is consistent with the log position only while nothing writes** (PostgreSQL, SQL Server, Oracle, Db2, Informix here): see [Trade-offs](../SKILL.md#trade-offs).
+
+**Debezium**
+- **A connector whose start fails leaves Debezium Server running and capturing nothing** (Oracle's version check timing out, `ORA-17002`, with two databases starting at once). No error reaches Zerobus. Check each server's log for `Starting streaming` and restart it on `Engine has failed`.
+- **Temporal values arrive as numbers whose unit depends on the column's precision:** days for a date; milliseconds (3 digits or fewer), microseconds (4 to 6, and PostgreSQL's default) or nanoseconds (7 to 9: SQL Server's `DATETIME2` and `TIME` default) for timestamps and times; Oracle's `DATE` holds a time and comes as epoch milliseconds. Silver must decode each by the column's type and precision (`decode()` in `scripts/silver-from-schema.py`).
+- **Oracle and Db2 send unquoted names in upper case** (`ORACLE1.TPCH1.ORDERS`); silver's schema has to match.
+- **What orders a key's changes differs per source**: the LSN, change LSN, SCN, or binlog position (`cdc.seq`, the sources table below). CockroachDB's connector drops the commit time ([Commit time](debezium.md#commit-time-not-in-the-event-cockroachdb-connector-370final)).
+
+**Bronze and silver**
+- **Read every temporal type from the source's schema.** A `time` column read as a string keeps Debezium's microseconds (`1300000000` for `00:21:40`); `information_schema`'s `time without time zone` must map to a time.
+- **Liquid clustering needs stats on its columns, and Delta collects them for the first 32 only.** With many sources the key starts with `_source`, which comes last, so a wide table's first update fails with `DELTA_CLUSTERING_COLUMN_MISSING_STATS`. Name the stats columns (`delta.dataSkippingStatsColumns`): the clustering columns first.
+- **A table that foreign key actions change can't be append-only**: its rows must be deletable. cdc-table-plan gives such tables SCD type 1.

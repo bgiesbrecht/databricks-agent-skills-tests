@@ -1,0 +1,35 @@
+{
+  "id": "sqlserver-add-column-after-load-no-full-refresh",
+  "title": "SQL Server: a column added after the first load arrives without a full refresh (standard CDC and change tracking)",
+  "kind": "connector-behavior",
+  "status": "by-design",
+  "applies": {
+    "source": [
+      "sqlserver"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "2026-10-26 test round: SQL Server 2022 CU27, standard gateway, standard CDC and change tracking, one run each"
+  },
+  "symptom": "ADD COLUMN after the first load: the gateway logged \"Detected a schema change\", and the next update COMPLETED with the column added. Rows from before the change are NULL in it; the new row carries its value.",
+  "cause": "The gateway detects the change, and the update adds the column to the destination.",
+  "effect": "Rows from before the change have NULL in the new column.",
+  "fix": "None needed. Full refresh only if the older rows must hold the new column's values.",
+  "versions": [
+    "SQL Server 2022 CU27"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-sqlserver.md"
+  ],
+  "notes": "One row before and one after the change. Defaults and computed columns are covered by lfc-schema-change-test, not by this run."
+}

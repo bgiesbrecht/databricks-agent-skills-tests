@@ -1,0 +1,38 @@
+{
+  "id": "pg-slot-named-by-pipeline-stays-after-delete",
+  "title": "PostgreSQL: a slot the pipeline named stays after the pipeline is deleted",
+  "kind": "connector-behavior",
+  "status": "open",
+  "applies": {
+    "source": [
+      "postgres"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-25",
+    "by": "expected-entry test round 2026-10-25: PostgreSQL 16.15, two pipelines"
+  },
+  "symptom": "The dbx_ slot named by the pipeline was still listed 6 minutes after the delete (314 s for the second pipeline, polled every 20 s).",
+  "cause": "Not isolated. The slot names were set by a pipeline update, since create requires a slot name.",
+  "effect": "The orphaned slot keeps WAL from being removed.",
+  "fix": "Drop the slot by hand after the delete (pg_drop_replication_slot).",
+  "versions": [
+    "PostgreSQL 16.15"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-postgres.md"
+  ],
+  "notes": "Whether the cleanup handles slots the gateway created itself wasn't tested.",
+  "refs": [
+    "https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/postgresql-limits"
+  ]
+}

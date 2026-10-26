@@ -206,6 +206,12 @@ SHOW BINARY LOGS;
 SHOW VARIABLES LIKE 'binlog_expire_logs_seconds';
 ```
 
+### Gateway Connections on the Source
+
+Each gateway holds one binlog connection: a `Binlog Dump` row in `SHOW PROCESSLIST`, with the gateway's address as the host. `SHOW REPLICAS` stays empty for gateways (tested 2026-10-25, MySQL 8.4.13, with six gateways and with one).
+
+After a gateway stops, its row can stay 5 to 25 minutes after the pipeline shows `IDLE` and the update `CANCELED`; it closed after `KILL <id>` on the source. Wait for it, or kill it, before a run you measure (tested 2026-10-25, MySQL 8.4.13).
+
 ## MariaDB-Specific Configuration
 
 ### Enable Binlog at Startup (MariaDB)
@@ -279,6 +285,53 @@ CALL mysql.rds_set_configuration('binlog retention hours', 168);
 CALL mysql.rds_show_configuration;
 ```
 Cloud SQL and Azure Flexible Server set retention through their own flags / server parameters (`binlog_expire_logs_seconds`).
+
+### Keyless Table Short After COMPLETED
+
+**Symptom:** A keyless table of 10,000,000 rows: the update reports `COMPLETED` and the destination holds 2,512,013 rows, in a regular gap pattern. Two full refreshes kept the same count, and the gateway had staged all 10,000,000 ids (tested 2026-10-25, MySQL 8.4.13, one run). In another run a keyless table reached its full count on a plain second update.
+
+**Fix:** Count the destination after the gateway's `SNAPSHOT_COMPLETED` event, not at `COMPLETED`. Run the update again and count. If it's still short, record both counts with the gateway's events.
+
+### Server max_execution_time Doesn't Bound the Snapshot
+
+**Symptom:** With a global `max_execution_time` of 180 s, the gateway's snapshot `SELECT` on a 10,000,000-row keyless table ran about 20 s and wasn't ended. The gateway's pool sessions run with `max_execution_time` 0 (`performance_schema.variables_by_thread`). A separate session with a 2 s limit was ended with `ERROR 3024` (tested 2026-10-25, MySQL 8.4.13).
+
+**Fix:** Don't use the server limit to bound a snapshot. Count rows after `SNAPSHOT_COMPLETED`, as above.
+
+### Integrated CDC: Schema Changes
+
+**Symptom:** Tested 2026-10-26, MySQL 8.4.13, integrated CDC (one run per case unless noted):
+- `ADD COLUMN ... FIRST` and `ADD COLUMN ... AFTER <column>`: the destination column lands at the end of the table, not in the named position. Values arrive under their column names.
+- `ADD COLUMN ... AFTER`: the running update was cancelled and restarted with cause `SCHEMA_CHANGE`.
+- `RENAME COLUMN`: the ingestion update FAILED at analysis with "Failed to resolve flow" for the table's applier flows. The destination keeps the old name, and no new row arrived in 20 minutes. Two fresh tables both failed.
+- `DROP COLUMN`: applied at the source; the destination kept the column through two later updates, with NULL in new rows. No schema-change event for the drop appeared.
+- `VARCHAR` length widened or narrowed: supported. The destination type stays `STRING`, and new rows carry the value.
+
+**Fix:** Select columns by name, not by position. For a rename or a drop, check the destination after each change; the fix for either wasn't tested.
+
+### Integrated CDC: Snapshot Event Stays at IN_PROGRESS
+
+**Symptom:** Each table's operation event shows "Snapshot of <table> has SCHEDULED", then "IN_PROGRESS", and never "COMPLETED", with every event page read up to 20 minutes after the update ended. The applier's snapshot flows stay RUNNING until the update ends; the destination counts were right (tested 2026-10-26, MySQL 8.4.13, integrated CDC, 4 tables from 0 to 1,000 rows).
+
+**Fix:** Wait for the `flow_progress` COMPLETED event of `extractor_..._<table>_snapshot_flow` (it came within seconds), or count rows, instead of the operation event.
+
+### Dropped Table: Flow Messages Are Raw Text
+
+**Symptom:** A table dropped at the source (`TABLE_DROPPED`), and a binlog file purged before the gateway read it (`MYSQL_BINLOG_FILE_DELETED`), show the flow's own text, "Flow ... has failed because of a fatal error during realtime phase", not the catalog's messages ("Table has been dropped on source", "MySQL binlog file ... has been deleted from the source server"). The event type in the gateway's events is the name to look up (tested 2026-10-26, MySQL 8.4.13, standard gateway, one run each).
+
+**Fix:** Read the event type and the flow's table name from the gateway's events. For a dropped table, the ingestion pipeline also fails until the table is removed: see the next section.
+
+### Dropped Table Blocks the Ingestion Pipeline
+
+**Symptom:** After a source table is dropped, every ingestion update fails at analysis ("Failed to resolve flow" for that table's flow) until the table is removed from the pipeline (tested 2026-10-26, MySQL 8.4.13, standard gateway, one run).
+
+**Fix:** Remove the dropped table from the ingestion pipeline. The other tables in the pipeline stop updating until then.
+
+### Revoked SELECT Shows as Missing Table
+
+**Symptom:** SELECT revoked from the LFC login on one table (tested 2026-10-26, MySQL 8.4.13, standard gateway, one run). Schema exploration listed one table fewer (`Found 1 table(s)`). The table's flow reported `MISSING_TABLE_IN_SOURCE` ("has failed because of a fatal error during realtime phase"), and the ingestion update FAILED at analysis. No privilege message appeared. With no visible tables at all, the gateway reported `INGESTION_GATEWAY_CONNECTION_ERROR.SOURCE_CONNECTION_FAILURE` ("Connection failure to the Source storage during operation"), which is misleading.
+
+**Fix:** Grant SELECT on the table again, then check that schema exploration lists it. The regrant wasn't run in this round.
 
 ### AWS RDS: Replication Privileges Denied
 

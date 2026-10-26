@@ -22,7 +22,7 @@ cleanup() {
     printf 'USE %s;\nEXEC sys.sp_cdc_disable_db;\nGO\nUSE master;\nALTER DATABASE %s SET SINGLE_USER WITH ROLLBACK IMMEDIATE;\nDROP DATABASE %s;\n' "$DB" "$DB" "$DB" | $SRC_SQL master >/dev/null 2>&1
     [ "$(printf "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.databases WHERE name = '%s';\n" "$DB" | $SRC_SQL master | tr -d '[:space:]')" = 0 ] && break; sleep 30
   done
-  echo "cleanup: source database left: $(printf "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.databases WHERE name = '%s';\n" "$DB" | $SRC_SQL master | tr -d '[:space:]')"; rm -rf "$W"
+  echo "cleanup: source database left: $(printf "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.databases WHERE name = '%s';\n" "$DB" | $SRC_SQL master | tr -d '[:space:]')"; rm -rf "${W:?}"
 }
 trap cleanup EXIT
 $SRC_SQL master >/dev/null <<SQL

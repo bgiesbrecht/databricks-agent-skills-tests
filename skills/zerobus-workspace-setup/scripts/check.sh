@@ -19,7 +19,7 @@ row() { printf "%-5s %-52s %s\n" "$1" "$2" "$3"; [ "$1" = FAIL ] && fails=$((fai
 has() { case ",$IFACES," in *,$1,*) return 0;; esac; return 1; }
 setting() { # the value of a workspace setting: set here (boolean_val) or inherited (effective_boolean_val)
   databricks workspace-settings-v2 get-public-workspace-setting "$1" --profile "$P" -o json 2>/dev/null \
-    | yq -p json 'with(select(has("boolean_val")); .v = .boolean_val.value) | with(select(has("boolean_val") | not); .v = .effective_boolean_val.value) | .v'; }
+    | jq -r 'if has("boolean_val") then .boolean_val.value else .effective_boolean_val.value end'; }
 SCRIPTS=$(cd "$(dirname "$0")" && pwd)
 
 echo "== Zerobus into ${TABLE:-(no table: previews and network only)} in $P (interfaces: $IFACES${SP:+, as $SP})"
@@ -28,7 +28,7 @@ eval "$(databricks metastores current --profile "$P" -o json 2>/dev/null | yq -p
 eval "$(databricks metastores summary --profile "$P" -o json 2>/dev/null | yq -p json -o shell '{"REGION": .region, "CLOUD": .cloud}')"
 [ -n "${MS:-}" ] && row PASS "Unity Catalog metastore assigned" "$CLOUD $REGION" || { row FAIL "Unity Catalog metastore assigned" "none" "assign the workspace to a metastore (account admin)"; exit 1; }
 case $CLOUD in aws) D=cloud.databricks.com;; azure) D=azuredatabricks.net;; gcp) D=gcp.databricks.com;; *) D=; esac
-ZB=$WSID.zerobus.$REGION.$D; HOST=$(databricks auth describe --profile "$P" -o json 2>/dev/null | yq -p json '.details.host // ""')
+ZB=$WSID.zerobus.$REGION.$D; HOST=$(databricks auth describe --profile "$P" -o json 2>/dev/null | jq -r '.details.host // ""')
 row PASS "Zerobus endpoint" "$ZB"
 want="zerobus_ingest_core"; has kafka && want="$want zerobus_kafka_endpoint"; has mqtt && want="$want zerobus_mqtt_endpoint"
 for s in $want; do v=$(setting "$s")
@@ -43,7 +43,7 @@ elif [ -s /tmp/zbcheck.$$ ]; then
   eval "$(yq -p json -o shell '{"TTYPE": .table_type, "TFMT": (.data_source_format // ""), "TLOC": (.storage_location // ""), "TOWNER": .owner}' /tmp/zbcheck.$$)"
   { [ "$TTYPE" = MANAGED ] || [ "$TTYPE" = STREAMING_TABLE ]; } && [ "${TFMT:-DELTA}" = DELTA ] && row PASS "table is managed Delta" "$TTYPE, owner $TOWNER" \
     || row FAIL "table is managed Delta" "$TTYPE $TFMT" "create it as a managed table (no LOCATION), or use another"
-  ds=$(databricks external-locations get __databricks_managed_storage_location --profile "$P" -o json 2>/dev/null | yq -p json '.url // ""')
+  ds=$(databricks external-locations get __databricks_managed_storage_location --profile "$P" -o json 2>/dev/null | jq -r '.url // ""')
   if [ -n "$ds" ] && [ "${TLOC#"$ds"}" != "$TLOC" ]; then v=$(setting zerobus_default_storage_write)
     [ "$v" = true ] && row PASS "Default Storage table: zerobus_default_storage_write" "on" \
       || row FAIL "Default Storage table: zerobus_default_storage_write" "${v:-not found}" "bash $SCRIPTS/enable.sh $P zerobus_default_storage_write --apply"
@@ -53,7 +53,7 @@ rm -f /tmp/zbcheck.$$
 
 # --- the service principal: exists, granted directly on the table (inherited grants may not satisfy the token), token
 if [ -n "$SP" ]; then
-  n=$(databricks service-principals list --filter "applicationId eq \"$SP\"" --profile "$P" -o json 2>/dev/null | yq -p json '.[0].displayName // ""')
+  n=$(databricks service-principals list --filter "applicationId eq \"$SP\"" --profile "$P" -o json 2>/dev/null | jq -r '.[0].displayName // ""')
   [ -n "$n" ] && row PASS "service principal in the workspace" "$n" || row FAIL "service principal in the workspace" "$SP not found" "add it to the workspace (an admin), or create one"
   direct() { databricks grants get "$1" "$2" --principal "$SP" --profile "$P" -o json 2>/dev/null | yq -p json -o tsv '[.privilege_assignments[]?.privileges[]?] | unique | join(" ")'; }
   for need in "catalog $CAT USE_CATALOG" "schema $CAT.$SCH USE_SCHEMA" "table $TABLE SELECT" "table $TABLE MODIFY"; do set -- $need
@@ -63,9 +63,9 @@ if [ -n "$SP" ]; then
     AD=$(printf '[{"type":"unity_catalog_privileges","privileges":["USE CATALOG"],"object_type":"CATALOG","object_full_path":"%s"},{"type":"unity_catalog_privileges","privileges":["USE SCHEMA"],"object_type":"SCHEMA","object_full_path":"%s.%s"},{"type":"unity_catalog_privileges","privileges":["SELECT","MODIFY"],"object_type":"TABLE","object_full_path":"%s"}]' "$CAT" "$CAT" "$SCH" "$TABLE")
     r=$(curl -s -m 20 -X POST -K <(printf 'user = "%s:%s"\n' "$SP" "$(cat "$SECRET_FILE")") -d grant_type=client_credentials -d scope=all-apis \
         -d "resource=api://databricks/workspaces/$WSID/zerobusDirectWriteApi" --data-urlencode "authorization_details=$AD" "$HOST/oidc/v1/token")
-    t=$(printf '%s' "$r" | yq -p json '.access_token // ""' 2>/dev/null)
-    [ -n "$t" ] && [ "$t" != null ] && row PASS "table-scoped token for $SP" "minted (expires in $(printf '%s' "$r" | yq -p json '.expires_in')s)" \
-      || row FAIL "table-scoped token for $SP" "$(printf '%s' "$r" | yq -p json '(.error // "") + ": " + (.error_description // "")' 2>/dev/null | cut -c1-160)" "check the secret, then the grants above"
+    t=$(printf '%s' "$r" | jq -r '.access_token // ""' 2>/dev/null)
+    [ -n "$t" ] && [ "$t" != null ] && row PASS "table-scoped token for $SP" "minted (expires in $(printf '%s' "$r" | jq -r '.expires_in')s)" \
+      || row FAIL "table-scoped token for $SP" "$(printf '%s' "$r" | jq -r '(.error // "") + ": " + (.error_description // "")' 2>/dev/null | cut -c1-160)" "check the secret, then the grants above"
   else row WARN "table-scoped token" "no --secret-file: not minted"; fi
 else row WARN "service principal" "no --sp: grants and token not checked"; fi
 
