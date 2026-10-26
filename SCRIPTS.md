@@ -147,6 +147,10 @@ line of its usage. Run a script with no arguments for its full usage instead of 
 - `skills/shell-json-scripting/scripts/q.py` uv run q.py <query.sql>: the same as q.sh, for a Python caller. Or import q and call q.run("dir/step.sql") for a dict.
 - `skills/shell-json-scripting/scripts/q.sh` <query.sql>: run the query in DuckDB (after lib.sql from the query's directory, if there is one), filling each getvar...
 
+## skill-token-budget
+
+- `skills/skill-token-budget/scripts/split-check.py` <skill> <commit>: after moving SKILL.md sections into references/, list every line of the skill's SKILL.md at <commit...
+
 ## zerobus-debezium-test
 
 - `skills/zerobus-debezium-test/scripts/debezium-zerobus.sh` a source database -> snapshot as of T into a Volume, and Debezium Server (Zerobus sink) from T -> one append-only bro...

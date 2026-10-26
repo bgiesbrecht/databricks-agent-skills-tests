@@ -1,6 +1,6 @@
 ---
 name: shell-json-scripting
-description: "Turn CLI JSON output (databricks, aws, az, gcloud) into shell variables and scripts that are easy to maintain, choosing the simplest tool per step: yq -o shell + eval for values and one-input filters, plain shell for short list loops, and DuckDB SQL only for IP math, multi-input joins, and ranking, with one SQL file shared between shell and Python. Use when writing shell in a skill or script that reads JSON from a CLI or API."
+description: "Turn CLI JSON output (databricks, aws, az, gcloud) into shell variables and scripts that are easy to maintain, choosing the simplest tool per step: jq -r for one value, yq -o shell + eval for several values and one-input filters, plain shell for short list loops, and DuckDB SQL only for IP math, multi-input joins, and ranking, with one SQL file shared between shell and Python. Use when writing shell in a skill or script that reads JSON from a CLI or API."
 ---
 
 # Shell scripting with CLI JSON
