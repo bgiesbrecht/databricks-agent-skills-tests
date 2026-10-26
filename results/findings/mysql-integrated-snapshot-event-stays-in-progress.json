@@ -1,0 +1,38 @@
+{
+  "id": "mysql-integrated-snapshot-event-stays-in-progress",
+  "title": "MySQL integrated CDC: the per-table snapshot event never reports COMPLETED",
+  "kind": "databricks-bug",
+  "status": "open",
+  "applies": {
+    "source": [
+      "mysql"
+    ],
+    "route": [
+      "lfc-icdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "2026-10-26 rerun: MySQL 8.4.13, integrated CDC, tables with 0, 1, 3-then-deleted and 1,000 rows; every event page read up to 20 minutes after the update ended"
+  },
+  "symptom": "Each table's operation event goes 'Snapshot of <table> has SCHEDULED', then 'IN_PROGRESS', and stops there. The extractor's snapshot flows report COMPLETED within seconds; the applier's snapshot flows stay RUNNING until the update ends (about 20 minutes later). Destination counts were right (0, 1, 0, 1,000).",
+  "cause": "Not traced: the completion event in the applier isn't reached or is gated for this route.",
+  "effect": "A tool or person waiting for 'Snapshot of ... has COMPLETED' waits forever.",
+  "fix": "Use the flow_progress COMPLETED event of extractor_..._<table>_snapshot_flow, or count rows, to know a table's snapshot is read.",
+  "versions": [
+    "MySQL 8.4.13",
+    "DBR 18.3 dlt:18.3.8 (dp-20261015-rc0)"
+  ],
+  "where": [
+    "skills/lfc-test-results/SKILL.md",
+    "skills/lfc-source-setup/references/engine-mysql.md"
+  ],
+  "refs": [],
+  "notes": "Round 2 read only the first 250 events; this run read every page and saw the same."
+}

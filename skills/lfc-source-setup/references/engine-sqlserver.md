@@ -420,6 +420,18 @@ Both limits count compile cost or CPU time, not elapsed time.
 
 **Fix:** Keep `VIEW DATABASE STATE` on the ingestion login, and check the new row's count after each schema change. Whether a full refresh recovers the row wasn't tested.
 
+### Change Tracking With Many Tables: Each Table Read About Every 17 s
+
+**Symptom:** With 150 change-tracking tables in one gateway, a table changed every 2 s was read every 16.6-18.5 s, up to 10 rows a read, and changes lagged 11-12 s (p50) to 20 s from commit to the gateway's staged change. Idle tables lagged 2-20 s. Every change arrived; no table was starved (tested 2026-10-26, SQL Server 2022 CU27-GDR, one run).
+
+**Fix:** None tested. To measure a read interval, insert a new key per change: change tracking returns one net change per key between reads, so updating one row again and again shows one change per read. Compare at your table count before splitting the tables over gateways.
+
+### Gateway Stopped and Started During CDC: No Re-snapshot
+
+**Symptom:** None. The gateway pipeline was stopped for 5 minutes during steady changes, then started. It resumed each table's CDC flow from its position, with no snapshot flow; the rows written meanwhile arrived in the next ingestion update, and counts matched (tested 2026-10-26, SQL Server 2022 CU27-GDR, CDC, one run). `RESETTING` shows in every gateway update, the first one included; it isn't a reinit.
+
+**Fix:** None needed, as long as the source keeps the changes for the time the gateway is stopped (longer stops not tested).
+
 ### Change Tracking DDL Objects Warned as Removable
 
 **Symptom:** With the utility's `@CreateDdlSupportingObjects = 1`, the gateway logs a WARN: "Non-trigger-based DDL for Change Tracking is active and CT DDL support objects were detected ... may be safely removed". The update still COMPLETED (tested 2026-10-26, SQL Server 2022 CU27, change tracking, standard gateway).

@@ -309,6 +309,12 @@ Cloud SQL and Azure Flexible Server set retention through their own flags / serv
 
 **Fix:** Select columns by name, not by position. For a rename or a drop, check the destination after each change; the fix for either wasn't tested.
 
+### Integrated CDC: Snapshot Event Stays at IN_PROGRESS
+
+**Symptom:** Each table's operation event shows "Snapshot of <table> has SCHEDULED", then "IN_PROGRESS", and never "COMPLETED", with every event page read up to 20 minutes after the update ended. The applier's snapshot flows stay RUNNING until the update ends; the destination counts were right (tested 2026-10-26, MySQL 8.4.13, integrated CDC, 4 tables from 0 to 1,000 rows).
+
+**Fix:** Wait for the `flow_progress` COMPLETED event of `extractor_..._<table>_snapshot_flow` (it came within seconds), or count rows, instead of the operation event.
+
 ### Dropped Table: Flow Messages Are Raw Text
 
 **Symptom:** A table dropped at the source (`TABLE_DROPPED`), and a binlog file purged before the gateway read it (`MYSQL_BINLOG_FILE_DELETED`), show the flow's own text, "Flow ... has failed because of a fatal error during realtime phase", not the catalog's messages ("Table has been dropped on source", "MySQL binlog file ... has been deleted from the source server"). The event type in the gateway's events is the name to look up (tested 2026-10-26, MySQL 8.4.13, standard gateway, one run each).
