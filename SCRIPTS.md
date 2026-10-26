@@ -66,6 +66,10 @@ line of its usage. Run a script with no arguments for its full usage instead of 
 - `skills/lfc-schema-change-test/scripts/vm-psql.sh` [database]: run SQL from stdin as postgres on a PostgreSQL Podman container on a cloud VM (lfc-source-cloud-vm). Need...
 - `skills/lfc-schema-change-test/scripts/vm-throttle.sh` <MiB/s | off | show>: limit the disk reads and writes of the source container on its cloud VM, through the container'...
 
+## lfc-source-azure-sql
+
+- `skills/lfc-source-azure-sql/scripts/mi.sh` plan|create|wait|status|endpoint|stop|start|delete: an Azure SQL Managed Instance behind its own NSG.
+
 ## lfc-source-cloud-vm
 
 - `skills/lfc-source-cloud-vm/scripts/add-mssql-container.sh` <port>: one more SQL Server container on the test VM, with the test login and its own Unity Catalog connection, so lo...
@@ -88,6 +92,8 @@ line of its usage. Run a script with no arguments for its full usage instead of 
 ## lfc-source-firewall
 
 - `skills/lfc-source-firewall/scripts/classic-egress.sh` <profile> [--warehouse <id> [--days N]] [--runs N]: the public IP a workspace's classic compute leaves from.
+- `skills/lfc-source-firewall/scripts/nsg-copy.sh` <from-nsg> <to-nsg> <port> [--apply]: give another NSG the same sources as the region's shared NSG, for one port.
+- `skills/lfc-source-firewall/scripts/serverless-egress.sh` <cloud> <region> [--state FILE]: the serverless egress ranges a source's firewall must allow, from Databricks' publis...
 
 ## lfc-source-log-state
 

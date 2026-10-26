@@ -28,6 +28,8 @@ Counts are from `ip-ranges.json` at the time of writing; recount with the comman
 
 **On Azure, keep one shared NSG per region** and attach every test VM (and the subnets of the shared VNet) to it: the rules are synced once and every new VM reuses them, including all Podman engines on the VM's port range `30000-30063`. The NSG can't front a Flexible Server or Azure SQL that serverless must reach: those need public access and their own server firewall rules, synced from the same IP lists. See [references/azure.md](references/azure.md).
 
+**An NSG that can't be the shared one** (a SQL Managed Instance subnet's: MI adds its own rules to it) gets the shared NSG's sources for its one port: `RG=<resource-group> bash scripts/nsg-copy.sh <shared-nsg> <subnet-nsg> 3342 [--apply]`. It copies every inbound Allow rule's source list (serverless, VPN, workspace egress, known hosts) under the same name and priority, TCP to that port only; rerun it after the shared NSG is synced.
+
 ## Inputs
 
 | Input | How to get it |

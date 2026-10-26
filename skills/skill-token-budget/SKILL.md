@@ -5,6 +5,8 @@ description: "Write or change a skill (SKILL.md, its scripts and references) so 
 
 # Writing skills for a small token budget
 
+For a skill in the public Databricks skills repo, also follow **public-skill-conventions** (section names, error tables, links, wording).
+
 An agent pays for a skill in three steps (the [Agent Skills spec](https://agentskills.io/specification)):
 
 | What | When it's loaded | Budget |

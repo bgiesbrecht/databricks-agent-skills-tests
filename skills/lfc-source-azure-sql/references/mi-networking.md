@@ -13,9 +13,9 @@ This document covers the NSG (Network Security Group), route tables, and public 
 
 ## Network Security Group (NSG) rules
 
-When you create an MI in a subnet, Azure automatically attaches an NSG. This NSG enforces a set of inbound rules required for MI to function (e.g., Azure management traffic, Azure SQL service traffic).
+The MI subnet needs an NSG attached before the instance is created (`mi.sh create` makes `<subnet>-nsg`). MI then adds the inbound and outbound rules it needs for management to that NSG (`Microsoft.Sql-managedInstances_UseOnly_*`).
 
-**Never delete or significantly modify** the NSG; MI will malfunction.
+**Never delete or change MI's own rules**; MI will malfunction. Our allow rules for port 3342 sit next to them and come from **lfc-source-firewall**.
 
 ### Adding a rule for the public data endpoint (port 3342)
 

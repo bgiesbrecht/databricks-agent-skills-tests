@@ -92,6 +92,7 @@ The test space is large: where the source runs, the database and version, the in
 - [docs/running-tests.md](docs/running-tests.md): setup, the deploy matrix, schema-change and script tests, recording results.
 - [MATRIX.md](MATRIX.md): every deploy-test cell and its pass criteria.
 - [skill-token-budget](skills/skill-token-budget/SKILL.md): how to write a skill so an agent loads few tokens (SKILL.md under 5k tokens, detail in references/, scripts run from their usage line), and the checks that enforce it.
+- [public-skill-conventions](skills/public-skill-conventions/SKILL.md): what the public Databricks skills do (frontmatter, file and section names, error tables, links, release stages, no test-report wording, the generated bundle, version, sign-off), and `conventions-check.py`, which compares one skill with all the others.
 - [SCRIPTS.md](SCRIPTS.md): every script under `skills/` and `bin/`, one line each (path and usage), generated from the scripts' headers. Find a script there, then run it with no arguments for its usage instead of reading it.
 - The repo also tests the [databricks-agent-skills](https://github.com/databricks/databricks-agent-skills) with headless Claude Code sessions: does a prompt reach the right skill, does the skill ask before creating anything, and does what it builds work. See [docs/running-tests.md](docs/running-tests.md#guidance-tests).
 - UI walkthroughs of the Lakeflow Connect wizard, as masked screenshots: [ui-demos/](ui-demos/) ([lfc-ui-capture](skills/lfc-ui-capture/SKILL.md)).
