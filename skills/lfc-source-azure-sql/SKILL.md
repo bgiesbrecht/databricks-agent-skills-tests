@@ -82,31 +82,22 @@ az sql server firewall-rule create --resource-group <rg> \
 
 ### Option B: SQL Managed Instance (production-like)
 
-**Warning:** First MI in a new subnet takes **4–6 hours** to provision.
+**Warning:** First MI in a new subnet takes **4–6 hours** to provision; later ones 30–60 minutes.
 
-See [azure-sql-mi.md](references/azure-sql-mi.md) for full steps (NSG setup, monitoring, public endpoint).
+[`scripts/mi.sh`](scripts/mi.sh) does every step. It puts the instance in its own `/27` subnet in an existing VNet, delegated to `Microsoft.Sql/managedInstances`, with the subnet's own NSG (`<subnet>-nsg`) and route table (`0.0.0.0/0` to Internet), which MI needs before it's created. MI adds its own management rules to that NSG; don't attach the shared VM NSG to the subnet. The NSG starts with no rule for the public data endpoint (port 3342), so the instance is closed to everything outside the VNet until **lfc-source-firewall** syncs the laptop and Databricks egress ranges into `<subnet>-nsg`: the same list as every other source.
 
-**Quick summary:**
 ```bash
-# Create MI subnet
-az network vnet subnet create --resource-group <rg> --vnet-name lfc-test-vnet \
-  --name lfc-test-mi-subnet --address-prefix 10.10.200.0/27 \
-  --service-endpoints Microsoft.Sql Microsoft.Storage
-
-# Create Managed Instance
-umask 077
-echo "Lfc1$(openssl rand -hex 12)" > admin.pw
-az sql mi create --resource-group <rg> --name <pfx>-mssql-mi-<loc>-<epoch> \
-  --location <location> --admin-user sqladmin \
-  --admin-password "$(cat admin.pw)" \
-  --subnet "/subscriptions/<sub_id>/resourceGroups/<rg>/providers/Microsoft.Network/virtualNetworks/lfc-test-vnet/subnets/lfc-test-mi-subnet" \
-  --sku-name GP_Gen5 --vcores 4 --storage 32 \
-  --public-data-endpoint-enabled true --enable-minimal-tls-version Tls12
-
-# Monitor (takes hours)
-az sql mi show --resource-group <rg> --name <pfx>-mssql-mi-<loc>-<epoch> \
-  --query "provisioningState" -o tsv
+export RG=<resource-group> VNET=<vnet> MI_NAME=<pfx>-mssql-mi-<location>-<epoch>   # SUBSCRIPTION, SUBNET_CIDR, VCORES, STORAGE_GB, PRICING: see the script
+S=skills/lfc-source-azure-sql/scripts
+bash $S/mi.sh plan                                    # read-only: what create makes
+umask 077; echo "Lfc1$(openssl rand -hex 12)" > admin.pw
+ADMIN_PW_FILE=admin.pw bash $S/mi.sh create           # returns at once
+bash $S/mi.sh wait                                    # in the background (watch-progress); hours
+bash $S/mi.sh endpoint                                # <name>.public.<zone>.database.windows.net,3342
+bash $S/mi.sh stop                                    # pause compute between test runs; start to resume
 ```
+
+Then **lfc-source-firewall** with the target NSG `<subnet>-nsg` and port 3342. `PRICING=Freemium` uses the free offer (one instance per subscription). Details and the private endpoint path: [azure-sql-mi.md](references/azure-sql-mi.md), [mi-networking.md](references/mi-networking.md).
 
 ## Configure for LFC
 
@@ -184,7 +175,7 @@ databricks experimental aitools tools query --file /tmp/test_query.sql \
 
 > **Firewall rules:** use **lfc-source-firewall** to add your laptop IP and the workspace's serverless egress IPs (and classic compute egress, when the pipeline uses classic compute) to this database. It covers rule limits and keeps the rules in sync.
 
-**Default: Public firewall rules** (SQL Database) or **public endpoint on port 3342** (SQL MI). Add Databricks workspace egress CIDR to allow inbound connections.
+**Default: the same IP list for every source.** SQL Database: public access with server firewall rules. SQL MI: the public endpoint (port 3342), allowed by the rules in its subnet's NSG. **lfc-source-firewall** syncs both from one list (laptop, serverless egress, classic egress).
 
 **Alternative: Private endpoint** (both Database and MI). Link the private DNS zone (`privatelink.database.windows.net`) to the VNet. See [mi-networking.md](references/mi-networking.md) for detailed private endpoint setup.
 
