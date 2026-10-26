@@ -17,7 +17,7 @@ Tokens are about characters / 4. A script an agent reads instead of runs costs i
 
 ## What goes where
 
-**SKILL.md keeps:** when to use the skill, the steps in order with the commands an agent runs, the decisions it must make (and how), and a one-line pointer at each step that needs more: `Errors and fixes: [references/errors.md](references/errors.md).`
+**SKILL.md keeps:** when to use the skill, the steps in order with the commands an agent runs, the decisions it must make (and how), and a one-line pointer at each step that needs more: a link to the reference file with what it holds, such as "Errors and fixes: references/errors.md", written as a markdown link.
 
 **references/ gets:** long tables, error catalogs and troubleshooting, per-engine or per-cloud detail, worked examples, measured results, background, trade-offs. Group by when an agent needs it, so one step opens one file; name files by topic (`errors.md`, `limits.md`, `engines.md`).
 
