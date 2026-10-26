@@ -92,6 +92,7 @@ line of its usage. Run a script with no arguments for its full usage instead of 
 ## lfc-source-firewall
 
 - `skills/lfc-source-firewall/scripts/classic-egress.sh` <profile> [--warehouse <id> [--days N]] [--runs N]: the public IP a workspace's classic compute leaves from.
+- `skills/lfc-source-firewall/scripts/nsg-copy.sh` <from-nsg> <to-nsg> <port> [--apply]: give another NSG the same sources as the region's shared NSG, for one port.
 - `skills/lfc-source-firewall/scripts/serverless-egress.sh` <cloud> <region> [--state FILE]: the serverless egress ranges a source's firewall must allow, from Databricks' publis...
 
 ## lfc-source-log-state
