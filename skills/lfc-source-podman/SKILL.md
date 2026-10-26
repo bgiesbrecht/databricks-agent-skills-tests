@@ -49,14 +49,7 @@ Checked on the Azure test VM (Ubuntu 24.04) and the Lima VM (Ubuntu 25.10), 2026
 
 `<prefix>` is `ssh <user>@<vm>` or `limactl shell <instance> --`. Both scripts print one line per step (`PASS`, `FIXED`, `FAIL`), change only what's missing, and end with a check: a rootful container that runs as uid 0 without `sudo`, or a rootless one with container names resolving on a network.
 
-- **Disk is one pool on Lima, two disks on the Azure VM.** In Lima both stores are directories on the VM's one filesystem, with no quota or pre-allocation. The VM's disk on the Mac is a sparse file (100 GB apparent, 8.4 GB used), mounted with `discard`, so deleted space goes back to the Mac. On the Azure VM the rootful store is on the data disk (XFS, 128 GB) and a rootless one would be on the OS disk (64 GB); managed disks are paid for whole either way. So the cost of two stores is the images kept twice, not reserved space. Removing the test's rootless stores (`podman system reset --force` as the user) freed 4.7 GB on the VM's OS disk and 1.9 GB in Lima, and the Lima disk file shrank from 8.4 to 7.0 GB.
-- **The Mac's `podman`** talks to Lima's rootful store through a connection to the root socket. Lima's `template:podman-rootful` forwards it as `~/.lima/<instance>/sock/podman.sock`. A VM made without that template forwards nothing, so `ensure-podman-socket.sh --on "limactl shell <instance> --" --mac-connection <name>` registers `podman -c <name>` over Lima's SSH instead.
-- **No password prompts.** `sudo` needed no password on either host (the cloud image's and Lima's default). It does on the Mac, so no script runs `sudo` on the Mac. On a Linux host where `sudo` asks for a password, the two setup scripts ask once, and nothing else does.
-- **The security trade-off.** One rootful store conserves capacity, but every container then runs as root on the host, including ones that could have run rootless. Many engines may not need root, but only CockroachDB and YugabyteDB were run rootless here. A container escape from a rootful container is root on the host; from a rootless one, it's the user. And the `podman` group is root-equivalent, as the `docker` group is: anyone in it controls the host through the socket, so add only users who already have `sudo`. On a disposable test VM that only you use, capacity wins. Where a security review objects to rootful containers, run that host rootless only (`MODE=rootless`, `PODMAN=podman`), with only the engines that don't need root, and accept that the rootful-only cases (master snapshots on XFS, Db2, Oracle's memlock) run on another host. Don't keep both stores on one host.
-- **Linger matters for rootless.** Without it, systemd stops a rootless user's containers when the user's last session ends. A script that drives the host over many short `ssh` or `limactl` sessions loses its containers. The Azure VM had it off.
-- **New group membership needs a new login.** `limactl shell` reuses one persistent SSH connection, so its sessions don't get a new group. `ensure-podman-socket.sh` closes that connection once, when it adds the group, which interrupts any `limactl` command running at that moment.
-- **Files containers write.** In rootless mode they belong to the container's mapped user: remove them with `podman unshare rm -rf <dir>`. In rootful mode they belong to root: remove them from a container (`podman --remote ... run --rm -v <dir>:/d alpine rm -rf /d/...`), not with `sudo`.
-- **Separate stores.** Rootless and rootful containers don't see each other: `podman ps` doesn't show rootful containers, and `podman --remote ... ps` doesn't show rootless ones.
+The disk, the Mac's `podman` connection, the security trade-off, linger, group membership, file ownership, and separate stores: [references/stores.md](references/stores.md).
 
 Verify:
 
@@ -73,36 +66,7 @@ limactl delete lfc-test-podman
 # Edit ~/.lima/lfc-test-podman/lima.yaml to adjust cpus + memory, then re-create
 ```
 
-**Which image runs how on Apple Silicon.** Every engine runs in the Lima VM. Use the arm64 image wherever one exists, and Rosetta only for x86_64-only images:
-
-| Engine | Image on macOS | Runs as |
-|---|---|---|
-| PostgreSQL, MySQL, MariaDB, MongoDB | Docker Hub official images | arm64, native |
-| Oracle 23ai / 26ai Free | `docker.io/gvenzl/oracle-free:latest` (default), or `container-registry.oracle.com/database/free:latest` | arm64, native |
-| Oracle 19c Enterprise | `container-registry.oracle.com/database/enterprise:19.19.0.0` (needs `podman login`) | arm64, native |
-| Oracle 18c / 21c XE | `docker.io/gvenzl/oracle-xe:18` / `:21` | x86_64, Rosetta |
-| SQL Server 2017–2025 | `mcr.microsoft.com/mssql/server:<version>-latest` | x86_64, Rosetta (2025 needs a Lima kernel of 6.17 or later) |
-| Db2, Informix | `icr.io` images | x86_64, Rosetta |
-
-**Register Rosetta with the preserve-argv0 flag** (`P`), once per VM. Lima registers it with `OCF`, which drops a program's `argv[0]`: then `su -` in an x86_64 container isn't a login shell, never reads the user's profile, and Db2's setup (which runs everything through `su - db2inst1`) fails with `db2: command not found`. Check `grep flags /proc/sys/fs/binfmt_misc/rosetta` in the VM (`limactl shell lfc-test-podman`); to fix it at every boot, add this to `~/.lima/lfc-test-podman/lima.yaml` and restart the VM (`limactl stop` / `start`). Tested: `flags: POCF` after the restart, and Db2 then set up cleanly.
-
-```yaml
-provision:
-- mode: system
-  script: |
-    #!/bin/bash
-    f=/proc/sys/fs/binfmt_misc/rosetta
-    for i in $(seq 30); do [ -e $f ] && break; sleep 1; done
-    [ -e $f ] && ! grep -q "flags: P" $f || exit 0
-    M=$(awk '/^magic/ {print $2}' $f); K=$(awk '/^mask/ {print $2}' $f); I=$(awk '/^interpreter/ {print $2}' $f)
-    hex() { echo "$1" | sed 's/../\\x&/g'; }
-    echo -1 > $f
-    printf ':rosetta:M::%s:%s:%s:POCF' "$(hex $M)" "$(hex $K)" "$I" > /proc/sys/fs/binfmt_misc/register
-```
-
-**Tested together** on a MacBook (Apple Silicon, 32 GB) in one 4-CPU, 10 GiB Lima VM: SQL Server 2022, Db2 11.5 and Informix 14.10 under Rosetta and Oracle 26ai Free on arm64 side by side, each reached from the Mac on `127.0.0.1`, and each filled with TPC-H SF 1 (8,660,030 rows) inside the database by **lfc-source-datagen**: SQL Server in 202 s (as fast as a 4-vCPU Azure VM: 179 s), Oracle in 320 s.
-
-Don't run x86_64-only engines in Podman machine (`podman machine`): its Fedora CoreOS kernel (6.12) crashes SQL Server 2025 with an AVX signal-frame bug, and Podman is deprecating its Rosetta support. The Lima VM's newer kernel doesn't have these bugs, and Lima keeps Rosetta: running SQL Server on macOS is the same as running its container in Podman on Lima.
+Which image runs how on Apple Silicon (arm64 or Rosetta, per engine), and the Rosetta `P` flag that Db2 needs: [references/apple-silicon.md](references/apple-silicon.md).
 
 ### Linux
 
@@ -176,29 +140,7 @@ For per-engine startup commands, environment variables, readiness timing, and me
 | `oci` | Oracle (optional) | Yes | Official Enterprise/Standard; requires `podman login container-registry.oracle.com` |
 | `icr` | Db2, Informix | No | IBM Container Registry |
 
-## Reusable master database (local storage)
-
-Load a large test database once, keep the stopped data directory as a master, and clone it for each test instead of reloading it. Locally, the master stays on the Podman VM's own disk: no object storage, no rclone. (For cloud VMs shared by several people, keep masters in object storage instead: see **lfc-source-cloud-vm** `references/master-snapshots.md`.)
-
-Run these inside the Podman VM as root: `podman machine ssh 'sudo bash -s' < steps.sh` (Podman machine) or `limactl shell lfc-test-podman sudo bash -s < steps.sh` (Lima).
-
-```bash
-D=/var/lib/lfc-data; NAME=<master-name>        # for example pg16-orders
-findmnt -no FSTYPE --target /var                # xfs: clones are instant; ext4: --reflink=auto makes full copies
-mkdir -p $D/masters
-# Master: run the database with its data directory at $D/masters/$NAME, load it, then stop it cleanly
-podman stop -t 60 <container>; podman rm <container>
-# Each test: clone, run
-cp -a --reflink=auto $D/masters/$NAME $D/run-1
-podman run -d --name <container> -v $D/run-1:/var/lib/postgresql/data:Z ... docker.io/library/postgres:16
-```
-
-When the test is done, stop the container (`podman stop -t 60 <container>; podman rm <container>`), then either throw the clone away (`rm -rf $D/run-1`) or keep it as a new master (`mv $D/run-1 $D/masters/$NAME-v2`).
-
-- **Clone speed depends on the VM's filesystem.** Podman machine on macOS (Fedora CoreOS) has an XFS `/var` with reflinks: a 510 MB Postgres master cloned in 0.03 s. Lima's default disk is ext4, so `--reflink=auto` falls back to a full copy.
-- **Keep the master and its clones on the same filesystem** (both under `$D`). Reflinks can't cross filesystems; `/tmp` is tmpfs on Podman machine.
-- **Always stop the database cleanly** before cloning, keeping, or deleting its files.
-- Use `:Z` on the volume: Podman machine enforces SELinux, and without it the database can't open its data directory.
+Reusable master database on local storage (load once, clone for each test): [references/master.md](references/master.md).
 
 ## Configure the database for LFC
 
@@ -258,25 +200,7 @@ podman volume rm {volume-name}
 
 All data is lost. To keep the database but remove the container, omit the volume remove step and re-use the volume later.
 
-### Remove the VM, and get the laptop's disk back
-
-The VM's disk is one file on the laptop: `podman machine` keeps it under `~/.local/share/containers/podman/machine/<provider>/` (for example `podman-machine-default-arm64.raw`), Lima under `~/.lima/<name>/`. It's sparse, so it grows as the databases inside it write, and it **doesn't shrink** when you drop tables or containers in the VM. Check how much it really takes with `du -h <image>`, not `ls -l`. To give the space back, remove the whole VM, in this order:
-
-```bash
-podman machine stop && podman machine rm          # or: limactl stop lfc-test-podman && limactl delete lfc-test-podman
-df -h /                                            # the space is back once the VM process has exited
-```
-
-**Never delete those folders while the VM runs.** A running VM keeps its disk file open: deleting it doesn't free the space, the VM goes on writing to it, and no folder shows it any more, so the disk fills while `du` finds nothing big. Seen in practice: `rm -rf ~/.local/share/containers` with the machine running left a 50 GB image held open by Apple's virtualization service; the laptop ran out of space repeatedly over a day, and stopping the VM gave back about 55 GB. With the files gone, `podman machine stop` can't reach the VM (`failed to read identity ... machine: no such file or directory`), so find it and stop its processes:
-
-```bash
-lsof +L1 -nP 2>/dev/null | grep -iE '\.raw|\.img|podman|lima'                 # deleted files still open, with the pid
-for p in $(pgrep -f 'Virtualization.VirtualMachine'); do lsof -nP -p $p | grep -E '\.raw|\.img'; done
-pgrep -fl 'vfkit|krunkit|gvproxy|qemu|limactl'                                  # the VM's own processes
-kill <vfkit-or-krunkit-pid> <gvproxy-pid>                                       # Lima: limactl stop --force <name>
-```
-
-Watch the result with `df -k /` a minute apart: the space comes back as the virtualization service exits, sometimes in two steps.
+Removing the VM and getting the laptop's disk back, including the rule about deleting a running VM's disk file: [references/remove-vm.md](references/remove-vm.md).
 
 ### Delete UC connection
 
@@ -284,29 +208,8 @@ Watch the result with `df -k /` a minute apart: the space comes back as the virt
 databricks connections delete --name owner-engine-podman --profile DEFAULT
 ```
 
-## Common issues
-
-1. **Container name too long:** Names must be ≤ 63 characters. Use a shorter prefix (e.g., `jd` instead of `jane-doe-test`).
-
-2. **Oracle hostname validation:** Oracle may reject underscores in container hostnames. Container names use hyphens only.
-
-3. **The VM's disk fills up**: every row loaded is also written to the engine's change log (MySQL binary logs, Postgres WAL), which CDC needs and so is kept: 25 GB of binary logs filled a 50 GB `podman machine` in testing, and Podman itself then fails (`no space left`). Check with `podman machine ssh df -h /`. Without a CDC reader on the container, purge them (`PURGE BINARY LOGS BEFORE NOW()`, or `SET PERSIST binlog_expire_logs_seconds = 86400`); with one, give the VM more disk (`podman machine init --disk-size`) instead.
-
-4. **Port already in use:** If port `30001` is already bound, pick a free port ≥30000. Check with `podman port {container-name}` or `ss -tlnp | grep 30001`.
-
-5. **Lima VM frozen or unresponsive (macOS):**
-
-   ```bash
-   limactl stop lfc-test-podman
-   limactl start lfc-test-podman
-   ```
-
-6. **SQL Server or Oracle taking > 10 min to start:** Normal for first run. Monitor with `podman logs {container-name}`.
-
-7. **UC connection fails ("Authentication failed"):** Verify the password is correct by connecting directly with SQL client. If direct connection works but UC fails, check that the password in the connection file is exactly the same and has no trailing whitespace.
+Common issues and their fixes (name length, Oracle hostnames, a full VM disk, port in use, a frozen Lima VM, slow starts, UC authentication, a disk that keeps filling): [references/troubleshooting.md](references/troubleshooting.md).
 
 ---
 
 **Ready for Lakeflow Connect?** Once the UC connection is registered, use the **databricks-lakeflow-connect** skill to configure the pipeline, apply pre-flight checks, and start ingestion.
-
-8. **The laptop's disk keeps filling, and nothing big shows up:** a VM whose disk file was deleted while it ran is still writing to it. See [Remove the VM, and get the laptop's disk back](#remove-the-vm-and-get-the-laptops-disk-back). If Podman Desktop is installed, it may have started a VM you didn't: **podman-desktop-remove** reports every machine and its disk use.
