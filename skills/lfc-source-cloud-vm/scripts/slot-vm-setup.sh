@@ -10,11 +10,17 @@
 #   SLOT_SETTINGS (more lines for /etc/lfc-slot.env, e.g. MAX_PER_OWNER=0), META_URL (a metadata store JuiceFS
 #   supports, without the password, e.g. postgres://<role>@<host>:5432/<database>?sslmode=require for a managed
 #   Postgres; its password goes in azure.env as META_PASSWORD; default: the local Redis).
+#   KIND=personal: slot.sh's state goes on the volume at /mnt/jfs/.state (it comes back with the data when the VM is
+#   rebuilt), and its lock stays on the VM's disk (LOCK=/var/lib/lfc/lock). Any other value: as before.
+#   RESTORE_DUMP=<gzipped juicefs dump>: when the metadata store is empty, load this dump into it instead of formatting
+#   the volume (a VM rebuilt over the data its volume has in object storage). Without it, an empty store is formatted.
+#   JFS_VERSION=<x.y.z>: install this JuiceFS release (when the client isn't installed yet). Unset: the latest release.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 : "${VOLUME:?VOLUME=<volume name>}" "${BUCKET:?BUCKET=https://<container>.core.windows.net}" "${HOST:?HOST=<public address>}"
 DISK=${DISK:-/dev/disk/azure/scsi1/lun0}
 [ -s /etc/juicefs/azure.env ] || { echo "no /etc/juicefs/azure.env: write the storage connection string first"; exit 1; }
+PERSONAL=0; [ "${KIND:-}" = personal ] && PERSONAL=1
 chmod 600 /etc/juicefs/azure.env
 step() { echo "== $*"; }
 
@@ -24,7 +30,7 @@ export DEBIAN_FRONTEND=noninteractive
 command -v podman >/dev/null && command -v jq >/dev/null && dpkg -s fuse3 >/dev/null 2>&1 \
   || { apt-get update -qq && apt-get install -y -qq podman fuse3 jq xfsprogs >/dev/null; }
 if ! command -v juicefs >/dev/null; then
-  V=$(curl -fsSL https://api.github.com/repos/juicedata/juicefs/releases/latest | jq -r .tag_name)
+  if [ -n "${JFS_VERSION:-}" ]; then V="v${JFS_VERSION#v}"; else V=$(curl -fsSL https://api.github.com/repos/juicedata/juicefs/releases/latest | jq -r .tag_name); fi
   T=$(mktemp -d); trap 'rm -rf "${T:?}"' EXIT
   (cd "$T" && curl -fsSLO "https://github.com/juicedata/juicefs/releases/download/$V/juicefs-${V#v}-linux-amd64.tar.gz" \
     && curl -fsSLO "https://github.com/juicedata/juicefs/releases/download/$V/checksums.txt" \
@@ -51,8 +57,14 @@ else
   META=$META_URL WAIT=""
 fi
 if ! ( set -a; . /etc/juicefs/azure.env; set +a; juicefs status "$META" >/dev/null 2>&1 ); then
-  ( set -a; . /etc/juicefs/azure.env; set +a; juicefs format --storage wasb --bucket "$BUCKET" --trash-days 0 "$META" "$VOLUME" >/dev/null )
-  echo "formatted $VOLUME"
+  if [ -n "${RESTORE_DUMP:-}" ]; then   # an empty store with the volume's dump: load it, never format over its data
+    [ -s "$RESTORE_DUMP" ] || { echo "no dump at $RESTORE_DUMP"; exit 1; }
+    T=$(mktemp); zcat "$RESTORE_DUMP" > "$T"; juicefs load "$META" "$T" >/dev/null; rm -f "$T"
+    echo "loaded the metadata of $VOLUME from $RESTORE_DUMP"
+  else
+    ( set -a; . /etc/juicefs/azure.env; set +a; juicefs format --storage wasb --bucket "$BUCKET" --trash-days 0 "$META" "$VOLUME" >/dev/null )
+    echo "formatted $VOLUME"
+  fi
 fi
 
 step "mount at boot (lfc-jfs.service)"
@@ -78,11 +90,13 @@ systemctl daemon-reload; systemctl enable lfc-jfs >/dev/null 2>&1; systemctl res
 for _ in $(seq 1 30); do findmnt -t fuse.juicefs /mnt/jfs >/dev/null && break; sleep 2; done
 findmnt -t fuse.juicefs /mnt/jfs >/dev/null || { echo "FAIL: /mnt/jfs isn't mounted: journalctl -u lfc-jfs"; exit 1; }
 install -d /mnt/jfs/masters /mnt/jfs/dbs
+[ $PERSONAL = 0 ] || install -d -m 700 /mnt/jfs/.state
 
 step "slot.sh and the slot user"
 install -m 755 "$here/slot.sh" /usr/local/sbin/lfc-slot
 install -m 755 "$here/slot-ssh.sh" /usr/local/sbin/lfc-slot-ssh
-{ printf 'HOST=%s\n' "$HOST"; [ -z "${SLOT_SETTINGS:-}" ] || printf '%s\n' "$SLOT_SETTINGS"; } > /etc/lfc-slot.env
+{ printf 'HOST=%s\n' "$HOST"; [ -z "${SLOT_SETTINGS:-}" ] || printf '%s\n' "$SLOT_SETTINGS"
+  [ $PERSONAL = 0 ] || printf 'STATE=/mnt/jfs/.state\nLOCK=/var/lib/lfc/lock\n'; } > /etc/lfc-slot.env
 id slot >/dev/null 2>&1 || useradd -m -s /bin/bash slot
 echo 'slot ALL=(root) NOPASSWD: /usr/local/sbin/lfc-slot' > /etc/sudoers.d/lfc-slot; chmod 440 /etc/sudoers.d/lfc-slot
 visudo -cq
