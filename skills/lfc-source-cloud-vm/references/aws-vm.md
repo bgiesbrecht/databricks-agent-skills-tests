@@ -26,7 +26,7 @@ One `lfc-test-<n>` group per VPC, shared by every test VM in it: SSH from your l
 SG=$(aws ec2 create-security-group --region $R --vpc-id $VPC --group-name lfc-test-1 \
   --description "lfc test sources: laptop + Databricks serverless" \
   --tag-specifications "ResourceType=security-group,Tags=[{Key=owner,Value=<pfx>},{Key=purpose,Value=lfc-test}]" \
-  --output json | yq -p json -oy '.GroupId')
+  --output json | jq -r '.GroupId')
 perm() { echo "{\"IpProtocol\":\"tcp\",\"FromPort\":$1,\"ToPort\":$2,\"IpRanges\":[$(for c in $3; do printf '{"CidrIp":"%s","Description":"%s"},' $c "$4"; done | sed 's/,$//')]}"; }
 aws ec2 authorize-security-group-ingress --region $R --group-id $SG --ip-permissions \
   "[$(perm 22 22 $MYIP/32 lfc-myip-ssh),$(perm 30000 30063 $MYIP/32 lfc-myip-db),$(perm 30000 30063 "$SERVERLESS" lfc-serverless)]"
@@ -39,16 +39,16 @@ Reuse the group if it already exists (`aws ec2 describe-security-groups --filter
 ```bash
 aws ec2 import-key-pair --region $R --key-name $KEY --public-key-material fileb://$HOME/.ssh/lfc_test_rsa.pub
 AMI=$(aws ssm get-parameters --region $R --output json \
-  --names /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id | yq -p json -oy '.Parameters[0].Value')
+  --names /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id | jq -r '.Parameters[0].Value')
 IID=$(aws ec2 run-instances --region $R --image-id $AMI --instance-type $TYPE --key-name $KEY \
   --subnet-id $SUB --security-group-ids $SG --associate-public-ip-address \
   --block-device-mappings '[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":30,"VolumeType":"gp3","DeleteOnTermination":true}},
                             {"DeviceName":"/dev/sdf","Ebs":{"VolumeSize":64,"VolumeType":"gp3","DeleteOnTermination":true}}]' \
   --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$NAME},{Key=owner,Value=<pfx>},{Key=purpose,Value=lfc-test}]" \
                        "ResourceType=volume,Tags=[{Key=owner,Value=<pfx>},{Key=purpose,Value=lfc-test}]" \
-  --output json | yq -p json -oy '.Instances[0].InstanceId')
+  --output json | jq -r '.Instances[0].InstanceId')
 aws ec2 wait instance-running --region $R --instance-ids $IID
-IP=$(aws ec2 describe-instances --region $R --instance-ids $IID --output json | yq -p json -oy '.Reservations[0].Instances[0].PublicIpAddress')
+IP=$(aws ec2 describe-instances --region $R --instance-ids $IID --output json | jq -r '.Reservations[0].Instances[0].PublicIpAddress')
 ```
 
 The SSH user is `ubuntu`. The public IP changes after a stop and start: re-read it and update the UC connections' `host` (or attach an Elastic IP, which bills while the VM is stopped).
@@ -59,7 +59,7 @@ On Nitro instances (every current type) an EBS volume appears as NVMe, not as `/
 
 ```bash
 VOL=$(aws ec2 describe-instances --region $R --instance-ids $IID --output json \
-  | yq -p json -oy '.Reservations[0].Instances[0].BlockDeviceMappings[] | select(.DeviceName == "/dev/sdf") | .Ebs.VolumeId')
+  | jq -r '.Reservations[0].Instances[0].BlockDeviceMappings[] | select(.DeviceName == "/dev/sdf") | .Ebs.VolumeId')
 ssh ubuntu@$IP DISK=/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${VOL/-/} MNT=/var/lib/containers 'bash -s' < scripts/disk-setup.sh
 ssh ubuntu@$IP 'sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq podman'
 ssh ubuntu@$IP 'sudo podman info --format "{{.Store.GraphRoot}}"; findmnt -no FSTYPE /var/lib/containers'   # /var/lib/containers/storage, xfs

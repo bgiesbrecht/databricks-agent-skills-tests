@@ -117,15 +117,14 @@ Classic clusters leave the workspace through its own NAT / egress IP, which isn'
   ```
 
 - **VNet-injected (Azure) or customer-managed VPC (AWS, GCP):** it's the customer's NAT; ask the user.
-- **Not in an account you can read:** ask classic compute itself. A one-off single-node job reports the address it leaves from (tested on an AWS classic workspace, where the gateway then connected):
+- **Not in an account you can read:** ask Databricks. [`scripts/classic-egress.sh`](scripts/classic-egress.sh) has two methods, and both print a `CLASSIC=` line for `fw.env`:
+  1. **The audit log, first.** API calls from classic cluster drivers (user agent `Databricks-Service/driver`) record the public IP they came from, so `--warehouse <id>` reads every NAT IP used in the last 7 days (`--days N`) in seconds, without starting anything. It needs `SELECT` on `system.access.audit` and a SQL warehouse. It finds nothing on a workspace with no classic activity in the window. Private addresses (internal paths) are dropped.
+  2. **A one-off single-node notebook job**, when the audit log isn't readable or is empty. The job reports the address it leaves from, then the notebook is deleted. It takes 5-10 minutes while the cluster starts. `--runs 3` keeps every distinct IP, since a cluster in another subnet can leave from a second NAT IP.
   ```bash
-  printf '# Databricks notebook source\nimport urllib.request\ndbutils.notebook.exit(urllib.request.urlopen("https://api.ipify.org", timeout=10).read().decode())\n' > egress.py
-  databricks workspace import /Users/<user>/lfc-egress-ip --file egress.py --format SOURCE --language PYTHON --overwrite --profile <PROFILE>
-  # submit with a small single-node new_cluster (a node type with local disk, e.g. m5d.large on AWS), then:
-  databricks jobs get-run-output <task-run-id> --profile <PROFILE> -o json | yq -p json -oy '.notebook_output.result' > classic.ip   # private file
-  databricks workspace delete /Users/<user>/lfc-egress-ip --profile <PROFILE>
+  skills/lfc-source-firewall/scripts/classic-egress.sh <PROFILE> --warehouse <WAREHOUSE_ID> | tail -1 | tee -a fw.env   # CLASSIC='<ip>/32'
+  skills/lfc-source-firewall/scripts/classic-egress.sh <PROFILE> | tail -1 | tee -a fw.env                               # the job
   ```
-  A workspace normally has one NAT IP, but a cluster in another subnet can leave from a second one: if a gateway still can't connect (`INCORRECT_SOURCE_HOSTNAME_OR_PORT_SPECIFIED_FAILURE`), run the job again and compare.
+  Both were tested on an AWS classic workspace and gave the same IP; with it allowed, the gateway connected.
 - **Can't determine it:** add the laptop and serverless IPs anyway, and **warn the user** that any part of the pipeline that runs on classic compute (for example a standard CDC gateway) may not be able to reach the database until its egress IP is added. Serverless parts will still work.
 
 **When a pipeline on classic can't reach the source.** In the event log it shows as `Extractor STARTED`, then about a minute later `Extractor FAILED` with `INGESTION_GATEWAY_CONNECTION_ERROR.INCORRECT_SOURCE_HOSTNAME_OR_PORT_SPECIFIED_FAILURE`. `bin/compute_report.sh` reads it as `ran_on classic`, `started yes`, `reached_source no`. There are two fixes, and the records keep them apart (lfc-test-results, `compute`):

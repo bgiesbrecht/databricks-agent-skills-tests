@@ -220,7 +220,7 @@ ME=$(dbx current-user me -o json | yq '.userName') || { echo "profile $PROFILE d
 PREFIX=${PREFIX:-$(echo "$ME" | cut -d@ -f1 | tr -d '.-' | tr 'A-Z' 'a-z')}
 eval "$(dbx metastores current -o json | yq -o shell '{"WS_ID": .workspace_id}')"
 eval "$(dbx metastores summary -o json | yq -o shell '{"REGION": .region, "CLOUD": .cloud}')"
-HOST=$(databricks auth env --profile "$PROFILE" 2>/dev/null | yq -p json -oy '.env.DATABRICKS_HOST' 2>/dev/null)
+HOST=$(databricks auth env --profile "$PROFILE" 2>/dev/null | jq -r '.env.DATABRICKS_HOST' 2>/dev/null)
 case $CLOUD in azure) ZB="https://$WS_ID.zerobus.$REGION.azuredatabricks.net";; aws) ZB="https://$WS_ID.zerobus.$REGION.cloud.databricks.com";;
   *) echo "cloud $CLOUD: set the Zerobus endpoint form for it"; exit 2;; esac
 [ -n "$HOST" ] && [ "$HOST" != null ] || { echo "no host for profile $PROFILE"; exit 2; }
@@ -1808,7 +1808,7 @@ if [ "$PHASE" -ge 2 ]; then
     case $r in ok*) ;; *) claim changes-3 FAIL "fewer events than expected before the restart: $r$(capture_note)";; esac
     vm "$PODMAN kill $DBZS >/dev/null && $PODMAN start $DBZS >/dev/null" || claim retry-restart FAIL "producer restart failed"
     sleep 40
-    round 3 after; N3=$(for i in $(seq 1 "$NSRC"); do yq -p json -oy '.events' "$W/m3before-$i.json" "$W/m3after-$i.json"; done | awk '{n += $1} END {print n}')
+    round 3 after; N3=$(for i in $(seq 1 "$NSRC"); do jq -r '.events' "$W/m3before-$i.json" "$W/m3after-$i.json"; done | awk '{n += $1} END {print n}')
     r=$(probes 3after); sleep 10
     R=$(q "SELECT COUNT(*) - $N0, COUNT(*) - COUNT(DISTINCT idempotency_key), (SELECT COUNT(*) FROM (SELECT 1 FROM $LOGQ GROUP BY destination, TO_JSON(key), TO_JSON(value:after), operation HAVING COUNT(*) > 1)) FROM $LOGQ" 2>&1 | tr '\t' ' ')
     observe retry-bronze "after the kill and restart, rows added since round 3 began ($N3 changes), rows sharing an idempotency key, change contents seen more than once: $R"

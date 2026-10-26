@@ -22,6 +22,6 @@ elif [ $APPLY = yes ]; then
     && echo "secret written to $FILE ($(stat -f %Lp "$FILE" 2>/dev/null || stat -c %a "$FILE"))" || { rm -f "$FILE"; echo "secret create failed"; exit 1; }
 else echo "plan: create an OAuth secret into $FILE (0600)"; fi
 [ -n "$TABLE" ] && bash "$(dirname "$0")/grant.sh" "$P" --table "$TABLE" --sp "${APP:-<application id>}" $([ $APPLY = yes ] && echo --apply)
-HOST=$(databricks auth describe --profile "$P" -o json 2>/dev/null | yq -p json -oy '.details.host // ""' | sed 's:/*$::')
+HOST=$(databricks auth describe --profile "$P" -o json 2>/dev/null | jq -r '.details.host // ""' | sed 's:/*$::')
 [ -n "$ID" ] && echo "LINK service principal $NAME: $HOST/settings/workspace/identity-and-access/service-principals/$ID"
 [ $APPLY = yes ] && echo "hand over: SP_CLIENT_ID=$APP and the file $FILE" || echo "plan only: run again with --apply"

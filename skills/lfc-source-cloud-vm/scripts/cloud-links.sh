@@ -25,13 +25,13 @@ if command -v az >/dev/null && az account show >/dev/null 2>&1; then
   pipid=; cfg=
   for sub in $SUBS $(az account show --query id -o tsv); do
     pip=$(az network public-ip list --subscription "$sub" --query "[?ipAddress=='$IP'] | [0].{id:id, cfg:ipConfiguration.id}" -o json 2>/dev/null)
-    pipid=$(echo "$pip" | yq -p json -oy '.id // ""' 2>/dev/null); cfg=$(echo "$pip" | yq -p json -oy '.cfg // ""' 2>/dev/null)
+    pipid=$(echo "$pip" | jq -r '.id // ""' 2>/dev/null); cfg=$(echo "$pip" | jq -r '.cfg // ""' 2>/dev/null)
     [ -n "$pipid" ] && break
   done
   # not there: every enabled subscription (19 for the test login, about 2 s each)
   if [ -z "$pipid" ]; then for sub in $(az account list --query "[?state=='Enabled'].id" -o tsv); do
     pip=$(az network public-ip list --subscription "$sub" --query "[?ipAddress=='$IP'] | [0].{id:id, cfg:ipConfiguration.id}" -o json 2>/dev/null)
-    pipid=$(echo "$pip" | yq -p json -oy '.id // ""' 2>/dev/null); cfg=$(echo "$pip" | yq -p json -oy '.cfg // ""' 2>/dev/null)
+    pipid=$(echo "$pip" | jq -r '.id // ""' 2>/dev/null); cfg=$(echo "$pip" | jq -r '.cfg // ""' 2>/dev/null)
     [ -n "$pipid" ] && break; done; fi
   if [ -n "$pipid" ]; then
     link "Azure public IP $IP" "$AZ$pipid"
@@ -55,7 +55,7 @@ if command -v aws >/dev/null && aws sts get-caller-identity >/dev/null 2>&1; the
   R=${REGION:-$(aws configure get region 2>/dev/null)}
   if [ -n "$R" ]; then
     j=$(aws ec2 describe-instances --region "$R" --filters "Name=ip-address,Values=$IP" --query 'Reservations[0].Instances[0]' -o json 2>/dev/null)
-    iid=$(echo "$j" | yq -p json -oy '.InstanceId // ""' 2>/dev/null)
+    iid=$(echo "$j" | jq -r '.InstanceId // ""' 2>/dev/null)
     if [ -n "$iid" ] && [ "$iid" != null ]; then
       E="https://$R.console.aws.amazon.com/ec2/home?region=$R"
       link "AWS instance $iid" "$E#InstanceDetails:instanceId=$iid"
@@ -69,9 +69,9 @@ fi
 if command -v gcloud >/dev/null && [ -n "$(gcloud config get-value account 2>/dev/null)" ]; then
   PRJ=$(gcloud config get-value project 2>/dev/null)
   j=$(gcloud compute instances list --filter="networkInterfaces[0].accessConfigs[0].natIP=$IP" --format=json 2>/dev/null)
-  name=$(echo "$j" | yq -p json -oy '.[0].name // ""' 2>/dev/null)
+  name=$(echo "$j" | jq -r '.[0].name // ""' 2>/dev/null)
   if [ -n "$name" ] && [ "$name" != null ]; then
-    zone=$(echo "$j" | yq -p json -oy '.[0].zone' | awk -F/ '{print $NF}'); C="https://console.cloud.google.com"
+    zone=$(echo "$j" | jq -r '.[0].zone' | awk -F/ '{print $NF}'); C="https://console.cloud.google.com"
     link "GCP instance $name" "$C/compute/instancesDetail/zones/$zone/instances/$name?project=$PRJ"
     echo "$j" | yq -p json -o tsv '.[0].disks[].source' | awk -F/ '{print $NF}' | while read -r d; do link "GCP disk $d" "$C/compute/disksDetail/zones/$zone/disks/$d?project=$PRJ"; done
     link "GCP firewall rules" "$C/net-security/firewall-manager/firewall-policies/list?project=$PRJ"

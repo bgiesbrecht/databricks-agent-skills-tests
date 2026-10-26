@@ -9,7 +9,8 @@ Cloud and Databricks CLIs all speak JSON. Ask for it every time, then use **the 
 
 | Job | Tool |
 |---|---|
-| Pull values into shell variables; filter, map, `unique`, `join`, `group_by` over **one** JSON input | `yq` + `eval` (yq's expressions are jq's, so `jq` works too; yq alone covers it and adds `-o shell`) |
+| One value into a variable: `X=$(<cli> -o json \| jq -r '.path')` | `jq -r` |
+| Several values into shell variables at once; filter, map, `unique`, `join`, `group_by` over **one** JSON input | `yq -p json -o shell` + `eval` (yq's expressions are jq's; `-o shell` sets many variables in one pass) |
 | Loop over a short list, check membership, split a list into chunks, call a CLI per item | Plain shell (`for`, `case`, `xargs -n`, `paste`) |
 | IP-range math, joins across two or more inputs, "A not covered by B" with ranges, ranking or greedy picks, window functions | DuckDB SQL in a `.sql` file |
 | An SDK, retries, auth flows, or the caller is already Python | Python, calling DuckDB for the logic |

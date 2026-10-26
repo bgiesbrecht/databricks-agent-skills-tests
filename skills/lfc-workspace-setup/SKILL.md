@@ -17,7 +17,7 @@ P=<PROFILE>
 databricks workspace-settings-v2 list-workspace-settings-metadata --profile $P -o json \
   | yq -p json -o tsv '.[] | select(((.display_name // "") + " " + (.description // "")) | downcase | (test("lakeflow connect") or (test("join pushdown") and test("federat")))) | [.name, .display_name]'
 databricks workspace-settings-v2 get-public-workspace-setting integrated_cdc_oracle_connector --profile $P -o json \
-  | yq -p json -oy 'with(select(has("boolean_val")); .v = .boolean_val.value) | with(select(has("boolean_val") | not); .v = .effective_boolean_val.value) | .v'
+  | jq -r 'if has("boolean_val") then .boolean_val.value else .effective_boolean_val.value end'
 databricks workspace-settings-v2 patch-public-workspace-setting integrated_cdc_oracle_connector \
   --json '{"name": "integrated_cdc_oracle_connector", "boolean_val": {"value": true}}' --profile $P                 # enable
 ```
@@ -49,7 +49,7 @@ Three separate grants, in this order: logging in (an assignment plus entitlement
 ```bash
 P=<PROFILE>; G="account users"                                                     # or an account group's name
 q=$(printf 'displayName eq "%s"' "$G" | jq -sRr @uri)
-ID=$(databricks api get "/api/2.0/account/scim/v2/Groups?filter=$q" --profile $P -o json | yq -p json -oy '.Resources[0].id')
+ID=$(databricks api get "/api/2.0/account/scim/v2/Groups?filter=$q" --profile $P -o json | jq -r '.Resources[0].id')
 databricks api get /api/2.0/preview/permissionassignments --profile $P -o json \
   | yq -p json -o tsv '.permission_assignments[] | [(.principal.display_name // .principal.user_name), (.permissions | join(","))]'   # who's in now
 databricks api put /api/2.0/preview/permissionassignments/principals/$ID --json '{"permissions": ["USER"]}' --profile $P
@@ -60,7 +60,7 @@ databricks api put /api/2.0/preview/permissionassignments/principals/$ID --json 
 ```bash
 q=$(printf 'displayName eq "%s"' users | jq -sRr @uri)
 databricks api get "/api/2.0/preview/scim/v2/Groups?filter=$q&attributes=entitlements" --profile $P -o json \
-  | yq -p json -oy '[.Resources[0].entitlements[]?.value] | join(", ")'                # empty: USER members get nothing
+  | jq -r '[.Resources[0].entitlements[]?.value] | join(", ")'                # empty: USER members get nothing
 cat > ent.json <<'EOF'
 {"schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
  "Operations": [{"op": "add", "path": "entitlements", "value": [{"value": "workspace-access"}, {"value": "databricks-sql-access"}]}]}
