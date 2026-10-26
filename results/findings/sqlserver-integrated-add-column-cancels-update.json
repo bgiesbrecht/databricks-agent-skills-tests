@@ -1,0 +1,35 @@
+{
+  "id": "sqlserver-integrated-add-column-cancels-update",
+  "title": "SQL Server integrated: ADD COLUMN cancels the running update and restarts it (no full refresh)",
+  "kind": "connector-behavior",
+  "status": "open",
+  "applies": {
+    "source": [
+      "sqlserver"
+    ],
+    "route": [
+      "lfc-icdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "2026-10-26 test round: SQL Server 2022 CU27, integrated CDC, one run"
+  },
+  "symptom": "After ADD COLUMN the running update was cancelled: \"... due to a schema change ... will be restarted\". The flow logged \"encountered a schema change during execution and terminated\". The pipeline started a new update with cause SCHEMA_CHANGE, and the new column and the new row arrived in it.",
+  "cause": "Not established: integrated CDC ends the running update at the schema change instead of finishing it.",
+  "effect": "The update in progress ends early, and the restart replays the table's applier snapshot flow.",
+  "fix": "No full refresh is needed. Wait for the restarted update before counting rows.",
+  "versions": [
+    "SQL Server 2022 CU27"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-sqlserver.md"
+  ],
+  "notes": "One run. The restart logged the table's snapshot as IN_PROGRESS and ran the applier snapshot flow; no extractor snapshot ran after the change."
+}

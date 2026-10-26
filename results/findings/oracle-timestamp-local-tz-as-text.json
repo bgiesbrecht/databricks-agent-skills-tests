@@ -1,0 +1,35 @@
+{
+  "id": "oracle-timestamp-local-tz-as-text",
+  "title": "Oracle: TIMESTAMP WITH LOCAL TIME ZONE lands as text with the zone name inside",
+  "kind": "connector-behavior",
+  "status": "open",
+  "applies": {
+    "source": [
+      "oracle"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "bronze"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "2026-10-26 test round: Oracle Free 23.26.3, standard gateway, one run"
+  },
+  "symptom": "TIMESTAMP(9) WITH LOCAL TIME ZONE 12:00:00.123456789 in a +00:00 session arrives as the string '2026-10-25 12:00:00 Etc/UTC.123456789'. TIMESTAMP WITH TIME ZONE in the same run arrived as a timestamp in UTC.",
+  "cause": "Not established: the zone name is written inside the text.",
+  "effect": "The value isn't a timestamp; downstream parsing has to drop the zone name first.",
+  "fix": "Parse the text downstream (not tested). Or use TIMESTAMP WITH TIME ZONE on the source (not tested).",
+  "versions": [
+    "Oracle Free 23.26.3"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-oracle.md"
+  ],
+  "notes": "One run."
+}

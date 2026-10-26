@@ -1,0 +1,35 @@
+{
+  "id": "oracle-missing-container-grants-show-missing-table",
+  "title": "Oracle: a common user without SET CONTAINER and CONTAINER_DATA=ALL sees MISSING_TABLE_IN_SOURCE",
+  "kind": "connector-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "oracle"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "source"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "2026-10-26 test round: Oracle Free 23.26.3, common user, standard gateway, one run"
+  },
+  "symptom": "The gateway found 0 tables and reported MISSING_TABLE_IN_SOURCE: \"No catalog or schema was found for replication. Please check your filter file\". The message names no privilege.",
+  "cause": "Not established why the check reports a missing table. The two grants let the common user see the PDB's tables.",
+  "effect": "The pipeline looks misconfigured in its filter.",
+  "fix": "Grant SET CONTAINER and ALTER USER ... SET CONTAINER_DATA=ALL CONTAINER=CURRENT (in the grant list), then restart the pipelines.",
+  "versions": [
+    "Oracle Free 23.26.3"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-oracle.md"
+  ],
+  "notes": "One run. The re-run after the grants found the tables."
+}

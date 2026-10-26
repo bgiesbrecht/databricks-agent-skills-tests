@@ -1,0 +1,35 @@
+{
+  "id": "mysql-integrated-add-first-after-appended",
+  "title": "MySQL integrated: ADD COLUMN FIRST or AFTER lands at the end of the destination table",
+  "kind": "connector-behavior",
+  "status": "open",
+  "applies": {
+    "source": [
+      "mysql"
+    ],
+    "route": [
+      "lfc-icdc"
+    ],
+    "layer": [
+      "bronze"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "2026-10-26 test round: MySQL 8.4.13, integrated CDC, one run per position"
+  },
+  "symptom": "ADD COLUMN ... FIRST and ADD COLUMN ... AFTER: the destination column lands at the end of the table. A row written after it arrived with the value under the column's name. The AFTER case also restarted the update with cause SCHEMA_CHANGE.",
+  "cause": "Not established. With the column filter off, the source position isn't used.",
+  "effect": "The column order differs from the source; the values are right by name.",
+  "fix": "Select columns by name. Column order isn't kept (not tested with the column filter on).",
+  "versions": [
+    "MySQL 8.4.13"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-mysql.md"
+  ],
+  "notes": "One run per position."
+}

@@ -33,5 +33,5 @@
   "where": [
     "skills/lfc-source-setup/references/engine-sqlserver.md"
   ],
-  "notes": "The optimized metadata path wasn't tested."
+  "notes": "The optimized metadata path wasn't tested. Discovery also counts every database the login can see in the container: with two pipeline databases of two and three tables, it reported 5 (tested 2026-10-26)."
 }

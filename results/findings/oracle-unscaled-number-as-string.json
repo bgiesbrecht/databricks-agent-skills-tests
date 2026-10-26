@@ -1,0 +1,35 @@
+{
+  "id": "oracle-unscaled-number-as-string",
+  "title": "Oracle: a NUMBER with no precision or scale lands as a string",
+  "kind": "connector-behavior",
+  "status": "open",
+  "applies": {
+    "source": [
+      "oracle"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "bronze"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "2026-10-26 test round: Oracle Free 23.26.3, standard gateway, one run"
+  },
+  "symptom": "NUMBER with no precision or scale lands as a string with the exact digits ('1234.5678', '0.000001', '3.14159'), not as a decimal.",
+  "cause": "Not established. The code reading expected a decimal.",
+  "effect": "Numeric comparisons on the column need a cast.",
+  "fix": "Cast in queries, or declare a precision and scale on the source (not tested).",
+  "versions": [
+    "Oracle Free 23.26.3"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-oracle.md"
+  ],
+  "notes": "One run, on snapshot rows and the CDC rows that arrived."
+}

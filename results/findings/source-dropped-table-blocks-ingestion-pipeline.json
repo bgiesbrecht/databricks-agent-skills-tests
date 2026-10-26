@@ -1,0 +1,38 @@
+{
+  "id": "source-dropped-table-blocks-ingestion-pipeline",
+  "title": "A dropped source table fails the whole ingestion pipeline until the table is removed from it",
+  "kind": "connector-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "mysql",
+      "oracle"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "2026-10-26 test round: MySQL 8.4.13 and Oracle Free 23.26.3, standard gateway, one run each"
+  },
+  "symptom": "Oracle: the first update after the DROP, with no change to that table, COMPLETED with no error. After changes reached the gateway, the next ingestion update FAILED at analysis: \"[INGESTION_GATEWAY_TABLE_DROPPED] Source table <catalog>.<schema>.<table> has been dropped on source\", and \"A new pipeline update will not be created\". MySQL: every ingestion update FAILED at analysis with \"Failed to resolve flow\" for the dropped table's flow.",
+  "cause": "Not established: the pipeline still plans the dropped table's flow.",
+  "effect": "Every table in the pipeline stops updating until the dropped table is removed.",
+  "fix": "Remove the dropped table from the ingestion pipeline. The Oracle pipeline ran again after that; the MySQL updates failed until it was removed.",
+  "versions": [
+    "MySQL 8.4.13",
+    "Oracle Free 23.26.3"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-oracle.md",
+    "skills/lfc-source-setup/references/engine-mysql.md"
+  ],
+  "notes": "One run each. The Oracle update that followed the drop completed, so the error appears only after a change reaches the gateway."
+}

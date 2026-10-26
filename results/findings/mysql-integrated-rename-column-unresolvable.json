@@ -1,0 +1,35 @@
+{
+  "id": "mysql-integrated-rename-column-unresolvable",
+  "title": "MySQL integrated: RENAME COLUMN leaves the table's flows unresolvable, and the update fails at analysis",
+  "kind": "databricks-bug",
+  "status": "open",
+  "applies": {
+    "source": [
+      "mysql"
+    ],
+    "route": [
+      "lfc-icdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "2026-10-26 test round: MySQL 8.4.13, integrated CDC, two fresh tables"
+  },
+  "symptom": "After RENAME COLUMN, the ingestion update FAILED at analysis with \"Failed to resolve flow\" for the table's applier flows. The destination kept the old name, and no new row arrived in 20 minutes.",
+  "cause": "Not established.",
+  "effect": "The table stops updating, and the rename never reaches the destination.",
+  "fix": "Not tested: a full refresh or a new pipeline after the rename.",
+  "versions": [
+    "MySQL 8.4.13"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-mysql.md"
+  ],
+  "notes": "Both fresh tables failed the same way, one run each."
+}

@@ -1,0 +1,35 @@
+{
+  "id": "mysql-integrated-drop-column-not-applied",
+  "title": "MySQL integrated: DROP COLUMN is applied at the source but not at the destination",
+  "kind": "connector-behavior",
+  "status": "open",
+  "applies": {
+    "source": [
+      "mysql"
+    ],
+    "route": [
+      "lfc-icdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "1:1"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "2026-10-26 test round: MySQL 8.4.13, integrated CDC, one run"
+  },
+  "symptom": "After DROP COLUMN (SHOW COLUMNS confirmed it at the source), the destination kept the column through two later updates, and new rows had NULL in it. No schema-change event for the drop appeared.",
+  "cause": "Not established.",
+  "effect": "The destination has a column the source no longer has, and the update reports no error.",
+  "fix": "Not tested: check the destination after each drop, and full refresh the table if it must match the source.",
+  "versions": [
+    "MySQL 8.4.13"
+  ],
+  "where": [
+    "skills/lfc-source-setup/references/engine-mysql.md"
+  ],
+  "notes": "Two updates after the drop, one run."
+}

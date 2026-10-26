@@ -31,5 +31,5 @@
   "where": [
     "skills/lfc-source-setup/references/engine-sqlserver.md"
   ],
-  "notes": "A 20-row table ran without it. Not compared at 10 and 450 tables."
+  "notes": "A 20-row table ran without it. Not compared at 10 and 450 tables. VIEW DATABASE STATE implies VIEW DATABASE PERFORMANCE STATE: with the first held, revoking the second alone changed nothing (it still appeared in fn_my_permissions and changes kept applying); revoking VIEW DATABASE STATE removed both (tested 2026-10-26)."
 }
