@@ -1,0 +1,432 @@
+environment:
+  engine: postgres
+  product: Azure Database for PostgreSQL Flexible Server
+  edition_tier: null
+  version: '16.15'
+  mechanism: logical-replication
+  pipeline_mode: standard
+  compute: serverless
+  runtime:
+    dbr_version: '18.3'
+    channel: CURRENT
+    image_key: dlt:18.3.8-delta-pipelines-aarch64-photon-dlt-release-dp-20261015-rc0-commit-48da011-image-5bafb35
+    dp_build: dp-20261015-rc0
+    cloud_region: AWS us-west-2
+    basis: read from the SQL Server pipelines; the other runs used the same workspace the same day
+  workspace:
+    cloud: AWS
+    region: us-west-2
+  date: '2026-10-26'
+  method: one-case-at-a-time
+  setup: ddl-objects-1.0
+  source_setup: DDL support objects 1.0 (an audit table, two event-trigger functions and two event triggers; created as superuser by the admin; the audit table added to the publication) and inline DDL tracking
+    enabled by Databricks support
+  caveats:
+  - Inline DDL tracking is documented as on hold for stabilization; it was enabled by Databricks support for this run. Documented setup steps were followed.
+  - 'The audit table was added to the publication by a superuser: the publication owner''s ALTER PUBLICATION ... ADD TABLE fails with ''must be owner of table'' because the admin owns the audit table.'
+  - 'One update per case. After a stopped update, a table-only full refresh before the next case. Rows that landed only after such a reset came from the snapshot, not CDC: they are marked post_change_row_landed
+    false with the value check.'
+  - 'Standard CDC: one gateway and one ingestion pipeline per group; triggered (continuous false). The pipelines API does not expose the runtime.'
+cases:
+- id: add-nullable
+  ddl: ALTER TABLE addnull ADD COLUMN c INT NULL
+  column_before: null
+  column_after: null
+  source_accepted: '{''ddl'': ''true'', ''insert'': ''true''}'
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: int
+  post_change_row_landed: true
+  value_check: null
+  basis: tested
+  notes: 'inline: no error; c added; row 3 landed via CDC (c=33); earlier rows NULL; run case 1'
+- id: add-nullable-with-default
+  ddl: ALTER TABLE adddef ADD COLUMN c INT DEFAULT 5
+  column_before: null
+  column_after: null
+  source_accepted: '{''ddl'': ''true'', ''insert'': ''true''}'
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL
+    level: error
+    message: CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL
+  - class: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+    level: error
+    message: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: absent
+  post_change_row_landed: false
+  value_check: landed by snapshot after the table reset (not CDC)
+  basis: tested
+  notes: 'inline: FAILED CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL; after table reset rows c=5 (snapshot); run case 2; recorded as ''add-nullable-default-5'''
+- id: add-not-null-with-default
+  ddl: ALTER TABLE addnn ADD COLUMN c INT NOT NULL DEFAULT 5
+  column_before: null
+  column_after: null
+  source_accepted: '{''ddl'': ''true'', ''insert'': ''true''}'
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL
+    level: error
+    message: CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL
+  - class: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+    level: error
+    message: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: absent
+  post_change_row_landed: false
+  value_check: landed by snapshot after the table reset (not CDC)
+  basis: tested
+  notes: 'inline: FAILED ADD_COLUMN_WITH_BACKFILL; after reset c=5 for all rows; run case 3; recorded as ''add-not-null-default-5'''
+- id: add-computed-column
+  ddl: ALTER TABLE addgen ADD COLUMN c INT GENERATED ALWAYS AS (n*2) STORED
+  column_before: null
+  column_after: null
+  source_accepted: '{''ddl'': ''true'', ''insert'': ''true''}'
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL
+    level: error
+    message: CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL
+  - class: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+    level: error
+    message: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: absent
+  post_change_row_landed: false
+  value_check: landed by snapshot after the table reset (not CDC); the generated values were materialised (20, 40, 60)
+  basis: tested
+  notes: 'inline: FAILED ADD_COLUMN_WITH_BACKFILL; after reset generated values materialised (20,40,60); run case 4; recorded as ''add-generated-column'''
+- id: add-nullable-keyless
+  ddl: ALTER TABLE addkeyless ADD COLUMN c INT
+  column_before: null
+  column_after: null
+  source_accepted: '{''ddl'': ''true'', ''insert'': ''true''}'
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.PRIMARY_KEY_CHANGE
+    level: error
+    message: CDC_INCOMPATIBLE_SCHEMA_CHANGES.PRIMARY_KEY_CHANGE
+  - class: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+    level: error
+    message: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: absent
+  post_change_row_landed: false
+  value_check: landed by snapshot after the table reset (not CDC)
+  basis: tested
+  notes: 'inline: FAILED PRIMARY_KEY_CHANGE (keyless table); after reset row 3 via snapshot; run case 5; recorded as ''add-on-keyless'''
+- id: drop-column
+  ddl: ALTER TABLE dropcol DROP COLUMN v
+  column_before: null
+  column_after: null
+  source_accepted: '{''ddl'': ''true'', ''insert'': ''true''}'
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: string
+  post_change_row_landed: true
+  value_check: null
+  basis: tested
+  notes: 'inline: no error; v kept in dest, row 3 landed with v NULL (CDC); run case 6'
+- id: int-to-bigint
+  ddl: ALTER TABLE int2big ALTER COLUMN n TYPE BIGINT
+  column_before: null
+  column_after: null
+  source_accepted: '{''ddl'': ''true'', ''insert'': ''true''}'
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+    level: error
+    message: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+  - class: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+    level: error
+    message: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: int
+  post_change_row_landed: false
+  value_check: landed by snapshot after the table reset (not CDC)
+  basis: tested
+  notes: 'inline: FAILED UNSUPPORTED_DATA_TYPE_CHANGE; after reset bigint, 3000000000 via snapshot; run case 7'
+- id: decimal-10-2-to-18-4
+  ddl: ALTER TABLE dec2wide ALTER COLUMN n TYPE NUMERIC(18,4)
+  column_before: null
+  column_after: null
+  source_accepted: '{''ddl'': ''true'', ''insert'': ''true''}'
+  events:
+  - class: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL
+    level: error
+    message: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL
+  - class: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+    level: error
+    message: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: decimal(10,2)
+  post_change_row_landed: false
+  value_check: landed by snapshot after the table reset (not CDC)
+  basis: tested
+  notes: 'inline: FAILED INGESTION_GATEWAY_DDL_NOT_SUPPORTED; after reset decimal(18,4), 3.1234 kept via snapshot; run case 08; recorded as ''numeric-10-2-to-18-4'''
+- id: string-length-narrow
+  ddl: ALTER TABLE vcnarrow ALTER COLUMN v TYPE VARCHAR(20)
+  column_before: null
+  column_after: null
+  source_accepted: '{''ddl'': ''true'', ''insert'': ''true''}'
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: string
+  post_change_row_landed: true
+  value_check: null
+  basis: tested
+  notes: 'inline: no error; dest stays string; 20-char value landed; run case 09; recorded as ''varchar-50-to-20'''
+- id: bigint-to-int
+  ddl: ALTER TABLE big2int ALTER COLUMN n TYPE INT
+  column_before: null
+  column_after: null
+  source_accepted: '{''ddl'': ''true'', ''insert'': ''true''}'
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+    level: error
+    message: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+  - class: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+    level: error
+    message: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: bigint
+  post_change_row_landed: false
+  value_check: landed by snapshot after the table reset (not CDC)
+  basis: tested
+  notes: 'inline: FAILED UNSUPPORTED_DATA_TYPE_CHANGE; after reset int, row 3 via snapshot; run case 10'
+- id: int-to-string
+  ddl: ALTER TABLE int2vc ALTER COLUMN n TYPE VARCHAR(20) USING n::text
+  column_before: null
+  column_after: null
+  source_accepted: '{''ddl'': ''true'', ''insert'': ''true''}'
+  events:
+  - class: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.PARSING_FAILURE
+    level: error
+    message: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.PARSING_FAILURE
+  - class: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+    level: error
+    message: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: int
+  post_change_row_landed: false
+  value_check: landed by snapshot after the table reset (not CDC)
+  basis: tested
+  notes: 'inline: FAILED PARSING_FAILURE; after reset string, abc via snapshot; run case 11; recorded as ''int-to-varchar-20'''
+- id: timestamp-to-timestamptz
+  ddl: ALTER TABLE tstz ALTER COLUMN n TYPE TIMESTAMPTZ
+  column_before: null
+  column_after: null
+  source_accepted: '{''ddl'': ''true'', ''insert'': ''true''}'
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+    level: error
+    message: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+  - class: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+    level: error
+    message: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: string
+  post_change_row_landed: false
+  value_check: landed by snapshot after the table reset (not CDC)
+  basis: tested
+  notes: 'inline: FAILED UNSUPPORTED_DATA_TYPE_CHANGE; after reset dest type timestamp, values shifted to ISO UTC strings; run case 12'
+- id: date-to-timestamp
+  ddl: ALTER TABLE date2ts ALTER COLUMN n TYPE TIMESTAMP
+  column_before: null
+  column_after: null
+  source_accepted: '{''ddl'': ''true'', ''insert'': ''true''}'
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+    level: error
+    message: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+  - class: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+    level: error
+    message: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: date
+  post_change_row_landed: false
+  value_check: landed by snapshot after the table reset (not CDC)
+  basis: tested
+  notes: 'inline: FAILED UNSUPPORTED_DATA_TYPE_CHANGE; after reset dest string; run case 13'
+- id: null-to-not-null
+  ddl: ALTER TABLE null2nn ALTER COLUMN n SET NOT NULL
+  column_before: null
+  column_after: null
+  source_accepted: '{''ddl'': ''true'', ''insert'': ''true''}'
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.COLUMN_NULLABLE_TO_NON_NULLABLE
+    level: error
+    message: CDC_INCOMPATIBLE_SCHEMA_CHANGES.COLUMN_NULLABLE_TO_NON_NULLABLE
+  - class: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+    level: error
+    message: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: int
+  post_change_row_landed: false
+  value_check: landed by snapshot after the table reset (not CDC)
+  basis: tested
+  notes: 'inline: FAILED COLUMN_NULLABLE_TO_NON_NULLABLE; after reset row 3 via snapshot; run case 14'
+- id: not-null-to-null
+  ddl: ALTER TABLE nn2null ALTER COLUMN n DROP NOT NULL
+  column_before: null
+  column_after: null
+  source_accepted: '{''ddl'': ''true'', ''insert'': ''true''}'
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.COLUMN_NON_NULLABLE_TO_NULLABLE
+    level: error
+    message: CDC_INCOMPATIBLE_SCHEMA_CHANGES.COLUMN_NON_NULLABLE_TO_NULLABLE
+  - class: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+    level: error
+    message: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: int
+  post_change_row_landed: false
+  value_check: landed by snapshot after the table reset (not CDC)
+  basis: tested
+  notes: 'inline: FAILED COLUMN_NON_NULLABLE_TO_NULLABLE; after reset row 3 with NULL n via snapshot; run case 15'
+- id: add-unique
+  ddl: ALTER TABLE addunq ADD CONSTRAINT addunq_n_key UNIQUE (n)
+  column_before: null
+  column_after: null
+  source_accepted: '{''ddl'': ''true'', ''insert'': ''true''}'
+  events:
+  - class: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.ADD_CONSTRAINT
+    level: error
+    message: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.ADD_CONSTRAINT
+  - class: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+    level: error
+    message: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: string
+  post_change_row_landed: false
+  value_check: landed by snapshot after the table reset (not CDC)
+  basis: tested
+  notes: 'inline: FAILED ADD_CONSTRAINT (UNIQUE); after reset row 3 via snapshot; run case 16'
+- id: drop-primary-key
+  ddl: ALTER TABLE droppk DROP CONSTRAINT droppk_pkey
+  column_before: null
+  column_after: null
+  source_accepted: '{''ddl'': ''true'', ''insert'': ''true''}'
+  events:
+  - class: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.DROP_PRIMARY_KEY_CONSTRAINT
+    level: error
+    message: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.DROP_PRIMARY_KEY_CONSTRAINT
+  - class: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+    level: error
+    message: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: int
+  post_change_row_landed: false
+  value_check: landed by snapshot after the table reset (not CDC)
+  basis: tested
+  notes: 'inline: FAILED DROP_PRIMARY_KEY_CONSTRAINT; after reset dest unchanged, row 3 not in dest; run case 17'
+- id: rename-column
+  ddl: ALTER TABLE rencol RENAME COLUMN n TO n2
+  column_before: null
+  column_after: null
+  source_accepted: '{''ddl'': ''true'', ''insert'': ''true''}'
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.COLUMNS_ADDED_AND_DELETED
+    level: error
+    message: CDC_INCOMPATIBLE_SCHEMA_CHANGES.COLUMNS_ADDED_AND_DELETED
+  - class: INGESTION_GATEWAY_CDC_NOT_ENABLED
+    level: error
+    message: INGESTION_GATEWAY_CDC_NOT_ENABLED
+  - class: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+    level: error
+    message: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: absent
+  post_change_row_landed: false
+  value_check: landed by snapshot after the table reset (not CDC)
+  basis: tested
+  notes: 'inline: FAILED COLUMNS_ADDED_AND_DELETED plus INGESTION_GATEWAY_CDC_NOT_ENABLED in the same update; after reset n2 column, row 3 via snapshot; run case 18'
+- id: truncate
+  ddl: TRUNCATE trunc
+  column_before: null
+  column_after: null
+  source_accepted: '{''ddl'': ''true'', ''insert'': ''true''}'
+  events:
+  - class: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.TRUNCATE_TABLE
+    level: error
+    message: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.TRUNCATE_TABLE
+  - class: INGESTION_GATEWAY_CDC_NOT_ENABLED
+    level: error
+    message: INGESTION_GATEWAY_CDC_NOT_ENABLED
+  - class: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+    level: error
+    message: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: int
+  post_change_row_landed: false
+  value_check: landed by snapshot after the table reset (not CDC)
+  basis: tested
+  notes: 'inline: FAILED TRUNCATE_TABLE plus CDC_NOT_ENABLED; after reset only row 3 remains; run case 19'
+- id: rename-table
+  ddl: ALTER TABLE rentbl RENAME TO rentbl_new
+  column_before: null
+  column_after: null
+  source_accepted: '{''ddl'': ''true'', ''insert'': ''true''}'
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'inline: no error; dest rentbl unchanged; rentbl_new not created; row 3 not landed; run case 20'
+- id: drop-table
+  ddl: DROP TABLE droptbl
+  column_before: null
+  column_after: null
+  source_accepted: '{''ddl'': ''true''}'
+  events:
+  - class: INGESTION_GATEWAY_TABLE_DROPPED
+    level: error
+    message: INGESTION_GATEWAY_TABLE_DROPPED
+  - class: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+    level: error
+    message: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: int
+  post_change_row_landed: null
+  value_check: null
+  basis: tested
+  notes: 'inline: FAILED INGESTION_GATEWAY_TABLE_DROPPED; reset attempt did not finish (TIMEOUT); dest droptbl kept with 2 rows; run case 21'

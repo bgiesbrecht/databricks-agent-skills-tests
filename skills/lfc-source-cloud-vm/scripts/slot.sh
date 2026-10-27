@@ -14,6 +14,12 @@
 #   park <name>                               stop it; the data stays on JuiceFS
 #   rm <name>                                 stop it and delete its data
 #   usage [--days <n>] [--all]                hours running per owner in the last n days (default 7), from the ledger
+#   sql <name> [database] [--wide]            run SQL from stdin as the engine's admin in your running database <name>
+#                                             (CDC, change tracking, test tables): tab-separated rows, no headers; the
+#                                             exit status is the SQL's. --wide: SQL Server prints long values whole
+#                                             (sqlcmd -y 0). Oracle and Db2 take no database (Oracle: ALTER SESSION SET
+#                                             CONTAINER in the SQL; Db2: LFCDB)
+#   info <name>                               the host OS, Podman, the image and digest, and the VM (size, region, zone)
 # --owner: who the database belongs to. A forced SSH command sets it per key (see the skill), so a user can't pick
 # another owner; as root without --owner the owner is "admin".
 # Settings, from /etc/lfc-slot.env if present: HOST (address printed for connections; set it on Azure, see host()),
@@ -155,6 +161,23 @@ login_sql() {   # engine, password: the Lakeflow Connect login with replication 
                 printf "%s\n" "SELECT 'CREATE DATABASE lfc' WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'lfc')\\gexec" ;;
   esac
 }
+# admin_sql <container> <engine> <database> <wide>: stdin as the engine's admin in <database>, rows tab-separated without
+# headers (the harness reads them), stopping at the first error
+admin_sql() {
+  local c=$1 e=$2 d=$3
+  case $e in
+    postgres) podman exec -i "$c" psql -U postgres -d "${d:-postgres}" -v ON_ERROR_STOP=1 -qtAX -F $'\t' ;;
+    sqlserver) local fl="-b -W -h -1"; [ "$4" = 1 ] && fl="-b -y 0"
+               podman exec -i "$c" sh -c 'f=$(mktemp); cat > $f; /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "$MSSQL_SA_PASSWORD" '"$fl"' -d '"${d:-master}"' -i $f; r=$?; rm -f $f; exit $r' ;;
+    mysql) podman exec -i "$c" sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -N -B '"$d" ;;
+    mariadb) podman exec -i "$c" sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" mariadb -uroot -N -B '"$d" ;;
+    informix) podman exec -i "$c" bash -lc "dbaccess ${d:-sysmaster} -" ;;
+    cockroachdb) podman exec -i "$c" /cockroach/cockroach sql --insecure --format=tsv ${d:+-d "$d"} ;;
+    yugabytedb) local ip; ip=$(podman inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$c")
+                podman exec -i "$c" bin/ysqlsh -h "$ip" -U yugabyte -d "${d:-yugabyte}" -v ON_ERROR_STOP=1 -qtAX -F $'\t' ;;
+    oracle|db2) [ -z "$d" ] || die "$e takes no database argument"; sql "$c" "$e" ;;
+  esac
+}
 all_metas() { find "$STATE" -mindepth 2 -maxdepth 2 -name '*.json' 2>/dev/null; }
 field() { jq -r ".$2 // empty" "$1"; }
 
@@ -294,6 +317,23 @@ case $CMD in
       | map(select($all == 1 or .owner == $me))
       | group_by(.owner) | map({owner: .[0].owner, since: ($since | .[0:10]), hours: ((map(.secs) | add) / 3600 * 10 | round / 10),
                                 databases: map({name, hours: (.secs / 3600 * 10 | round / 10)})})' "$LEDGER" ;;
+
+  sql)
+    N=${1:-}; name_ok "$N"; shift; M=$(meta "$OWNER" "$N"); [ -f "$M" ] || die "no database $N"
+    DB="" WIDE=0
+    while [ $# -gt 0 ]; do case $1 in --wide) WIDE=1; shift ;; *) [ -z "$DB" ] || usage; DB=$1; shift ;; esac; done
+    [ -z "$DB" ] || [[ $DB =~ ^[A-Za-z0-9_]{1,128}$ ]] || die "bad database: $DB (letters, digits, _)"
+    running "$OWNER" "$N" || die "$N is parked: up $(field "$M" engine) $N first"
+    admin_sql "$(cname "$OWNER" "$N")" "$(field "$M" engine)" "$DB" "$WIDE" ;;   # no lock: a long fill mustn't block up/park
+
+  info)
+    N=${1:-}; name_ok "$N"; M=$(meta "$OWNER" "$N"); [ -f "$M" ] || die "no database $N"
+    C=$(cname "$OWNER" "$N")
+    PRETTY_NAME=unknown; [ -r /etc/os-release ] && . /etc/os-release; echo "Host: $PRETTY_NAME"; echo "Podman: $(podman --version)"
+    if running "$OWNER" "$N"; then podman inspect --format 'Image: {{.ImageName}} ({{.ImageDigest}})' "$C"; else echo "Image: $(field "$M" image) (parked)"; fi
+    echo "Data: JuiceFS volume at $ROOT (object storage), database $(field "$M" engine) $N, port $(field "$M" port)"
+    curl -fs -m 5 -H Metadata:true "http://169.254.169.254/metadata/instance/compute?api-version=2021-12-13" \
+      | jq -r '"VM: Azure \(.vmSize), region \(.location), zone \(if .zone == "" then "none" else .zone end)"' 2>/dev/null || true ;;
 
   *) usage ;;
 esac

@@ -1,0 +1,34 @@
+{
+  "id": "postgres-audit-table-owner-cannot-add-to-publication",
+  "title": "The publication owner can't add the DDL audit table to the publication: the admin owns it",
+  "kind": "source-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "postgres"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "DDL matrix: PostgreSQL standard CDC reruns with and without DDL support objects"
+  },
+  "symptom": "ALTER PUBLICATION ... ADD TABLE on the DDL audit table, run as the publication owner, fails with 'must be owner of table'",
+  "cause": "The audit table was created by the admin who ran the support objects script as superuser, so the table is owned by that admin",
+  "effect": "The documented step fails for the publication owner, and the audit table is not in the publication until a superuser adds it",
+  "fix": "Run the ADD TABLE as a superuser (this run did). Creating the audit objects as the publication owner was not tested",
+  "where": [
+    "skills/lfc-schema-change-test/references/ddl-matrix-results.md"
+  ],
+  "refs": [
+    "https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/postgresql"
+  ]
+}

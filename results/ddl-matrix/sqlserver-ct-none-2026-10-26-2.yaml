@@ -1,0 +1,226 @@
+environment:
+  product: Azure SQL Database
+  edition_tier: serverless GP_S_Gen5_1
+  version: Microsoft SQL Azure (RTM) - 12.0.2000.8 Oct 9 2026
+  pipeline_mode: integrated
+  compute: serverless
+  runtime:
+    dbr_version: '18.3'
+    channel: CURRENT
+    image_key: dlt:18.3.8-delta-pipelines-aarch64-photon-dlt-release-dp-20261015-rc0-commit-48da011-image-5bafb35
+    dp_build: dp-20261015-rc0
+    cloud_region: AWS us-west-2
+    basis: read from this run's pipeline
+  workspace:
+    cloud: AWS
+    region: us-west-2
+  date: '2026-10-26'
+  engine: sqlserver
+  mechanism: ct
+  setup: none
+  source_setup: 'none, manual grants: SELECT and VIEW CHANGE TRACKING on each table, VIEW DEFINITION, VIEW DATABASE STATE'
+  method: batch
+  caveats:
+  - The update after the DDL burst FAILED at analysis because two source tables were missing; the post-change rows of the other tables after that point were not re-ingested.
+cases:
+- id: rename-column
+  ddl: EXEC sp_rename 'dbo.k_rencol.n', 'n2', 'COLUMN' (int -> int, name n -> n2)
+  column_before: INT (n)
+  column_after: INT (n2)
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.COLUMNS_ADDED_AND_DELETED
+    level: error
+    message: CDC_INCOMPATIBLE_SCHEMA_CHANGES.COLUMNS_ADDED_AND_DELETED, full refresh needed
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: int
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: source OK; CDC_INCOMPATIBLE_SCHEMA_CHANGES.COLUMNS_ADDED_AND_DELETED, full refresh needed; destination still n int; post insert (id, n2, v) on source only, not ingested'
+- id: rename-table
+  ddl: EXEC sp_rename 'dbo.k_rentab', 'k_rentab_new'
+  column_before: table name only
+  column_after: table name only
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_MISSING_TABLE_IN_SOURCE
+    level: error
+    message: INGESTION_GATEWAY_MISSING_TABLE_IN_SOURCE (old name), full refresh needed
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: source OK; INGESTION_GATEWAY_MISSING_TABLE_IN_SOURCE (old name), full refresh needed; destination k_rentab unchanged, no k_rentab_new; post insert not landed'
+- id: drop-primary-key
+  ddl: ALTER TABLE DROP CONSTRAINT pk_k_droppk
+  column_before: no change (PRIMARY KEY dropped)
+  column_after: no change (PRIMARY KEY dropped)
+  source_accepted: 'Msg 3735: primary key cannot be dropped because change tracking is enabled'
+  events: []
+  outcome: not-applicable
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: null
+  value_check: landed
+  basis: tested
+  notes: 'recorded: refused by source, Msg 3735: primary key cannot be dropped because change tracking is enabled ("Change tracking requires a primary key constraint on the table"); no pipeline change;
+    post insert (keyless shape not needed, PK intact) landed (1 row id 3); recorded as ''drop-pk-constraint'''
+- id: add-unique
+  ddl: ALTER TABLE ADD CONSTRAINT uq_k_adduq UNIQUE (v)
+  column_before: no change (UNIQUE constraint)
+  column_after: no change (UNIQUE constraint)
+  source_accepted: true
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: string
+  post_change_row_landed: true
+  value_check: post insert landed
+  basis: tested
+  notes: 'recorded: source OK; no pipeline error event; no restart reported in the final update; destination types unchanged (int, string); post insert landed (1 row id 3); recorded as ''add-unique-constraint'''
+- id: null-to-not-null
+  ddl: ALTER COLUMN n INT NOT NULL
+  column_before: INT NULL
+  column_after: INT NOT NULL
+  source_accepted: true
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: int
+  post_change_row_landed: true
+  value_check: post insert landed
+  basis: tested
+  notes: 'recorded: source OK; no pipeline error event; destination int (nullability not read); post insert landed (1 row id 3); recorded as ''alter-not-null-from-null'''
+- id: not-null-to-null
+  ddl: ALTER COLUMN n INT NULL
+  column_before: INT NOT NULL
+  column_after: INT NULL
+  source_accepted: true
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: int
+  post_change_row_landed: true
+  value_check: post insert with NULL landed
+  basis: tested
+  notes: 'recorded: source OK; no pipeline error event; destination int; post insert with NULL landed (1 row id 3, n NULL); recorded as ''alter-null-from-not-null'''
+- id: add-computed-column
+  ddl: ALTER TABLE ADD cc AS (n * 2)
+  column_before: absent
+  column_after: computed
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL
+    level: error
+    message: CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL, full refresh needed
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: absent
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: source OK; CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL, full refresh needed; destination has no cc; post insert not landed'
+- id: add-identity-column
+  ddl: 'not run (skipped, reason: table k_ident already has an identity column, so a second IDENTITY cannot be added)'
+  column_before: absent
+  column_after: INT IDENTITY
+  source_accepted: null
+  events: []
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: null
+  notes: 'recorded: skipped; planned, not run: not run (skipped, reason: table k_ident already has an identity column, so a second IDENTITY cannot be added)'
+- id: drop-table
+  ddl: DROP TABLE dbo.k_droptab
+  column_before: table dropped
+  column_after: table dropped
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_MISSING_TABLE_IN_SOURCE
+    level: error
+    message: INGESTION_GATEWAY_MISSING_TABLE_IN_SOURCE, full refresh needed
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: null
+  value_check: null
+  basis: tested
+  notes: 'recorded: source OK; INGESTION_GATEWAY_MISSING_TABLE_IN_SOURCE, full refresh needed; destination table kept with its 2 rows'
+- id: truncate
+  ddl: TRUNCATE TABLE dbo.k_trunc, then insert (10,'x'),(11,'y')
+  column_before: rows removed
+  column_after: rows removed
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_UNTRACEABLE_TABLE_MODIFICATION
+    level: error
+    message: INGESTION_GATEWAY_UNTRACEABLE_TABLE_MODIFICATION ("Table logs cleaned up ... full refresh required")
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: source OK (TRUNCATE allowed on CT table); INGESTION_GATEWAY_UNTRACEABLE_TABLE_MODIFICATION ("Table logs cleaned up ... full refresh required"); post insert not landed; recorded as ''truncate-table'''
+- id: datetime-precision-up
+  ddl: ALTER COLUMN d DATETIME2(7)
+  column_before: DATETIME
+  column_after: DATETIME2(7)
+  source_accepted: true
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: timestamp
+  post_change_row_landed: true
+  value_check: source .1234567 landed as .123 (milliseconds)
+  basis: tested
+  notes: 'recorded: source OK; no pipeline error; destination timestamp (type unchanged); post insert landed, fraction shown as .123 (milliseconds, source had .1234567); recorded as ''datetime-to-datetime2-7'''
+- id: varchar-to-nvarchar
+  ddl: ALTER COLUMN s NVARCHAR(20) (was VARCHAR(20))
+  column_before: VARCHAR(20)
+  column_after: NVARCHAR(20)
+  source_accepted: true
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: string
+  post_change_row_landed: true
+  value_check: café landed
+  basis: tested
+  notes: 'recorded: source OK; no pipeline error; destination string; post insert landed (value café)'
+- id: int-to-decimal-18-2
+  ddl: ALTER COLUMN n DECIMAL(18,2)
+  column_before: INT
+  column_after: DECIMAL(18,2)
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+    level: error
+    message: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE, full refresh needed
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: int
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: source OK; CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE, full refresh needed; destination stays int; post insert not landed'

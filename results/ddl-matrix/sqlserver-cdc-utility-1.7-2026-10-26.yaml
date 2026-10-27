@@ -1,0 +1,307 @@
+environment:
+  product: Azure SQL Database
+  edition_tier: serverless GP_S_Gen5_1
+  version: Microsoft SQL Azure (RTM) - 12.0.2000.8 Oct 9 2026
+  pipeline_mode: integrated
+  compute: serverless
+  runtime:
+    dbr_version: '18.3'
+    channel: CURRENT
+    image_key: dlt:18.3.8-delta-pipelines-aarch64-photon-dlt-release-dp-20261015-rc0-commit-48da011-image-5bafb35
+    dp_build: dp-20261015-rc0
+    cloud_region: AWS us-west-2
+    basis: read from the SQL Server pipelines; the other runs used the same workspace the same day
+  workspace:
+    cloud: AWS
+    region: us-west-2
+  date: '2026-10-26'
+  engine: sqlserver
+  mechanism: cdc
+  setup: utility-1.7
+  source_setup: utility script 1.7 (sha256 prefix 8636499c79e0e143), installed as the admin login on the database
+  method: batch
+  caveats:
+  - The final update FAILED after a long CDC extraction phase. Each row the run notes list as not landed is on a table that stopped at its DDL; the rows of the other tables were not processed by that update.
+cases:
+- id: add-nullable
+  ddl: ALTER TABLE ADD c INT NULL
+  column_before: absent
+  column_after: INT NULL
+  source_accepted: true
+  events:
+  - class: FLOW_SCHEMA_CHANGED
+    level: warning
+    message: restart (FLOW_SCHEMA_CHANGED)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: int
+  post_change_row_landed: true
+  value_check: post insert landed
+  basis: tested
+  notes: 'recorded: source OK; restart (FLOW_SCHEMA_CHANGED); destination c int; post insert landed (1 row id 3); recorded as ''add-nullable-keyed'''
+- id: add-nullable-keyless
+  ddl: ALTER TABLE ADD c INT NULL (table without PK)
+  column_before: absent
+  column_after: INT NULL
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.PRIMARY_KEY_CHANGE
+    level: error
+    message: CDC_INCOMPATIBLE_SCHEMA_CHANGES.PRIMARY_KEY_CHANGE, full refresh needed
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: source OK; CDC_INCOMPATIBLE_SCHEMA_CHANGES.PRIMARY_KEY_CHANGE, full refresh needed; destination no c; post insert not landed'
+- id: add-nullable-with-default
+  ddl: ALTER TABLE ADD c INT NULL CONSTRAINT df DEFAULT 5
+  column_before: absent
+  column_after: INT NULL DEFAULT 5
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL
+    level: error
+    message: CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL, full refresh needed
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: source OK; CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL, full refresh needed; destination no c; post insert not landed; recorded as ''add-nullable-default'''
+- id: add-not-null-with-default
+  ddl: ALTER TABLE ADD c INT NOT NULL CONSTRAINT df DEFAULT 5
+  column_before: absent
+  column_after: INT NOT NULL DEFAULT 5
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL
+    level: error
+    message: CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL, full refresh needed
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: source OK; CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL, full refresh needed; destination no c; post insert not landed; recorded as ''add-not-null-default'''
+- id: drop-column
+  ddl: ALTER TABLE DROP COLUMN v
+  column_before: NVARCHAR(50)
+  column_after: absent
+  source_accepted: true
+  events:
+  - class: FLOW_SCHEMA_CHANGED
+    level: warning
+    message: restart (FLOW_SCHEMA_CHANGED)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: string
+  post_change_row_landed: true
+  value_check: landed
+  basis: tested
+  notes: 'recorded: source OK; restart (FLOW_SCHEMA_CHANGED); destination keeps v string (not dropped); post insert (id, n) landed (1 row id 3)'
+- id: int-to-bigint
+  ddl: ALTER COLUMN n BIGINT
+  column_before: INT
+  column_after: BIGINT
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: restart (class not recorded in the run notes)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: bigint
+  post_change_row_landed: true
+  value_check: post insert landed
+  basis: tested
+  notes: 'recorded: source OK; restart; destination bigint; post insert landed (1 row, 3000000000)'
+- id: decimal-10-2-to-18-4
+  ddl: ALTER COLUMN n DECIMAL(18,4) (was DECIMAL(10,2))
+  column_before: DECIMAL(10,2)
+  column_after: DECIMAL(18,4)
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: restart (class not recorded in the run notes)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: decimal(18,4)
+  post_change_row_landed: true
+  value_check: post insert landed
+  basis: tested
+  notes: 'recorded: source OK; restart; destination decimal(18,4); post insert landed (1 row, 3.1234); recorded as ''decimal-widen'''
+- id: string-length-narrow
+  ddl: ALTER COLUMN v NVARCHAR(20) (was NVARCHAR(50))
+  column_before: NVARCHAR(50)
+  column_after: NVARCHAR(20)
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: restart (class not recorded in the run notes)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: string
+  post_change_row_landed: true
+  value_check: post insert landed
+  basis: tested
+  notes: 'recorded: source OK; restart; destination string (no length); post insert landed (1 row); recorded as ''nvarchar-length-narrow'''
+- id: bigint-to-int
+  ddl: ALTER COLUMN n INT (was BIGINT)
+  column_before: BIGINT
+  column_after: INT
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+    level: error
+    message: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE, full refresh needed
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: bigint
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: source OK; CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE, full refresh needed; destination stays bigint; post insert not landed'
+- id: int-to-string
+  ddl: ALTER COLUMN n NVARCHAR(20) (was INT)
+  column_before: INT
+  column_after: NVARCHAR(20)
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+    level: error
+    message: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE, full refresh needed
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: int
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: source OK; CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE, full refresh needed; destination stays int; post insert not landed; recorded as ''int-to-nvarchar'''
+- id: rename-column
+  ddl: EXEC sp_rename 'dbo.c_rencol.n', 'n2', 'COLUMN'
+  column_before: INT (n)
+  column_after: INT (n2)
+  source_accepted: Cannot alter column 'n' because it is 'REPLICATED'.
+  events: []
+  outcome: not-applicable
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: null
+  value_check: null
+  basis: tested
+  notes: 'recorded: source REFUSED: "Cannot alter column ''n'' because it is ''REPLICATED''." (captured column); no pipeline change; post insert with old shape landed on source, destination not verified
+    (final update failed)'
+- id: rename-table
+  ddl: EXEC sp_rename 'dbo.c_rentab', 'c_rentab_new'
+  column_before: table name only
+  column_after: table name only
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_MISSING_TABLE_IN_SOURCE
+    level: error
+    message: INGESTION_GATEWAY_MISSING_TABLE_IN_SOURCE (old name), full refresh needed
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: source OK; INGESTION_GATEWAY_MISSING_TABLE_IN_SOURCE (old name), full refresh needed; destination c_rentab unchanged; post insert not landed'
+- id: drop-primary-key
+  ddl: ALTER TABLE DROP CONSTRAINT pk_c_droppk
+  column_before: no change (PRIMARY KEY dropped)
+  column_after: no change (PRIMARY KEY dropped)
+  source_accepted: The unique index 'pk_c_droppk' ... is used by Change Data Capture
+  events: []
+  outcome: not-applicable
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: null
+  value_check: post insert landed
+  basis: tested
+  notes: 'recorded: source REFUSED: "The unique index ''pk_c_droppk'' ... is used by Change Data Capture"; no pipeline change; post insert landed (1 row id 3)'
+- id: add-unique
+  ddl: ALTER TABLE ADD CONSTRAINT uq_c_adduq UNIQUE (v)
+  column_before: no change (UNIQUE constraint)
+  column_after: no change (UNIQUE constraint)
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL
+    level: error
+    message: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL ("ADD unique key requires a full refresh")
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: source OK; INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL ("ADD unique key requires a full refresh"); destination unchanged; post insert not landed'
+- id: null-to-not-null
+  ddl: ALTER COLUMN n INT NOT NULL
+  column_before: INT NULL
+  column_after: INT NOT NULL
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.COLUMN_NULLABLE_TO_NON_NULLABLE
+    level: error
+    message: CDC_INCOMPATIBLE_SCHEMA_CHANGES.COLUMN_NULLABLE_TO_NON_NULLABLE, full refresh needed
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: source OK; CDC_INCOMPATIBLE_SCHEMA_CHANGES.COLUMN_NULLABLE_TO_NON_NULLABLE, full refresh needed; destination stays nullable; post insert not landed; recorded as ''not-null-from-null'''
+- id: drop-table
+  ddl: DROP TABLE dbo.c_droptab
+  column_before: table dropped
+  column_after: table dropped
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_MISSING_TABLE_IN_SOURCE
+    level: error
+    message: INGESTION_GATEWAY_MISSING_TABLE_IN_SOURCE, full refresh needed
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: null
+  value_check: null
+  basis: tested
+  notes: 'recorded: source OK; INGESTION_GATEWAY_MISSING_TABLE_IN_SOURCE, full refresh needed; destination table kept with rows'
+- id: truncate
+  ddl: TRUNCATE TABLE dbo.c_trunc
+  column_before: rows removed
+  column_after: rows removed
+  source_accepted: Cannot truncate table 'dbo.c_trunc' because it is published for replication or enabled for Change Data Capture
+  events: []
+  outcome: not-applicable
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: null
+  value_check: 2 rows from a plain insert, not a post-truncate row (the TRUNCATE was refused)
+  basis: tested
+  notes: 'recorded: source REFUSED: "Cannot truncate table ''dbo.c_trunc'' because it is published for replication or enabled for Change Data Capture" (Msg 4711 class per brief; server text shown here);
+    insert of 2 rows ran as plain insert, landed 2 rows (not a post-truncate test); recorded as ''truncate-table'''

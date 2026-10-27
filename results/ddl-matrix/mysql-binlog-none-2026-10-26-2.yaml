@@ -1,0 +1,425 @@
+environment:
+  engine: mysql
+  product: Azure Database for MySQL Flexible Server
+  edition_tier: null
+  version: 8.0.46-azure
+  mechanism: binlog
+  setup: none
+  source_setup: 'none: MySQL has no Lakeflow setup or DDL support objects; the binlog is the DDL source; the connector''s user authenticates with caching_sha2_password'
+  pipeline_mode: integrated
+  compute: serverless
+  runtime:
+    dbr_version: '18.3'
+    channel: CURRENT
+    image_key: dlt:18.3.8-delta-pipelines-aarch64-photon-dlt-release-dp-20261015-rc0-commit-48da011-image-5bafb35
+    dp_build: dp-20261015-rc0
+    cloud_region: AWS us-west-2
+    basis: read from the SQL Server pipelines; the other runs used the same workspace the same day
+  workspace:
+    cloud: AWS
+    region: us-west-2
+  date: '2026-10-26'
+  method: batch
+  caveats:
+  - 'One DDL batch, one table per case; stopped tables were reset with a table-only full refresh. Rows that landed only after a reset came from the snapshot, not CDC: they are marked post_change_row_landed
+    false with the value check.'
+  - The connection needs trustServerCertificate=true; without it the gateway fails TLS validation (TLS_VALIDATION_FAILURE).
+  - The connector's user needs caching_sha2_password; with mysql_native_password the pipeline fails with CDC_NOT_ENABLED.
+  - 'Silent type changes (no error): DATETIME to DATETIME(6) and DATE to DATETIME land as strings. No row is lost.'
+  - A dropped column stays in the destination.
+  - 'RENAME TABLE and DROP TABLE ran in their own pipelines. Server options: sql_generate_invisible_primary_key OFF, require_secure_transport ON, binlog_row_image FULL.'
+  - The runtime is not recorded (the runtime event has no DBR fields). Standard CDC (gateway) was not run.
+cases:
+- id: add-nullable
+  ddl: ALTER TABLE c01_add_null ADD COLUMN c INT NULL; INSERT (3,30,'c',7)
+  column_before: no column c
+  column_after: c INT NULL
+  source_accepted: true
+  events:
+  - class: null
+    level: error
+    message: no schema-change warning or error on this table's flows
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: c int
+  post_change_row_landed: true
+  value_check: row 3 c=7; rows 1-2 c=NULL
+  basis: tested
+  notes: CDC row; run case c01_add_null
+- id: add-nullable-with-default
+  ddl: ALTER TABLE c02_add_default ADD COLUMN c INT DEFAULT 5; INSERT (3,30,'c') without c
+  column_before: no column c
+  column_after: c INT DEFAULT 5
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: 'flow terminated: schema change, new update will start'
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL
+    level: error
+    message: applier flow failed)
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: c int
+  post_change_row_landed: false
+  value_check: 'after table reset: all 3 rows c=5 (default applied to old rows too)'
+  basis: tested
+  notes: 'rows landed only after the reset: snapshot, not CDC; run case c02_add_default'
+- id: add-not-null-with-default
+  ddl: ALTER TABLE c03_add_nn_default ADD COLUMN c INT NOT NULL DEFAULT 5; INSERT (3,30,'c') without c
+  column_before: no column c
+  column_after: c INT NOT NULL DEFAULT 5
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: 'flow terminated: schema change'
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL
+    level: error
+    message: ERROR CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: c int
+  post_change_row_landed: false
+  value_check: 'after reset: all 3 rows c=5'
+  basis: tested
+  notes: snapshot after reset; run case c03_add_nn_default
+- id: add-computed-column
+  ddl: ALTER TABLE c04_add_generated ADD COLUMN g INT GENERATED ALWAYS AS (n*2) STORED; INSERT (3,30,'c')
+  column_before: no column g
+  column_after: g INT GENERATED ALWAYS AS (n*2) STORED
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: 'flow terminated: schema change'
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL
+    level: error
+    message: ERROR CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: g int
+  post_change_row_landed: false
+  value_check: 'after reset: g=20,40,60 (= 2n)'
+  basis: tested
+  notes: snapshot after reset; generated value computed correctly; run case c04_add_generated
+- id: add-nullable-keyless
+  ddl: ALTER TABLE c05_add_keyless ADD COLUMN c INT (table has no primary key); INSERT (3,30,'c',7)
+  column_before: no column c, no key
+  column_after: c INT
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: 'flow terminated: schema change'
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.PRIMARY_KEY_CHANGE
+    level: error
+    message: ERROR CDC_INCOMPATIBLE_SCHEMA_CHANGES.PRIMARY_KEY_CHANGE
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: c int
+  post_change_row_landed: false
+  value_check: 'after reset: rows 1-2 c=NULL, row 3 c=7'
+  basis: tested
+  notes: snapshot after reset; keyless table handled through a PRIMARY_KEY_CHANGE check; run case c05_add_keyless
+- id: drop-column
+  ddl: ALTER TABLE c06_drop_col DROP COLUMN v; INSERT (3,30)
+  column_before: v VARCHAR(50)
+  column_after: v dropped at source
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: 'flow terminated: schema change, new update will start'
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: v string (kept in destination, not dropped)
+  post_change_row_landed: true
+  value_check: row 3 landed with v=NULL; rows 1-2 keep v='a','b'
+  basis: tested
+  notes: destination keeps the dropped column; no data loss; run case c06_drop_col
+- id: int-to-bigint
+  ddl: ALTER TABLE c07_int_bigint MODIFY n BIGINT; INSERT (3,3000000000,'c')
+  column_before: n INT
+  column_after: n BIGINT
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: 'flow terminated: schema change, new update will start'
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: n bigint
+  post_change_row_landed: true
+  value_check: row 3 n=3000000000 exact
+  basis: tested
+  notes: run case c07_int_bigint
+- id: decimal-10-2-to-18-4
+  ddl: ALTER TABLE c08_dec MODIFY n DECIMAL(18,4); INSERT (3,3.1234,'c')
+  column_before: n DECIMAL(10,2)
+  column_after: n DECIMAL(18,4)
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: 'flow terminated: schema change, new update will start'
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: n decimal(18,4)
+  post_change_row_landed: true
+  value_check: row 3 n=3.1234 (no rounding); rows 1-2 10.50, 20.25 -> 10.5000, 20.2500
+  basis: tested
+  notes: no silent rounding here (PostgreSQL rounded to 3.12); run case c08_dec
+- id: string-length-narrow
+  ddl: ALTER TABLE c09_varchar MODIFY v VARCHAR(20); INSERT (3,30,'abcdefghijklmnopqrst')
+  column_before: v VARCHAR(50)
+  column_after: v VARCHAR(20)
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: 'flow terminated: schema change, new update will start'
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: v string (no length)
+  post_change_row_landed: true
+  value_check: row 3 v=20 chars intact
+  basis: tested
+  notes: a value longer than 20 would be the test for truncation; not run; run case c09_varchar
+- id: bigint-to-int
+  ddl: ALTER TABLE c10_bigint_int MODIFY n INT; INSERT (3,30,'c')
+  column_before: n BIGINT
+  column_after: n INT
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: 'flow terminated: schema change'
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+    level: error
+    message: ERROR CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: n int
+  post_change_row_landed: false
+  value_check: 'after reset: rows 10,20,30'
+  basis: tested
+  notes: snapshot after reset; run case c10_bigint_int
+- id: int-to-string
+  ddl: ALTER TABLE c11_int_varchar MODIFY n VARCHAR(20); INSERT (3,'abc','c')
+  column_before: n INT
+  column_after: n VARCHAR(20)
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: 'flow terminated: schema change'
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+    level: error
+    message: ERROR CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: n string
+  post_change_row_landed: false
+  value_check: 'after reset: 10,20 became ''10'',''20''; row 3 ''abc'''
+  basis: tested
+  notes: snapshot after reset; run case c11_int_varchar
+- id: rename-column
+  ddl: ALTER TABLE c12_rename_col RENAME COLUMN n TO n2; INSERT (3,30,'c') as (id,n2,v)
+  column_before: n INT
+  column_after: n2 INT
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: 'flow terminated: schema change'
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.COLUMNS_ADDED_AND_DELETED
+    level: error
+    message: ERROR CDC_INCOMPATIBLE_SCHEMA_CHANGES.COLUMNS_ADDED_AND_DELETED
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: n2 int (n removed)
+  post_change_row_landed: false
+  value_check: 'after reset: n2 = 10,20,30'
+  basis: tested
+  notes: snapshot after reset; run case c12_rename_col
+- id: drop-primary-key
+  ddl: ALTER TABLE c13_drop_pk DROP PRIMARY KEY; INSERT (3,30,'c')
+  column_before: PRIMARY KEY (id)
+  column_after: no primary key
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.DROP_PRIMARY_KEY_CONSTRAINT
+    level: error
+    message: 'ERROR (extractor) flow FAILED: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.DROP_PRIMARY_KEY_CONSTRAINT'
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: unchanged until reset
+  post_change_row_landed: false
+  value_check: 'after reset: 3 rows incl. (3,30,''c'')'
+  basis: tested
+  notes: snapshot after reset; the extractor stops the table, the other tables continue; run case c13_drop_pk
+- id: add-unique
+  ddl: ALTER TABLE c14_add_unique ADD CONSTRAINT c14_n_uq UNIQUE (n); INSERT (3,30,'c')
+  column_before: no unique on n
+  column_after: UNIQUE (n)
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.ADD_CONSTRAINT
+    level: error
+    message: 'ERROR (extractor) flow FAILED: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.ADD_CONSTRAINT'
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: unchanged until reset; no constraint seen in destination
+  post_change_row_landed: false
+  value_check: 'after reset: 3 rows incl. (3,30,''c'')'
+  basis: tested
+  notes: snapshot after reset; run case c14_add_unique
+- id: null-to-not-null
+  ddl: ALTER TABLE c15_null_to_nn MODIFY n INT NOT NULL; INSERT (3,30,'c')
+  column_before: n INT NULL
+  column_after: n INT NOT NULL
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: 'flow terminated: schema change'
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.COLUMN_NULLABLE_TO_NON_NULLABLE
+    level: error
+    message: ERROR CDC_INCOMPATIBLE_SCHEMA_CHANGES.COLUMN_NULLABLE_TO_NON_NULLABLE
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: n int
+  post_change_row_landed: false
+  value_check: 'after reset: 3 rows incl. (3,30,''c'')'
+  basis: tested
+  notes: snapshot after reset; run case c15_null_to_nn
+- id: not-null-to-null
+  ddl: ALTER TABLE c16_nn_to_null MODIFY n INT NULL; INSERT (3,NULL,'c')
+  column_before: n INT NOT NULL
+  column_after: n INT NULL
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: 'flow terminated: schema change, new update will start'
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: n int
+  post_change_row_landed: true
+  value_check: row 3 n=NULL
+  basis: tested
+  notes: run case c16_nn_to_null
+- id: datetime-precision-up
+  ddl: ALTER TABLE c17_datetime MODIFY n DATETIME(6); INSERT (3,'2026-10-26 12:00:00.123456','c')
+  column_before: n DATETIME (destination type at creation not read back)
+  column_after: n DATETIME(6)
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: 'flow terminated: schema change, new update will start'
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: n string (silent type change, see notes)
+  post_change_row_landed: true
+  value_check: 'silent type change: DATETIME(6) lands as a string, no error and no row loss'
+  basis: tested
+  notes: the destination type became string, not timestamp; no error and no precision loss; check on a fresh table whether DATETIME was already string at creation; run case c17_datetime
+- id: date-to-timestamp
+  ddl: ALTER TABLE c18_date MODIFY n DATETIME; INSERT (3,'2026-10-26 12:34:56','c')
+  column_before: n DATE
+  column_after: n DATETIME
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: 'flow terminated: schema change'
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+    level: error
+    message: ERROR CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: n string
+  post_change_row_landed: false
+  value_check: 'silent type change: DATE to DATETIME lands as a string with a 00:00:00 time, no error; rows after the reset are snapshot'
+  basis: tested
+  notes: snapshot after reset; date values carry a 00:00:00 time as strings; run case c18_date_to_datetime
+- id: truncate
+  ddl: TRUNCATE TABLE c19_truncate; INSERT (3,30,'c')
+  column_before: 2 rows
+  column_after: 0 rows, then 1 row
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.TRUNCATE_TABLE
+    level: error
+    message: 'ERROR (extractor) flow FAILED: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.TRUNCATE_TABLE'
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: n int (unchanged until reset)
+  post_change_row_landed: false
+  value_check: 'after reset: only (3,30,''c''); the two old rows are gone'
+  basis: tested
+  notes: snapshot after reset; run case c19_truncate
+- id: rename-table
+  ddl: RENAME TABLE c20_rename_tbl TO c20_rename_new; INSERT into c20_rename_new (3,30,'c')
+  column_before: table c20_rename_tbl
+  column_after: table c20_rename_new
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_MISSING_TABLE_IN_SOURCE
+    level: error
+    message: 'ERROR flow FAILED: INGESTION_GATEWAY_MISSING_TABLE_IN_SOURCE'
+  - class: INTEGRATED_CDC_ALL_SOURCE_TABLES_FATALLY_FAILED
+    level: error
+    message: ERROR INTEGRATED_CDC_ALL_SOURCE_TABLES_FATALLY_FAILED
+  - class: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+    level: error
+    message: ERROR PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: c20_rename_tbl unchanged; c20_rename_new not created
+  post_change_row_landed: false
+  value_check: destination still 2 rows
+  basis: tested
+  notes: own pipeline <pipeline>; run case c20_rename_tbl
+- id: drop-table
+  ddl: DROP TABLE c21_drop_tbl; INSERT into c21_drop_tbl
+  column_before: table c21_drop_tbl
+  column_after: dropped
+  source_accepted: 'insert refused: ERROR 1146 (42S02): Table ''<name>.c21_drop_tbl'' doesn''t exist'
+  events:
+  - class: null
+    level: error
+    message: 'flow FAILED: Table does not exist in the source database'
+  - class: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+    level: error
+    message: ERROR PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: c21_drop_tbl unchanged (2 rows)
+  post_change_row_landed: null
+  value_check: destination still 2 rows
+  basis: tested
+  notes: own pipeline <pipeline>; run case c21_drop_tbl

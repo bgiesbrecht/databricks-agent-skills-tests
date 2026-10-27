@@ -16,6 +16,8 @@ On the VM as root (`slot.sh [--owner <owner>] <command>`), or from a laptop thro
 | `rm <name>` | stops it and deletes its data |
 | `ls [--all]` | your databases (`--all`: everyone's): engine, state, port, created, from |
 | `usage [--days n] [--all]` | hours running per owner and database in the last n days (default 7) |
+| `sql <name> [database] [--wide]` | runs SQL from stdin as the engine's admin in your running database (CDC, change tracking, test tables): tab-separated rows, no headers, the SQL's exit status; `--wide`: SQL Server long values whole. The harness's `SRC_SQL` is `lfc-schema-change-test/scripts/slot-sql.sh` |
+| `info <name>` | the host OS, Podman, the image and digest, and the VM (`slot-sql.sh --env`, the harness's `SRC_ENV`) |
 
 Engines: `postgres` (16), `mysql` (8.4), `sqlserver` (2022), `oracle` (`gvenzl/oracle-free:23-slim`: CDB `FREE`, PDB `FREEPDB1`), `mariadb` (11.4), `db2` (Community 11.5.9: database `LFCDB`), `informix` (Developer 14.10: `lfcdb`), `cockroachdb` (v25.4, insecure: `lfc`), `yugabytedb` (2026.1, insecure: `lfc`). Masters exist for the first three; a master works with its own engine only.
 
