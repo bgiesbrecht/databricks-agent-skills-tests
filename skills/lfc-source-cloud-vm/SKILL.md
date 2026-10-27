@@ -169,7 +169,7 @@ For complex engines or multiple database versions:
 
 1. **Format the data disk as XFS first**, mounted at `/var/lib/containers`: run `scripts/disk-setup.sh` as `references/disk-setup.md` shows right after the VM is created. It finds the disk by its stable path (not `/dev/sdb`, which on Azure is usually the temporary disk), never wipes a disk that already has a filesystem, and checks for XFS with `ftype=1`. Don't install Podman until it prints `OK`.
 2. Install Podman and run the containers with `sudo` (rootful), so images and volumes are stored on the XFS disk: see `references/install-podman.md` for container examples (Oracle, DB2, Informix, MySQL, PostgreSQL, SQL Server).
-3. **Large test databases:** don't populate one per person. Pull a shared master from object storage once, then clone it per test with XFS reflinks (instant), and throw the clone away or save it back: see `references/master-snapshots.md`. To leave the master in object storage and branch it in place (no full pull, a small local cache), use JuiceFS: `references/juicefs-branches.md`. Per-engine owners, clean stops and measured times: `references/engine-masters.md`. For several people on one VM, each with their own database from a master (one running at a time, parked ones in object storage): `scripts/slot.sh`, `references/shared-vm-slots.md`.
+3. **Large test databases:** don't populate one per person. Pull a shared master from object storage once, then clone it per test with XFS reflinks (instant), and throw the clone away or save it back: see `references/master-snapshots.md`. To leave the master in object storage and branch it in place (no full pull, a small local cache), use JuiceFS: `references/juicefs-branches.md`. Per-engine owners, clean stops and measured times: `references/engine-masters.md`. For several people on one VM, each with their own database from a master (one running at a time, parked ones in object storage): `scripts/slot.sh`, `references/shared-vm-slots.md` (engines: postgres, mysql, sqlserver, oracle, mariadb, db2, informix, cockroachdb, yugabytedb; masters for the first three).
 
 ### More SQL Server containers for parallel tests
 
@@ -213,7 +213,7 @@ Use **lfc-source-firewall** ([GCP steps](../lfc-source-firewall/references/gcp.m
 umask 077
 cat > conn.json <<EOF
 {"name": "<firstname><lastname>-mysql-vm", "connection_type": "MYSQL",
- "options": {"host": "<VM_PUBLIC_IP>", "port": "<published-port>", "user": "lfc_user", "password": "$(cat lfc_user.pw)"}}
+ "options": {"host": "<VM_PUBLIC_IP>", "port": "<published-port>", "user": "lfc_user", "password": "$(cat lfc_user.pw)", "trustServerCertificate": "true"}}
 EOF
 ```
 

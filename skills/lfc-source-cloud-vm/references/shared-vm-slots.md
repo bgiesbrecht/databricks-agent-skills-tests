@@ -17,7 +17,7 @@ On the VM as root (`slot.sh [--owner <owner>] <command>`), or from a laptop thro
 | `ls [--all]` | your databases (`--all`: everyone's): engine, state, port, created, from |
 | `usage [--days n] [--all]` | hours running per owner and database in the last n days (default 7) |
 
-Engines: `postgres` (16), `mysql` (8.4), `sqlserver` (2022). A master works with its own engine only.
+Engines: `postgres` (16), `mysql` (8.4), `sqlserver` (2022), `oracle` (`gvenzl/oracle-free:23-slim`: CDB `FREE`, PDB `FREEPDB1`), `mariadb` (11.4), `db2` (Community 11.5.9: database `LFCDB`), `informix` (Developer 14.10: `lfcdb`), `cockroachdb` (v25.4, insecure: `lfc`), `yugabytedb` (2026.1, insecure: `lfc`). Masters exist for the first three; a master works with its own engine only.
 
 `up` prints one JSON line:
 
@@ -25,7 +25,11 @@ Engines: `postgres` (16), `mysql` (8.4), `sqlserver` (2022). A master works with
 {"name":"pg1","engine":"postgres","host":"203.0.113.10","port":30000,"user":"lfc_user","password":"...","container":"lfc-slot-alice-pg1","state":"running"}
 ```
 
-`lfc_user` is created on every start, with the rights Lakeflow Connect reads with: Postgres `LOGIN REPLICATION` and `pg_read_all_data`; MySQL `SELECT, RELOAD, SHOW DATABASES, REPLICATION SLAVE, REPLICATION CLIENT`; SQL Server a login and, in every user database, a user in `db_datareader` with `VIEW DATABASE STATE` and `VIEW DEFINITION` (a database made later gets it at the next start; CDC is enabled per test). The engines start with CDC settings: Postgres `wal_level=logical`; MySQL `binlog_format=ROW`, `binlog_row_image=FULL`; SQL Server Agent on.
+`service` is added for Oracle only: `FREEPDB1`, the PDB `lfc_user` lives in (the UC connection's `service_name`). `database` is added where a test uses one: `LFCDB`, `lfcdb`, `lfc`, `lfc`.
+
+`lfc_user` is created on every start, with the rights Lakeflow Connect reads with: Postgres `LOGIN REPLICATION` and `pg_read_all_data`; MySQL `SELECT, RELOAD, SHOW DATABASES, REPLICATION SLAVE, REPLICATION CLIENT`; SQL Server a login and, in every user database, a user in `db_datareader` with `VIEW DATABASE STATE` and `VIEW DEFINITION` (a database made later gets it at the next start; CDC is enabled per test). Oracle: a PDB-local user in `FREEPDB1` with `CREATE SESSION`, `SELECT ANY TABLE` and `SELECT_CATALOG_ROLE`. MariaDB: the MySQL rights, with MariaDB's default plugin (`mysql_native_password`: it has no `caching_sha2_password`). Db2: an OS user in the container (Db2 checks the OS password, so the printed password is that user's) with `DBADM` on `LFCDB`, the grant in [engine-db2.md](../../lfc-source-setup/references/engine-db2.md). Informix: an OS user too (the server uses PAM) with `CONNECT`, `RESOURCE` and `DBA` on `lfcdb`. CockroachDB: `ALL` on `lfc`, and `SELECT` on its tables, existing and later (default privileges); insecure mode neither sets nor checks a password, so the printed one isn't used. YugabyteDB: Postgres's rights (`LOGIN REPLICATION`, `pg_read_all_data`). The engines start with CDC settings: Postgres `wal_level=logical`; MySQL `binlog_format=ROW`, `binlog_row_image=FULL`; MariaDB its binary log on (`ROW`, `FULL`, a week kept; its image has none by default); SQL Server Agent on.
+
+Db2, Informix, CockroachDB and YugabyteDB get no CDC settings here: each test sets its own (Db2's SQL Replication is in engine-db2.md, not done here). **Oracle's CDC is not set up here.** `lfc_user` reads for query-based ingestion. LogMiner CDC needs what [engine-oracle.md](../../lfc-source-setup/references/engine-oracle.md) lists: ARCHIVELOG and a recovery area (50G), supplemental logging, and the `C##` user from the Databricks setup package, run as SYSDBA in the container.
 
 ## Limits
 
@@ -33,7 +37,7 @@ Engines: `postgres` (16), `mysql` (8.4), `sqlserver` (2022). A master works with
 |---|---|---|
 | `MAX_PER_OWNER` | 1 (0 = no limit) | `up` parks your other running database first |
 | `MAX_RUNNING` | vCPUs / 2 | `up` stops with `the VM is full` and lists what's running |
-| `PORT_MIN`-`PORT_MAX` | 30000-30063 | `no free port`; each database keeps its port until `rm` |
+| `PORT_MIN`-`PORT_MAX` | 30000-30063 | `no free port`; each database keeps its port until `rm`. A port something else listens on (a container started outside slot.sh) is skipped |
 | `HOST` | the cloud metadata's public IP, else the first local IP | set it on Azure: the metadata has no public IP for a Standard SKU address |
 | `ROOT`, `STATE`, `SECRETS` | `/mnt/jfs`, `/var/lib/lfc/slots`, `/root/lfc-src` | `STATE` under `ROOT` needs `ROOT` mounted, else the command stops |
 | `LOCK` | `$STATE/.lock` | the lock for one command at a time; a personal VM's is on the VM's disk |
@@ -98,6 +102,8 @@ WantedBy=multi-user.target
 
 `systemctl enable --now podman-restart lfc-jfs` (the Redis container runs with `--restart=always`).
 
+YugabyteDB binds its YSQL port to its advertise address only, so `up` gives its container a static address on the Podman network, `10.88.200.<port - 30000 + 10>` (10.88.200.10 for port 30000): keep that range free of other containers on the VM. Db2's first start takes about two minutes; `up` waits for its setup to finish (15 minutes at most).
+
 ## Connect from a workspace
 
 A Unity Catalog connection per database, with the password piped from `up`'s JSON so it isn't on a command line or in a file:
@@ -109,7 +115,7 @@ databricks connections create -p <profile> --json @<(jq --arg n pg1_conn '{name:
 unset J
 ```
 
-Connection types: `POSTGRESQL`, `MYSQL`, `SQLSERVER`. Check it from a SQL warehouse:
+Connection types: `POSTGRESQL`, `MYSQL`, `SQLSERVER`, and `ORACLE` for Oracle (its `service` field is the `service_name`; that type doesn't take `trustServerCertificate`). MariaDB uses `MYSQL`. Db2 and Informix have no Lakeflow Connect connection type. CockroachDB and YugabyteDB speak the PostgreSQL protocol: a `POSTGRESQL` connection to them worked for a `remote_query` in the tests, and is made only on request. Check it from a SQL warehouse:
 
 ```sql
 SELECT * FROM remote_query('pg1_conn', database => 'postgres', query => 'select count(*) from tpch.lineitem')
@@ -122,5 +128,9 @@ SELECT * FROM remote_query('pg1_conn', database => 'postgres', query => 'select 
 | `new database: --from <master> or --empty` | the name is new; say what to start from |
 | `<name> is a <engine> database` | the name exists with another engine; pick another name |
 | `<dir> exists without a record` | data left from an interrupted `up`; `rm` it on the VM or pick another name |
-| `<engine> in <container> didn't answer in 3 minutes` | `podman logs <container>`; SQL Server `Permission denied` on `/.system`: the data isn't owned by uid 10001 (clone without `-p`) |
+| `<engine> in <container> didn't answer in 3 minutes` (10 for Oracle) | `podman logs <container>`; SQL Server `Permission denied` on `/.system`: the data isn't owned by uid 10001 (clone without `-p`) |
+| `creating lfc_user in <container> failed; run up again` | the login SQL failed: the container is stopped, so the next `up` starts it and runs the login again |
 | `the VM is full` | park one of yours, wait, or use a VM of your own (`MAX_PER_OWNER=0`) |
+| `<engine> in <container> stopped: podman logs <container>` | the engine's container exited while it started; the log says why |
+| `preparing <engine> in <container> failed; run up again` | an OS user or the Informix database couldn't be made; the container is stopped, and the next `up` tries again |
+| `DBI1264E` in the Db2 log, `already has a sqllib directory` | an earlier first start left its instance in the data folder: `rm` the database and create it again |

@@ -17,7 +17,7 @@ This guide documents the database configuration required for Lakeflow Connect (L
 |--------|-------|---------|
 | Binary logging | Defaults to ON (8.0+); settable at runtime | Defaults to OFF; read-only; must enable at startup via `--log-bin` |
 | GTID variables | `@@gtid_executed` | `@@gtid_binlog_pos` / `@@gtid_slave_pos` |
-| Auth plugin | `mysql_native_password` | `mysql_native_password` or `ed25519` |
+| Auth plugin | `caching_sha2_password` (8.x) or `sha256_password`: the CDC gateway checks the user's plugin and fails with `CDC_NOT_ENABLED` on `mysql_native_password` (tested 2026-10-26, Azure Flexible Server 8.0, where it is the default) | `mysql_native_password` or `ed25519` |
 | Binlog format | Runtime-settable | Runtime-settable |
 
 ## Prerequisites for Query-Based Ingestion
@@ -77,8 +77,8 @@ Server parameters:
 -- Connect as admin (root or equivalent)
 
 -- Create LFC user (idempotent)
-CREATE USER IF NOT EXISTS '<lfc_user>'@'%' IDENTIFIED BY '<password-from-file>';
-ALTER USER '<lfc_user>'@'%' IDENTIFIED BY '<password-from-file>';
+CREATE USER IF NOT EXISTS '<lfc_user>'@'%' IDENTIFIED WITH caching_sha2_password BY '<password-from-file>';
+ALTER USER '<lfc_user>'@'%' IDENTIFIED WITH caching_sha2_password BY '<password-from-file>';
 
 -- Grant privileges on target schema
 GRANT ALTER, CREATE, CREATE ROUTINE, ALTER ROUTINE, DROP, EXECUTE,
@@ -245,7 +245,7 @@ SHOW GLOBAL VARIABLES LIKE 'binlog_row_image';
 -- Rotate LFC user password (via ALTER USER)
 -- Connect as admin
 
-ALTER USER '<lfc_user>'@'%' IDENTIFIED BY '<new-password>';
+ALTER USER '<lfc_user>'@'%' IDENTIFIED WITH caching_sha2_password BY '<new-password>';
 
 -- Verify by connecting as LFC user:
 mysql -h <host> -u <lfc_user> -p<new-password> <database> -e "SELECT 1;"

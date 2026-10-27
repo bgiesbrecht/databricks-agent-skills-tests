@@ -15,6 +15,8 @@ line of its usage. Run a script with no arguments for its full usage instead of 
 - `bin/scripts_index.py` [--check]: write SCRIPTS.md, one line per runnable script (a #! line): its path and the first line of its usage heade...
 - `bin/stop_after.sh` Stop each pipeline's latest update once it has run longer than a limit.
 - `bin/test_scripts.sh` regression tests for the skills' scripts.
+- `bin/test_scripts.sh` regression tests for the skills' scripts.
+- `bin/test_scripts.sh` regression tests for the skills' scripts.
 
 ## account-token-fallback
 
@@ -122,7 +124,7 @@ line of its usage. Run a script with no arguments for its full usage instead of 
 ## lfc-source-sizing
 
 - `skills/lfc-source-sizing/scripts/limits-check.py` Check a limits file against the documentation it cites: each row's quote must appear in its page's text.
-- `skills/lfc-source-sizing/scripts/size.sh` <profile> <connection> <postgres|mysql|sqlserver|oracle> [--database D | --service S] [--out DIR] [--top N] How big i...
+- `skills/lfc-source-sizing/scripts/size.sh` <profile> <connection> <postgres|mysql|mariadb|sqlserver|oracle|cockroachdb|yugabytedb> [--database D | --service S] ...
 
 ## lfc-source-statschema
 

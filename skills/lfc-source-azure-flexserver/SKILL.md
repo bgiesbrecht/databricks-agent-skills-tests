@@ -55,7 +55,20 @@ bash $S/flex.sh pg stop                                     # between test runs;
 - **Firewall rules go on one at a time:** about a minute each on a Flexible Server, so 60 rules take about an hour. Keep the list scoped (`server-fw.py --regions`).
 - **Stopped servers start again by themselves after 7 days.** A stopped server costs storage only.
 - **MySQL:** Azure's default `sql_generate_invisible_primary_key=ON` gives a keyless table a hidden primary key; `flex.sh` turns it off so `dtix` stays keyless.
-- **Postgres:** `lfc-setup.sh` makes the test user the owner of the seed tables, with `REPLICATION`, so the pipeline can create its own publication and slot.
+- **Postgres:** `lfc-setup.sh` makes the test user the owner of the seed tables, with `REPLICATION`. The publication and the slot are yours to create, as the test user, one pair per gateway, and the pipeline names them; without them the gateway reports they don't exist and nothing loads (tested 2026-10-26):
+  ```sql
+  CREATE PUBLICATION <pub> FOR TABLE public.<t1>, public.<t2>;
+  SELECT pg_create_logical_replication_slot('<slot>', 'pgoutput');
+  ```
+  ```yaml
+  source_configurations:
+    - catalog:
+        source_catalog: <database>
+        postgres:
+          slot_config: {slot_name: <slot>, publication_name: <pub>}
+  ```
+  Drop both after the pipeline is deleted (`SELECT pg_drop_replication_slot('<slot>'); DROP PUBLICATION <pub>;`): a slot left behind keeps WAL on the server.
+- **MySQL:** the test user gets `caching_sha2_password` (`lfc-setup.sh` sets it): the CDC gateway refuses `mysql_native_password`, Azure's default, with `CDC_NOT_ENABLED`. The UC connection needs `trustServerCertificate: "true"` (or the server's CA in `userProvidedServerCertificate`): without either a CDC gateway fails with `INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE` (`require_secure_transport=ON`). Query-based ingestion works without it.
 
 ## Server parameters for LFC
 
@@ -115,8 +128,7 @@ cat > /tmp/uc_connection.json <<EOF
     "port": "3306" or "5432",
     "user": "${ADMIN_USER}",
     "password": "${ADMIN_PASSWORD}",
-    "database": "${DB_NAME}",
-    "ssl": "require"
+    "trustServerCertificate": "true"
   }
 }
 EOF

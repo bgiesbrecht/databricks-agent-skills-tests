@@ -7,6 +7,11 @@
 #   bin/run_matrix.sh                 # all batches, in order
 #   bin/run_matrix.sh qbc fcqbc       # only some batches
 #
+# Engines: MySQL, PostgreSQL, SQL Server and Oracle (the -mysql/-pg/-sqlserver/-oracle prompts). No MariaDB batch:
+# the MySQL connector's source-setup page lists MySQL 5.7 and later on RDS, Aurora, Azure, EC2 and Cloud SQL, and no
+# MariaDB (Databricks docs, lakeflow-connect/mysql-source-setup, checked 2026-10-27). Db2, Informix, CockroachDB and
+# YugabyteDB have no Lakeflow Connect connector: the CDC overview (lakeflow-connect/cdc-overview) lists four database
+# connectors. Test those engines with lfc-source-sizing and zerobus-debezium-test instead.
 # Batches run one after another so tests on the same connection never race for the same
 # default pipeline name. Order matters: qbc creates the Lakebase project and connection that
 # fcqbc-lakebase and dml-lakebase use.

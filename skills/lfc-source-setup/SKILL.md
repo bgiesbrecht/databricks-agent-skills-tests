@@ -112,7 +112,7 @@ Server and instance names combine these, for example `<pfx>-<service>-<location>
    umask 077
    cat > conn.json <<EOF
    {"name": "<connection>", "connection_type": "<POSTGRESQL|MYSQL|SQLSERVER|ORACLE>",
-    "options": {"host": "<host>", "port": "<port>", "user": "<lfc_user>", "password": "$(cat lfc_user.pw)"}}
+    "options": {"host": "<host>", "port": "<port>", "user": "<lfc_user>", "password": "$(cat lfc_user.pw)", "trustServerCertificate": "true"}}
    EOF
    databricks connections create --json @conn.json --profile <PROFILE> && rm conn.json
    ```

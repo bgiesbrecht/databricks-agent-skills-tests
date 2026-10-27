@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # sync.sh <targets.tsv>: create or update one UC connection per row, in each row's workspace. Idempotent: rerun after a fix.
 #   targets.tsv (keep it private, umask 077), tab-separated, one row per connection per workspace, '#' comments allowed:
-#     profile  name  connection_type  host  port  user  password_file  [extra options as JSON, e.g. {"trustServerCertificate": "true"}]
+#     profile  name  connection_type  host  port  user  password_file  [extra options as JSON, e.g. {"service_name": "FREE"}]
+#   Every connection gets trustServerCertificate=true (TLS on, the server certificate not verified) unless the extra options
+#   give userProvidedServerCertificate (a CA PEM, verified): a pipeline created after TLS enforcement fails a MySQL
+#   connection with neither (INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE), and with both.
 #   Prints one line per row: created | updated | FAILED <class>: <error>. The password is read from its file into a
 #   private request body that's deleted right away; it never appears on a command line or in the output.
 set -uo pipefail
@@ -17,7 +20,7 @@ class() { case "$1" in
 while IFS= read -r line; do IFS=$'\x1f' read -r profile name type host port user pwfile extra <<< "${line//$'\t'/$'\x1f'}"
   case "$profile" in ''|'#'*) continue ;; esac
   [ -r "$pwfile" ] || { echo "$profile $name: FAILED missing_password_file: $pwfile"; continue; }
-  opts=$(PW="$(cat "$pwfile")" H="$host" PO="$port" U="$user" E="${extra:-{\}}" yq -n -o json -I0 '{"host": strenv(H), "port": strenv(PO), "user": strenv(U), "password": strenv(PW)} * (strenv(E) | from_json)')
+  opts=$(PW="$(cat "$pwfile")" H="$host" PO="$port" U="$user" E="${extra:-{\}}" yq -n -o json -I0 '({"host": strenv(H), "port": strenv(PO), "user": strenv(U), "password": strenv(PW), "trustServerCertificate": "true"} * (strenv(E) | from_json)) | (select(has("userProvidedServerCertificate")) |= del(.trustServerCertificate))')
   if databricks connections get "$name" --profile "$profile" -o json > /dev/null 2>&1; then
     echo "{\"options\": $opts}" > "$T/body.json"; op=updated
     databricks connections update "$name" --json @"$T/body.json" --profile "$profile" -o json > "$T/out" 2>&1

@@ -1,24 +1,28 @@
 #!/usr/bin/env bash
-# size.sh <profile> <connection> <postgres|mysql|sqlserver|oracle> [--database D | --service S] [--out DIR] [--top N]
+# size.sh <profile> <connection> <postgres|mysql|mariadb|sqlserver|oracle|cockroachdb|yugabytedb> [--database D | --service S] [--out DIR] [--top N]
 #   How big is the source behind a UC connection? Runs the engine's catalog query through the connection with
 #   remote_query (read-only, from serverless; no table scans, no count(*)), saves one row per table to DIR/tables.csv,
 #   and prints: the database total (for the infrastructure team), the data Lakeflow Connect moves (table data and
 #   large values, no indexes), rows and average row size, the largest tables, and tables whose row sources disagree.
-#   PostgreSQL and SQL Server need --database; Oracle --service (the PDB). MySQL covers every user database at once.
+#   PostgreSQL, SQL Server, CockroachDB and YugabyteDB need --database; Oracle --service (the PDB). MySQL covers every user database at once.
+#   MariaDB uses the MySQL query (its connection is a MYSQL one; no PROCESS variant: MariaDB has no innodb_tablespaces).
+#   CockroachDB and YugabyteDB: a POSTGRESQL connection and the PostgreSQL query (--database, as for PostgreSQL).
+#   Db2 and Informix have no Unity Catalog connection type: run scripts/db2.sql or scripts/informix.sql with the engine's client.
 set -uo pipefail
 P=$1; CONN=$2; E=$3; shift 3; DB=; SVC=; OUT=.; TOP=15
 while [ $# -gt 0 ]; do case $1 in --database) DB=$2; shift 2;; --service) SVC=$2; shift 2;; --out) OUT=$2; shift 2;; --top) TOP=$2; shift 2;; *) echo "unknown $1"; exit 2;; esac; done
 HERE=$(cd "$(dirname "$0")" && pwd); mkdir -p "$OUT"
-[ -f "$HERE/$E.sql" ] || { echo "engine: postgres, mysql, sqlserver or oracle"; exit 2; }
-case $E in postgres|sqlserver) [ -n "$DB" ] || { echo "--database is needed for $E"; exit 2; }; arg=", database => '$DB'";; oracle) [ -n "$SVC" ] || { echo "--service (the PDB) is needed for oracle"; exit 2; }; arg=", service_name => '$SVC'";; *) arg=;; esac
-runq() { inner=$(sed 's/--.*$//' "$HERE/$1.sql" | tr '\n' ' ' | tr -s ' '); echo "SELECT * FROM remote_query('$CONN'$arg, query => \"$inner\")" > "$OUT/size.sql"
+SQL=$E; case $E in mariadb) SQL=mysql;; yugabytedb) SQL=yugabytedb;; cockroachdb) SQL=cockroachdb;; esac
+[ -f "$HERE/$SQL.sql" ] || { echo "engine: postgres, mysql, mariadb, sqlserver, oracle, cockroachdb or yugabytedb (db2 and informix: run scripts/db2.sql or informix.sql by hand)"; exit 2; }
+case $E in postgres|sqlserver|cockroachdb|yugabytedb) [ -n "$DB" ] || { echo "--database is needed for $E"; exit 2; }; arg=", database => '$DB'";; oracle) [ -n "$SVC" ] || { echo "--service (the PDB) is needed for oracle"; exit 2; }; arg=", service_name => '$SVC'";; *) arg=;; esac
+runq() { inner=$(sed "s/--.*\$//; s/__DB__/$DB/g" "$HERE/$1.sql" | tr '\n' ' ' | tr -s ' '); echo "SELECT * FROM remote_query('$CONN'$arg, query => \"$inner\")" > "$OUT/size.sql"
         databricks experimental aitools tools query --file "$OUT/size.sql" --profile "$P" -o csv > "$OUT/tables.csv" 2> "$OUT/err.txt"; }
 if [ $E = mysql ]; then
   if runq mysql-process; then echo "(MySQL: with current tablespace file sizes)"
   elif grep -q PROCESS "$OUT/err.txt"; then runq mysql || { echo "query failed: $(head -c 400 "$OUT/err.txt")"; exit 1; }
     echo "(MySQL: no PROCESS privilege, so no current file sizes: rows and bytes are information_schema estimates; GRANT PROCESS ON *.* adds them)"
   else echo "query failed: $(head -c 400 "$OUT/err.txt")"; exit 1; fi
-else runq $E || { echo "query failed: $(head -c 400 "$OUT/err.txt")"; exit 1; }; fi
+else runq $SQL || { echo "query failed: $(head -c 400 "$OUT/err.txt")"; exit 1; }; fi
 duckdb -box -c "
 CREATE TABLE t AS SELECT * FROM read_csv('$OUT/tables.csv', header = true, all_varchar = true);
 CREATE TABLE r AS SELECT table_schema AS s, table_name AS n,

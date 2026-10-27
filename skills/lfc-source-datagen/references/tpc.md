@@ -6,10 +6,10 @@ Most people don't know what schema to test with. The TPC benchmarks define well-
 |---|---|---|---|
 | TPC-B (also TPC-A: the same 4 tables) | 2.0.0 | branch, teller, account, history | ✓ Postgres 16 and MySQL 8.4 |
 | TPC-H (also TPC-D 2.1.0 and TPC-R 2.1.0: the same 8 tables) | 3.0.1 | region, nation, supplier, part, partsupp, customer, orders, lineitem | ✓ Postgres 16 and MySQL 8.4 |
-| TPC-C | 5.11.0 | 9 tables, composite keys per warehouse | ✓ from statschema's schema (below) |
-| TPC-DS | 4.0.0 | 7 fact and 17 dimension tables | ✓ from statschema's schema (below) |
-| TPC-E | 1.14.0 | 32 tables in statschema's schema | ✓ from statschema's schema (below) |
-| TPC-DI | 1.1.0 | warehouse Dim and Fact tables | ✓ from statschema's schema (below) |
+| TPC-C | 5.11.0 | 9 tables, composite keys per warehouse | ✓ Postgres 16 and MySQL 8.4 (`tpc-schema.sh tpcc`, below) |
+| TPC-DS | 4.0.0 | 7 fact and 17 dimension tables | ✓ Postgres 16 and MySQL 8.4 (`tpc-schema.sh tpcds`, below) |
+| TPC-E | 1.14.0 | 32 tables in statschema's schema | ✓ Postgres 16 and MySQL 8.4 (`tpc-schema.sh tpce`, below) |
+| TPC-DI | 1.1.0 | warehouse Dim and Fact tables | ✓ Postgres 16 and MySQL 8.4 (`tpc-schema.sh tpcdi`, below) |
 | TPC-W / TPC-APP | 2.0.0 / 1.3.0 | 8-table online bookstore | Planned |
 | TPC-VMS, TPCx-* | | No schema of their own (VMS runs C, E, H, DS; HS is a sort, IoT key-value, AI files; BB is DS plus logs; V is based on E) | Not applicable |
 
@@ -44,10 +44,11 @@ Where it differs from the spec:
 | Text columns (`p_name`, `c_phone`, comments, …): word lists and formats | Zero-padded `n` and MD5 filler, at the declared length | The planners' auditable strings |
 | TPC-B `history` size: storage for the measurement interval | `HISTORY` rows (default: as many as accounts) | The spec ties it to the benchmark run |
 | TPC-B `h_delta`: the transaction's amount | `n` / 100 | Gives `history`, which has no key, a column that maps back to `n` |
+| TPC-DS and TPC-E word-list text columns (11 and 7 columns) whose formula would pass MySQL's 1,024-character comment | No tag: the planner's default text cast | A comment holds 1,024 characters; the DDL has no side table |
 
 ## Files
 
-- [`scripts/tpc/tpc-schema.sh`](../scripts/tpc/tpc-schema.sh): The workloads as MySQL DDL with the tags; `bash tpc-schema.sh tpch 10` for scale factor 10.
+- [`scripts/tpc/tpc-schema.sh`](../scripts/tpc/tpc-schema.sh): The six workloads as MySQL DDL with the tags; `bash tpc-schema.sh tpch 10` for scale factor 10, `bash tpc-schema.sh tpcds 1` for TPC-DS.
 
 
 - [`scripts/tpc/tpcb-verify.sql`](../scripts/tpc/tpcb-verify.sql): TPC-B checks.
@@ -56,7 +57,7 @@ Where it differs from the spec:
 
 ## Run
 
-`tpc-schema.sh` writes a workload's tables as MySQL DDL, with the tags in the column and table comments. **lfc-source-statschema**'s `ddl-to-schema.py` turns that into its canonical `schema.yaml` (keeping the tags and the checks), and its `ddl.py` writes the DDL for any engine, transpiling the formulas with [sqlglot](https://github.com/tobymao/sqlglot) (`DIV` stays integer division). Then `fill.sh` (in the skill's "Fill level by level") fills it with the engine's planners, one level at a time, and the verify file checks the spec's rules on the data.
+`tpc-schema.sh` writes a workload's tables as MySQL DDL, with the tags in the column and table comments: all six workloads, one entry point (`tpc-schema.sh <tpcb|tpcc|tpch|tpcds|tpce|tpcdi> [SF]`). TPC-C, TPC-DS, TPC-E and TPC-DI are shaped from statschema's schemas (`shape.py --sf`, then `ddl.py --dialect mysql`). **lfc-source-statschema**'s `ddl-to-schema.py` turns that into its canonical `schema.yaml` (keeping the tags and the checks), and its `ddl.py` writes the DDL for any engine, transpiling the formulas with [sqlglot](https://github.com/tobymao/sqlglot) (`DIV` stays integer division). Then `fill.sh` (in the skill's "Fill level by level") fills it with the engine's planners, one level at a time, and the verify file checks the spec's rules on the data.
 
 ```bash
 SS=../lfc-source-statschema/scripts                                      # from this skill's directory
