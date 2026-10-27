@@ -1,0 +1,349 @@
+environment:
+  engine: mysql
+  product: Azure Database for MySQL Flexible Server
+  edition_tier: null
+  version: 8.0.46-azure
+  mechanism: binlog
+  setup: none
+  source_setup: none; the connection has no trustServerCertificate option
+  pipeline_mode: integrated
+  compute: serverless
+  runtime:
+    dbr_version: '18.3'
+    channel: CURRENT
+    image_key: dlt:18.3.8-delta-pipelines-aarch64-photon-dlt-release-dp-20261015-rc0-commit-48da011-image-5bafb35
+    dp_build: dp-20261015-rc0
+    cloud_region: AWS us-west-2
+    basis: read from the SQL Server pipelines; the other runs used the same workspace the same day
+  workspace:
+    cloud: AWS
+    region: us-west-2
+  date: '2026-10-26'
+  method: not-recorded
+  caveats:
+  - 'NOT RUN: every ingestion attempt failed before the first snapshot finished (TLS_VALIDATION_FAILURE: the server requires TLS and the connection gives no certificate). No DDL case was applied; the seed
+    tables are in place.'
+cases:
+- id: add-nullable
+  ddl: ADD COLUMN c INT NULL
+  column_before: absent
+  column_after: INT NULL
+  source_accepted: null
+  events:
+  - class: INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE
+    level: error
+    message: TLS is enforced but no server certificate provided. Provide a server certificate or set trustServerCertificate=true to skip SSL verification.
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: null
+  notes: 'recorded: not run (TLS_VALIDATION_FAILURE at source connection); planned, not run: ADD COLUMN c INT NULL'
+- id: add-nullable-with-default
+  ddl: ADD COLUMN c INT DEFAULT 5
+  column_before: absent
+  column_after: INT NULL DEFAULT 5
+  source_accepted: null
+  events:
+  - class: INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE
+    level: error
+    message: TLS is enforced but no server certificate provided. Provide a server certificate or set trustServerCertificate=true to skip SSL verification.
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: null
+  notes: 'recorded: not run (TLS_VALIDATION_FAILURE); planned, not run: ADD COLUMN c INT DEFAULT 5'
+- id: add-not-null-with-default
+  ddl: ADD COLUMN c INT NOT NULL DEFAULT 5
+  column_before: absent
+  column_after: INT NOT NULL DEFAULT 5
+  source_accepted: null
+  events:
+  - class: INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE
+    level: error
+    message: TLS is enforced but no server certificate provided. Provide a server certificate or set trustServerCertificate=true to skip SSL verification.
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: null
+  notes: 'recorded: not run (TLS_VALIDATION_FAILURE); planned, not run: ADD COLUMN c INT NOT NULL DEFAULT 5'
+- id: add-nullable-keyless
+  ddl: ADD COLUMN c INT on a table with no PK
+  column_before: absent
+  column_after: INT NULL
+  source_accepted: null
+  events:
+  - class: INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE
+    level: error
+    message: TLS is enforced but no server certificate provided. Provide a server certificate or set trustServerCertificate=true to skip SSL verification.
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: null
+  notes: 'recorded: not run (TLS_VALIDATION_FAILURE); recorded as ''add-keyless''; planned, not run: ADD COLUMN c INT on a table with no PK'
+- id: drop-column
+  ddl: DROP COLUMN v
+  column_before: VARCHAR(50)
+  column_after: absent
+  source_accepted: null
+  events:
+  - class: INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE
+    level: error
+    message: TLS is enforced but no server certificate provided. Provide a server certificate or set trustServerCertificate=true to skip SSL verification.
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: null
+  notes: 'recorded: not run (TLS_VALIDATION_FAILURE); planned, not run: DROP COLUMN v'
+- id: int-to-bigint
+  ddl: MODIFY n BIGINT (int -> bigint); insert n = 3000000000
+  column_before: INT
+  column_after: BIGINT
+  source_accepted: null
+  events:
+  - class: INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE
+    level: error
+    message: TLS is enforced but no server certificate provided. Provide a server certificate or set trustServerCertificate=true to skip SSL verification.
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: null
+  notes: 'recorded: not run (TLS_VALIDATION_FAILURE); planned, not run: MODIFY n BIGINT (int -> bigint); insert n = 3000000000'
+- id: decimal-10-2-to-18-4
+  ddl: MODIFY n DECIMAL(18,4) (decimal(10,2) -> decimal(18,4)); insert 3.1234
+  column_before: DECIMAL(10,2)
+  column_after: DECIMAL(18,4)
+  source_accepted: null
+  events:
+  - class: INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE
+    level: error
+    message: TLS is enforced but no server certificate provided. Provide a server certificate or set trustServerCertificate=true to skip SSL verification.
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: null
+  notes: 'recorded: not run (TLS_VALIDATION_FAILURE); planned, not run: MODIFY n DECIMAL(18,4) (decimal(10,2) -> decimal(18,4)); insert 3.1234'
+- id: string-length-narrow
+  ddl: MODIFY v VARCHAR(20) (varchar(50) -> varchar(20))
+  column_before: VARCHAR(50)
+  column_after: VARCHAR(20)
+  source_accepted: null
+  events:
+  - class: INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE
+    level: error
+    message: TLS is enforced but no server certificate provided. Provide a server certificate or set trustServerCertificate=true to skip SSL verification.
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: null
+  notes: 'recorded: not run (TLS_VALIDATION_FAILURE); recorded as ''varchar-50-to-20''; planned, not run: MODIFY v VARCHAR(20) (varchar(50) -> varchar(20))'
+- id: bigint-to-int
+  ddl: MODIFY n INT (bigint -> int)
+  column_before: BIGINT
+  column_after: INT
+  source_accepted: null
+  events:
+  - class: INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE
+    level: error
+    message: TLS is enforced but no server certificate provided. Provide a server certificate or set trustServerCertificate=true to skip SSL verification.
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: null
+  notes: 'recorded: not run (TLS_VALIDATION_FAILURE); planned, not run: MODIFY n INT (bigint -> int)'
+- id: int-to-string
+  ddl: MODIFY n VARCHAR(20) (int -> varchar(20)); insert 'abc'
+  column_before: INT
+  column_after: VARCHAR(20)
+  source_accepted: null
+  events:
+  - class: INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE
+    level: error
+    message: TLS is enforced but no server certificate provided. Provide a server certificate or set trustServerCertificate=true to skip SSL verification.
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: null
+  notes: 'recorded: not run (TLS_VALIDATION_FAILURE); recorded as ''int-to-varchar''; planned, not run: MODIFY n VARCHAR(20) (int -> varchar(20)); insert ''abc'''
+- id: rename-column
+  ddl: RENAME COLUMN n TO n2
+  column_before: INT (n)
+  column_after: INT (n2)
+  source_accepted: null
+  events:
+  - class: INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE
+    level: error
+    message: TLS is enforced but no server certificate provided. Provide a server certificate or set trustServerCertificate=true to skip SSL verification.
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: null
+  notes: 'recorded: not run (TLS_VALIDATION_FAILURE); planned, not run: RENAME COLUMN n TO n2'
+- id: rename-table
+  ddl: RENAME TABLE rentbl TO rentbl_new
+  column_before: table name only
+  column_after: table name only
+  source_accepted: null
+  events:
+  - class: INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE
+    level: error
+    message: TLS is enforced but no server certificate provided. Provide a server certificate or set trustServerCertificate=true to skip SSL verification.
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: null
+  notes: 'recorded: not run (TLS_VALIDATION_FAILURE); planned, not run: RENAME TABLE rentbl TO rentbl_new'
+- id: drop-primary-key
+  ddl: DROP PRIMARY KEY
+  column_before: no change (PRIMARY KEY dropped)
+  column_after: no change (PRIMARY KEY dropped)
+  source_accepted: null
+  events:
+  - class: INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE
+    level: error
+    message: TLS is enforced but no server certificate provided. Provide a server certificate or set trustServerCertificate=true to skip SSL verification.
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: null
+  notes: 'recorded: not run (TLS_VALIDATION_FAILURE); planned, not run: DROP PRIMARY KEY'
+- id: add-unique
+  ddl: ADD CONSTRAINT addunq_n_key UNIQUE (n)
+  column_before: no change (UNIQUE constraint)
+  column_after: no change (UNIQUE constraint)
+  source_accepted: null
+  events:
+  - class: INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE
+    level: error
+    message: TLS is enforced but no server certificate provided. Provide a server certificate or set trustServerCertificate=true to skip SSL verification.
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: null
+  notes: 'recorded: not run (TLS_VALIDATION_FAILURE); planned, not run: ADD CONSTRAINT addunq_n_key UNIQUE (n)'
+- id: null-to-not-null
+  ddl: MODIFY n INT NOT NULL
+  column_before: INT NULL
+  column_after: INT NOT NULL
+  source_accepted: null
+  events:
+  - class: INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE
+    level: error
+    message: TLS is enforced but no server certificate provided. Provide a server certificate or set trustServerCertificate=true to skip SSL verification.
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: null
+  notes: 'recorded: not run (TLS_VALIDATION_FAILURE); planned, not run: MODIFY n INT NOT NULL'
+- id: not-null-to-null
+  ddl: MODIFY n INT NULL
+  column_before: INT NOT NULL
+  column_after: INT NULL
+  source_accepted: null
+  events:
+  - class: INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE
+    level: error
+    message: TLS is enforced but no server certificate provided. Provide a server certificate or set trustServerCertificate=true to skip SSL verification.
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: null
+  notes: 'recorded: not run (TLS_VALIDATION_FAILURE); planned, not run: MODIFY n INT NULL'
+- id: datetime-precision-up
+  ddl: MODIFY n DATETIME(6) (datetime -> datetime(6))
+  column_before: DATETIME
+  column_after: DATETIME(6)
+  source_accepted: null
+  events:
+  - class: INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE
+    level: error
+    message: TLS is enforced but no server certificate provided. Provide a server certificate or set trustServerCertificate=true to skip SSL verification.
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: null
+  notes: 'recorded: not run (TLS_VALIDATION_FAILURE); recorded as ''datetime-to-datetime6''; planned, not run: MODIFY n DATETIME(6) (datetime -> datetime(6))'
+- id: drop-table
+  ddl: DROP TABLE droptbl
+  column_before: table dropped
+  column_after: table dropped
+  source_accepted: null
+  events:
+  - class: INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE
+    level: error
+    message: TLS is enforced but no server certificate provided. Provide a server certificate or set trustServerCertificate=true to skip SSL verification.
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: null
+  value_check: null
+  basis: null
+  notes: 'recorded: not run (TLS_VALIDATION_FAILURE); planned, not run: DROP TABLE droptbl'
+- id: truncate
+  ddl: TRUNCATE TABLE trunc; insert (3,30,'c')
+  column_before: rows removed
+  column_after: rows removed
+  source_accepted: null
+  events:
+  - class: INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE
+    level: error
+    message: TLS is enforced but no server certificate provided. Provide a server certificate or set trustServerCertificate=true to skip SSL verification.
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: null
+  notes: 'recorded: not run (TLS_VALIDATION_FAILURE); planned, not run: TRUNCATE TABLE trunc; insert (3,30,''c'')'

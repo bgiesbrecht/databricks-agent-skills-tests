@@ -48,6 +48,31 @@ export WANT="10.0.0.0/24 10.9.0.0/24" HAVE="10.0.0.0/16"
 check "q.sh missing.sql" sh -c "'$SK/shell-json-scripting/scripts/q.sh' '$SK/lfc-source-firewall/scripts/missing.sql' | grep -qE \"^MISSING='?10.9.0.0/24'?$\""
 check "q.py missing.sql" sh -c "uv run -q '$SK/shell-json-scripting/scripts/q.py' '$SK/lfc-source-firewall/scripts/missing.sql' | grep -qE \"^MISSING='?10.9.0.0/24'?$\""
 
+# the schema-change matrix: the results validate and render to the committed table; the commands run offline
+DM=$SK/lfc-schema-change-test/scripts
+check "ddl-matrix: every result file validates" uv run -q "$DM/ddl-matrix-validate.py" "$R"/results/ddl-matrix/*.yaml
+check "ddl-matrix: the rendered table is the committed one" sh -c "uv run -q '$DM/ddl-matrix.py' render | diff -q - '$SK/lfc-schema-change-test/references/ddl-matrix-results.md'"
+check "ddl-matrix: sql prints the change-tracking setup and the case" sh -c "uv run -q '$DM/ddl-matrix.py' sql sqlserver ct --cases int-to-bigint | grep -q 'ENABLE CHANGE_TRACKING'"
+check "ddl-matrix: bundle has one table per case" sh -c "uv run -q '$DM/ddl-matrix.py' bundle --connection c --catalog k --schema s --source-catalog d --cases int-to-bigint,drop-column --out '$T/b.yml' && grep -c source_table '$T/b.yml' | grep -qx 2"
+check "ddl-matrix: collect on saved events: a restart with its row, a stop, and an unfinished update" sh -c "
+  mkdir -p '$T/cm' && python3 - '$T/cm' <<'PY'
+import json, sys
+d = sys.argv[1]
+flow = lambda t: f\"main.s.applier_main_s_x_{t}_cdc_flow\"
+ev = [{'event_type': 'update_progress', 'level': 'INFO', 'message': 'Update u1 is RUNNING.', 'timestamp': '2026-10-26T22:05:00.000Z'},
+      {'event_type': 'runtime_details', 'level': 'INFO', 'message': 'Resolved runtime', 'timestamp': '2026-10-26T22:05:01.000Z', 'origin': {'cloud': 'AWS', 'region': 'us-west-2', 'update_id': 'u1'}, 'details': {'runtime_details': {'runtime_version': {'dbr_version': '18.3', 'channel': 'CURRENT', 'image_key': 'dlt:18.3.8-delta-pipelines-aarch64-photon-dlt-release-dp-20261015-rc0-commit-48da011-image-5bafb35'}}}},
+      {'event_type': 'flow_progress', 'level': 'WARN', 'message': 'Flow ' + flow('int_to_bigint') + ' has terminated.', 'timestamp': '2026-10-26T22:06:00.000Z', 'origin': {'flow_name': flow('int_to_bigint')},
+       'error': {'exceptions': [{'message': '[FLOW_SCHEMA_CHANGED] Flow terminated since it encountered a schema change.'}]}},
+      {'event_type': 'flow_progress', 'level': 'ERROR', 'message': 'Failed to resolve flow', 'timestamp': '2026-10-26T22:07:00.000Z', 'origin': {'flow_name': flow('bigint_to_int')},
+       'error': {'exceptions': [{'message': \"[CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE] incompatible\"}]}},
+      {'event_type': 'update_progress', 'level': 'INFO', 'message': 'Update u1 is COMPLETED.', 'timestamp': '2026-10-26T22:20:00.000Z'}]
+tables = {'int_to_bigint': {'columns': {'id': 'int', 'n': 'bigint'}, 'row': {'id': '3', 'n': '3000000000'}},
+          'bigint_to_int': {'columns': {'id': 'int', 'n': 'bigint'}, 'row': None}}
+json.dump(ev, open(d + '/events.json', 'w')); json.dump(tables, open(d + '/tables.json', 'w'))
+open(d + '/env.yaml', 'w').write('environment:\n  engine: sqlserver\n  product: Azure SQL Database\n  version: test\n  mechanism: ct\n  setup: none\n  source_setup: test\n  pipeline_mode: integrated\n  compute: serverless\n  workspace: {cloud: AWS, region: us-west-2}\n  date: 2026-10-26\n  method: one-case-at-a-time\n  caveats: [test fixture]\n')
+PY
+  uv run -q '$DM/ddl-matrix.py' collect --events-json '$T/cm/events.json' --tables-json '$T/cm/tables.json' --env '$T/cm/env.yaml' --cases int-to-bigint,bigint-to-int --out '$T/cm/sqlserver-ct-none-2026-10-26.yaml' > '$T/cm/out.txt' && grep -q '^PASS ' '$T/cm/out.txt' && grep -q '^STOP ' '$T/cm/out.txt' && grep -q 'dp_build: dp-20261015-rc0' '$T/cm/sqlserver-ct-none-2026-10-26.yaml'"
+
 db() {                                         # db <pg|my> <client> <planner dir>: fill and check each workload at a small scale
   local e=$1 cli=$2 dir=$3 dial; [ "$e" = pg ] && dial=postgres || dial=mysql
   echo "== $dial"

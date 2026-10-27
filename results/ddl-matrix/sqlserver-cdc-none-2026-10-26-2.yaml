@@ -1,0 +1,403 @@
+environment:
+  engine: sqlserver
+  product: Azure SQL Database
+  edition_tier: serverless GP_S_Gen5_1
+  version: Microsoft SQL Azure (RTM) - 12.0.2000.8 Oct 9 2026 20:51:24
+  pipeline_mode: integrated
+  compute: serverless
+  runtime:
+    dbr_version: '18.3'
+    channel: CURRENT
+    image_key: dlt:18.3.8-delta-pipelines-aarch64-photon-dlt-release-dp-20261015-rc0-commit-48da011-image-5bafb35
+    dp_build: dp-20261015-rc0
+    cloud_region: AWS us-west-2
+    basis: read from this run's pipeline
+  workspace:
+    cloud: AWS
+    region: us-west-2
+  date: '2026-10-26'
+  method: batch
+  mechanism: cdc
+  setup: none
+  source_setup: 'none, manual: sp_cdc_enable_db; sp_cdc_enable_table per table (keyless table with @supports_net_changes = 0); GRANT SELECT per table; GRANT SELECT on the cdc schema; GRANT VIEW DEFINITION;
+    GRANT VIEW DATABASE STATE; no utility objects'
+  caveats:
+  - The pipeline is integrated with continuous false (triggered). The runtime_details event carries no DBR version, channel or image.
+  - The connector logged 0 change-tracking and 0 CDC tables on the main update. Nothing loads for any case, so post_change_row_landed is false throughout.
+  - Full case set applied before the first update; the pipeline was started once.
+cases:
+- id: add-nullable
+  ddl: ALTER TABLE ADD c INT NULL
+  column_before: INT
+  column_after: + c INT NULL
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: DDL objects missing on table t_addnull; full refresh needed
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: none (no table loaded)
+  post_change_row_landed: false
+  value_check: nothing loaded
+  basis: tested
+  notes: t_addnull
+- id: add-nullable-with-default
+  ddl: ALTER TABLE ADD c INT NULL CONSTRAINT df DEFAULT 5
+  column_before: INT
+  column_after: + c INT NULL DEFAULT 5
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: none
+  post_change_row_landed: false
+  value_check: nothing loaded
+  basis: tested
+  notes: t_addnulldef; recorded as 'add-nullable-default'
+- id: add-not-null-with-default
+  ddl: ALTER TABLE ADD c INT NOT NULL CONSTRAINT df DEFAULT 5
+  column_before: INT
+  column_after: + c INT NOT NULL DEFAULT 5
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: none
+  post_change_row_landed: false
+  value_check: nothing loaded
+  basis: tested
+  notes: t_addnn; recorded as 'add-not-null-default'
+- id: add-computed-column
+  ddl: ALTER TABLE ADD cc AS (n * 2)
+  column_before: INT
+  column_after: + cc computed
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: none
+  post_change_row_landed: false
+  value_check: nothing loaded
+  basis: tested
+  notes: t_addcomp; recorded as 'add-computed'
+- id: add-nullable-keyless
+  ddl: ALTER TABLE ADD c INT NULL on a table with no PK
+  column_before: no PK
+  column_after: no PK + c
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: none
+  post_change_row_landed: false
+  value_check: nothing loaded
+  basis: tested
+  notes: t_addkeyless (CDC-only case); recorded as 'add-keyless'
+- id: drop-column
+  ddl: ALTER TABLE DROP COLUMN v
+  column_before: NVARCHAR(50)
+  column_after: dropped
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: none
+  post_change_row_landed: false
+  value_check: nothing loaded
+  basis: tested
+  notes: t_dropcol
+- id: int-to-bigint
+  ddl: ALTER COLUMN n BIGINT
+  column_before: INT
+  column_after: BIGINT
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: none
+  post_change_row_landed: false
+  value_check: nothing loaded
+  basis: tested
+  notes: t_int2big
+- id: decimal-10-2-to-18-4
+  ddl: ALTER COLUMN n DECIMAL(18,4)
+  column_before: DECIMAL(10,2)
+  column_after: DECIMAL(18,4)
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: none
+  post_change_row_landed: false
+  value_check: nothing loaded
+  basis: tested
+  notes: t_dec
+- id: string-length-narrow
+  ddl: ALTER COLUMN v NVARCHAR(20)
+  column_before: NVARCHAR(50)
+  column_after: NVARCHAR(20)
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: none
+  post_change_row_landed: false
+  value_check: nothing loaded
+  basis: tested
+  notes: t_nvclen; recorded as 'nvarchar-50-to-20'
+- id: varchar-to-nvarchar
+  ddl: ALTER COLUMN n NVARCHAR(50)
+  column_before: VARCHAR(50)
+  column_after: NVARCHAR(50)
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: none
+  post_change_row_landed: false
+  value_check: nothing loaded
+  basis: tested
+  notes: t_vch
+- id: datetime-precision-up
+  ddl: ALTER COLUMN n DATETIME2(7)
+  column_before: DATETIME
+  column_after: DATETIME2(7)
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: none
+  post_change_row_landed: false
+  value_check: nothing loaded
+  basis: tested
+  notes: t_dt; recorded as 'datetime-to-datetime2-7'
+- id: int-to-decimal-18-2
+  ddl: ALTER COLUMN n DECIMAL(18,2)
+  column_before: INT
+  column_after: DECIMAL(18,2)
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: none
+  post_change_row_landed: false
+  value_check: nothing loaded
+  basis: tested
+  notes: t_int2dec
+- id: bigint-to-int
+  ddl: ALTER COLUMN n INT
+  column_before: BIGINT
+  column_after: INT
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: none
+  post_change_row_landed: false
+  value_check: nothing loaded
+  basis: tested
+  notes: t_big2int
+- id: int-to-string
+  ddl: ALTER COLUMN n NVARCHAR(20)
+  column_before: INT
+  column_after: NVARCHAR(20)
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: none
+  post_change_row_landed: false
+  value_check: nothing loaded
+  basis: tested
+  notes: t_int2nvc; recorded as 'int-to-nvarchar-20'
+- id: null-to-not-null
+  ddl: ALTER COLUMN n INT NOT NULL
+  column_before: INT NULL
+  column_after: INT NOT NULL
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: none
+  post_change_row_landed: false
+  value_check: nothing loaded
+  basis: tested
+  notes: t_null2nn
+- id: not-null-to-null
+  ddl: ALTER COLUMN n INT NULL
+  column_before: INT NOT NULL
+  column_after: INT NULL
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: none
+  post_change_row_landed: false
+  value_check: nothing loaded
+  basis: tested
+  notes: t_nn2null
+- id: add-unique
+  ddl: ALTER TABLE ADD CONSTRAINT uq_t_uq UNIQUE (v)
+  column_before: no UNIQUE
+  column_after: UNIQUE (v)
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: none
+  post_change_row_landed: false
+  value_check: nothing loaded
+  basis: tested
+  notes: t_uq
+- id: drop-primary-key
+  ddl: ALTER TABLE DROP CONSTRAINT pk_t_droppk
+  column_before: PRIMARY KEY (id)
+  column_after: none
+  source_accepted: 'refused. Msg 22979: The unique index ''pk_t_droppk'' on table ''[dbo].[t_droppk]'' is used by Change Data Capture. The constraint using this index cannot be dropped or disabled. Then
+    Msg 3609: The transaction ended in the trigger. The batch has been aborted.'
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: t_droppk)
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: none
+  post_change_row_landed: false
+  value_check: nothing loaded
+  basis: tested
+  notes: t_droppk; no change happened at the source
+- id: rename-column
+  ddl: EXEC sp_rename 'dbo.t_rencol.n', 'n2', 'COLUMN'
+  column_before: INT n
+  column_after: INT n2
+  source_accepted: 'refused. Msg 4928: Cannot alter column ''n'' because it is ''REPLICATED''.'
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: t_rencol)
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: none
+  post_change_row_landed: false
+  value_check: nothing loaded; the post insert used the old shape (id, n, v) because the rename was refused
+  basis: tested
+  notes: t_rencol
+- id: rename-table
+  ddl: EXEC sp_rename 'dbo.g_rentab', 'g_rentab_new'
+  column_before: table g_rentab
+  column_after: table g_rentab_new
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: g_rentab) -> SNAPSHOT_FAILED_DUE_TO_CDC_FAILURE
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: none
+  post_change_row_landed: false
+  value_check: nothing loaded
+  basis: tested
+  notes: earlier attempt (tables renamed and dropped before the first update) gave INGESTION_GATEWAY_MISSING_TABLE_IN_SOURCE; superseded by the rerun
+- id: drop-table
+  ddl: DROP TABLE dbo.g_droptab
+  column_before: table g_droptab
+  column_after: dropped
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: g_droptab) -> SNAPSHOT_FAILED_DUE_TO_CDC_FAILURE
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: none
+  post_change_row_landed: null
+  value_check: nothing loaded
+  basis: tested
+  notes: earlier attempt gave INGESTION_GATEWAY_MISSING_TABLE_IN_SOURCE (table dropped before first update); superseded
+- id: truncate
+  ddl: TRUNCATE TABLE dbo.t_truncate
+  column_before: table
+  column_after: table
+  source_accepted: 'refused. Msg 4711: Cannot truncate table ''dbo.t_truncate'' because it is published for replication or enabled for Change Data Capture.'
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: t_truncate)
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: none
+  post_change_row_landed: false
+  value_check: nothing loaded
+  basis: tested
+  notes: t_truncate; recorded as 'truncate-table'

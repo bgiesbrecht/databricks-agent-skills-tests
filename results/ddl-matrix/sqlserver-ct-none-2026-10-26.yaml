@@ -1,0 +1,192 @@
+environment:
+  product: Azure SQL Database
+  edition_tier: serverless GP_S_Gen5_1
+  version: Microsoft SQL Azure (RTM) - 12.0.2000.8 Oct 9 2026
+  pipeline_mode: integrated
+  compute: serverless
+  runtime:
+    dbr_version: '18.3'
+    channel: CURRENT
+    image_key: dlt:18.3.8-delta-pipelines-aarch64-photon-dlt-release-dp-20261015-rc0-commit-48da011-image-5bafb35
+    dp_build: dp-20261015-rc0
+    cloud_region: AWS us-west-2
+    basis: read from this run's pipeline
+  workspace:
+    cloud: AWS
+    region: us-west-2
+  date: '2026-10-26'
+  engine: sqlserver
+  mechanism: ct
+  setup: none
+  source_setup: 'none, manual grants: SELECT and VIEW CHANGE TRACKING on each table, VIEW DEFINITION, VIEW DATABASE STATE'
+  method: not-recorded
+  caveats:
+  - Change tracking, no utility script; the validate-only update COMPLETED before the cases (not a loading update).
+cases:
+- id: int-to-bigint
+  ddl: ALTER COLUMN n INT -> BIGINT
+  column_before: INT
+  column_after: BIGINT
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: restart (class not recorded in the run notes)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: bigint
+  post_change_row_landed: true
+  value_check: new row 3000000000 landed
+  basis: tested
+  notes: 'recorded: no full refresh; restart; destination n int -> bigint (type widening); new row 3000000000 landed; recorded as ''alter-numeric-widen'''
+- id: decimal-10-2-to-18-4
+  ddl: ALTER COLUMN n DECIMAL(10,2) -> DECIMAL(18,4)
+  column_before: DECIMAL(10,2)
+  column_after: DECIMAL(18,4)
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: restart (class not recorded in the run notes)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: decimal(18,4)
+  post_change_row_landed: true
+  value_check: 3.1234 landed
+  basis: tested
+  notes: 'recorded: no full refresh; restart; destination decimal(18,4); 3.1234 landed, old rows 1.0000; recorded as ''alter-decimal-widen'''
+- id: string-length-narrow
+  ddl: ALTER COLUMN v NVARCHAR(50) -> NVARCHAR(20)
+  column_before: NVARCHAR(50)
+  column_after: NVARCHAR(20)
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: restart (class not recorded in the run notes)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: string
+  post_change_row_landed: true
+  value_check: new row landed
+  basis: tested
+  notes: 'recorded: no full refresh; restart; destination stays string (no length in Delta); new row landed; recorded as ''alter-string-length-narrow'''
+- id: bigint-to-int
+  ddl: ALTER COLUMN n BIGINT -> INT
+  column_before: BIGINT
+  column_after: INT
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+    level: error
+    message: table stops, CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE, full refresh needed
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: table stops, CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE, full refresh needed; recorded as ''alter-numeric-narrow'''
+- id: int-to-string
+  ddl: ALTER COLUMN n INT -> NVARCHAR(20)
+  column_before: INT
+  column_after: NVARCHAR(20)
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+    level: error
+    message: table stops, CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE, full refresh needed
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: table stops, CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE, full refresh needed; recorded as ''alter-incompatible'''
+- id: add-nullable-with-default
+  ddl: ADD c INT NULL CONSTRAINT ... DEFAULT 5
+  column_before: absent
+  column_after: INT NULL DEFAULT 5
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL
+    level: error
+    message: table stops, CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL, full refresh needed (same as NOT NULL DEFAULT)
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: table stops, CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL, full refresh needed (same as NOT NULL DEFAULT)'
+- id: add-not-null-with-default
+  ddl: ADD c INT NOT NULL CONSTRAINT ... DEFAULT 5
+  column_before: absent
+  column_after: INT NOT NULL DEFAULT 5
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL
+    level: error
+    message: table stops, CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL, full refresh needed
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: table stops, CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL, full refresh needed'
+- id: drop-column
+  ddl: DROP COLUMN v
+  column_before: NVARCHAR(50)
+  column_after: absent
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: restart (class not recorded in the run notes)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: true
+  value_check: new row, v NULL
+  basis: tested
+  notes: 'recorded: no full refresh; restart; destination keeps v, old rows keep values, new row v NULL'
+- id: add-nullable
+  ddl: ADD c1 INT NULL
+  column_before: absent
+  column_after: INT NULL
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: restart (class not recorded in the run notes)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: tested
+  notes: 'recorded: no full refresh; restart; new column, old rows NULL; recorded as ''add-nullable (earlier run, same day)'''
+- id: start-first-update
+  ddl: null
+  column_before: null
+  column_after: null
+  source_accepted: null
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: null
+  value_check: null
+  basis: tested
+  notes: 'recorded: validate-only update COMPLETED with the manual grants (a validation run, not a loading update); no pipeline error event'

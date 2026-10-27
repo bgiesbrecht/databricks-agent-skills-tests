@@ -1,0 +1,380 @@
+environment:
+  engine: oracle
+  product: Oracle AI Database 26ai Free
+  edition_tier: Free; CDB FREE with pluggable database FREEPDB1
+  version: Oracle AI Database 26ai Free Release 23.26.3.0.0
+  mechanism: logminer
+  setup: setup-package
+  source_setup: Databricks Oracle setup package (a C## user with the grants it needs; no DDL-tracking objects); ARCHIVELOG; supplemental logging on the database and on primary keys; recovery area 50G (see
+    caveats)
+  pipeline_mode: integrated
+  compute: serverless
+  runtime:
+    dbr_version: '18.3'
+    channel: CURRENT
+    image_key: dlt:18.3.8-delta-pipelines-aarch64-photon-dlt-release-dp-20261015-rc0-commit-48da011-image-5bafb35
+    dp_build: dp-20261015-rc0
+    cloud_region: AWS us-west-2
+    basis: read from the SQL Server pipelines; the other runs used the same workspace the same day
+  workspace:
+    cloud: AWS
+    region: us-west-2
+  date: '2026-10-26'
+  method: batch
+  caveats:
+  - The setup package creates no DDL-tracking objects (no triggers, tables, sequences or views); the DDL behavior comes from the LogMiner extractor's options, not from setup objects.
+  - The DDL-capable LogMiner mode is inferred from behavior (FLOW_SCHEMA_CHANGED on compatible changes; the full-refresh error on a dropped primary key and on an added unique key). The pipeline settings
+    were not read.
+  - The recovery area filled at 10G while the archiver ran (ORA-19809, then ORA-00257). It was raised to db_recovery_file_dest_size 50G and the archiver was valid again.
+  - After the first restart the extractor stalled, with lag growing for about 60 minutes. The rename-table, drop-primary-key and add-unique cases needed a full refresh; the rename table was refreshed under
+    its old name and failed, the other two caught up.
+  - After the catch-up the flow-schema-changed tables still showed their old shapes; their post-change rows had not landed at the last read (2026-10-27 00:48 UTC).
+  - Drop table not run. The truncate update was still running at the last read, so its result is not final.
+  - Cases c01 to c18 ran in one update; c19 and c20 in separate updates. The Oracle refusals are the source's own text.
+cases:
+- id: add-nullable
+  ddl: ALTER TABLE ADD (C1 NUMBER(10))
+  column_before: absent
+  column_after: NUMBER(10) nullable
+  source_accepted: true
+  events:
+  - class: FLOW_SCHEMA_CHANGED
+    level: warning
+    message: FLOW_SCHEMA_CHANGED (WARN)
+  - class: CDC_APPLIER_SCHEMA_CHANGED_DURING_STREAMING
+    level: warning
+    message: restart of the update)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: column C1 not present at last read
+  post_change_row_landed: false
+  value_check: row id 3 not present (count 2)
+  basis: partial
+  notes: the first restart applied no change to the destination.; restart event seen; destination not applied; run case c01
+- id: add-nullable-with-default
+  ddl: ALTER TABLE ADD (C2 NUMBER(10) DEFAULT 5)
+  column_before: absent
+  column_after: NUMBER(10) nullable, default 5
+  source_accepted: true
+  events:
+  - class: FLOW_SCHEMA_CHANGED
+    level: warning
+    message: FLOW_SCHEMA_CHANGED (WARN)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: C2 not present at last read
+  post_change_row_landed: false
+  value_check: count 2
+  basis: partial
+  notes: restart event only.; run case c02; recorded as 'add-nullable-default'
+- id: add-not-null-with-default
+  ddl: ALTER TABLE ADD (C3 NUMBER(10) DEFAULT 5 NOT NULL)
+  column_before: absent
+  column_after: NUMBER(10) NOT NULL default 5
+  source_accepted: true
+  events:
+  - class: FLOW_SCHEMA_CHANGED
+    level: warning
+    message: FLOW_SCHEMA_CHANGED (WARN)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: C3 not present at last read
+  post_change_row_landed: false
+  value_check: count 2
+  basis: partial
+  notes: restart event only.; run case c03; recorded as 'add-not-null-default'
+- id: add-nullable-keyless
+  ddl: ALTER TABLE ADD (C4 NUMBER(10)) on a table with no PRIMARY KEY (ALL supplemental logging)
+  column_before: absent
+  column_after: NUMBER(10) nullable
+  source_accepted: true
+  events:
+  - class: FLOW_SCHEMA_CHANGED
+    level: warning
+    message: FLOW_SCHEMA_CHANGED (WARN)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: C4 not present at last read
+  post_change_row_landed: false
+  value_check: count 2
+  basis: partial
+  notes: restart event only.; run case c04; recorded as 'add-keyless'
+- id: drop-column
+  ddl: ALTER TABLE DROP COLUMN V
+  column_before: VARCHAR2(50)
+  column_after: column absent
+  source_accepted: true
+  events:
+  - class: FLOW_SCHEMA_CHANGED
+    level: warning
+    message: FLOW_SCHEMA_CHANGED (WARN)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: V still present (string) at last read
+  post_change_row_landed: false
+  value_check: count 2
+  basis: partial
+  notes: restart event only.; run case c05
+- id: int-to-bigint
+  ddl: ALTER TABLE MODIFY (N NUMBER(19))
+  column_before: NUMBER(10)
+  column_after: NUMBER(19)
+  source_accepted: true
+  events:
+  - class: FLOW_SCHEMA_CHANGED
+    level: warning
+    message: FLOW_SCHEMA_CHANGED (WARN)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: decimal(10,0) at last read
+  post_change_row_landed: false
+  value_check: count 2 (3000000000 not present)
+  basis: partial
+  notes: restart event only.; run case c06; recorded as 'alter-numeric-widen'
+- id: decimal-10-2-to-18-4
+  ddl: ALTER TABLE MODIFY (N NUMBER(18,4))
+  column_before: NUMBER(10,2)
+  column_after: NUMBER(18,4)
+  source_accepted: true
+  events:
+  - class: FLOW_SCHEMA_CHANGED
+    level: warning
+    message: FLOW_SCHEMA_CHANGED (WARN)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: decimal(10,2) at last read
+  post_change_row_landed: false
+  value_check: count 2 (3.1234 not present)
+  basis: partial
+  notes: restart event only.; run case c07; recorded as 'alter-decimal-widen'
+- id: string-length-narrow
+  ddl: ALTER TABLE MODIFY (V VARCHAR2(20))
+  column_before: VARCHAR2(50)
+  column_after: VARCHAR2(20)
+  source_accepted: true
+  events:
+  - class: FLOW_SCHEMA_CHANGED
+    level: warning
+    message: FLOW_SCHEMA_CHANGED (WARN)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: string at last read
+  post_change_row_landed: false
+  value_check: count 2
+  basis: partial
+  notes: restart event only.; run case c08; recorded as 'alter-string-length-narrow'
+- id: bigint-to-int
+  ddl: ALTER TABLE MODIFY (N NUMBER(10))
+  column_before: NUMBER(19)
+  column_after: NUMBER(10) (not applied)
+  source_accepted: 'ORA-01440: column to be modified must be empty to decrease precision or scale'
+  events:
+  - class: null
+    level: error
+    message: the insert N=3 went through)
+  outcome: not-applicable
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: decimal(19,0) (unchanged)
+  post_change_row_landed: null
+  value_check: id 3, N 3 present (count 3)
+  basis: tested
+  notes: Oracle refusal; insert read back). Empty-column variant not run.; run case c09; recorded as 'alter-numeric-narrow'
+- id: int-to-string
+  ddl: ALTER TABLE MODIFY (N VARCHAR2(20))
+  column_before: NUMBER(10)
+  column_after: VARCHAR2(20) (not applied)
+  source_accepted: 'ORA-01439: column to be modified must be empty to change datatype'
+  events:
+  - class: null
+    level: error
+    message: 'the insert with a string value was refused as "ORA-01722: unable to convert string value containing ''t'' to a number'
+  outcome: not-applicable
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: decimal(10,0) (unchanged)
+  post_change_row_landed: null
+  value_check: count 2 (no string row)
+  basis: tested
+  notes: Oracle refusal). Empty-column variant not run.; run case c10; recorded as 'alter-numeric-to-string'
+- id: rename-column
+  ddl: ALTER TABLE RENAME COLUMN N TO N2
+  column_before: N NUMBER(10)
+  column_after: N2 NUMBER(10)
+  source_accepted: true
+  events:
+  - class: FLOW_SCHEMA_CHANGED
+    level: warning
+    message: FLOW_SCHEMA_CHANGED (WARN)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: N still present at last read
+  post_change_row_landed: false
+  value_check: count 2
+  basis: partial
+  notes: restart event only.; run case c11
+- id: rename-table
+  ddl: ALTER TABLE C12_REN_TAB RENAME TO C12_REN_TAB_NEW
+  column_before: table C12_REN_TAB
+  column_after: table C12_REN_TAB_NEW
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_MISSING_TABLE_IN_SOURCE
+    level: error
+    message: Table 'FREEPDB1.<schema>.C12_REN_TAB' does not exist in the source database or has been dropped. Resolve the issue and full refresh the table
+  - class: null
+    level: error
+    message: 'ReplicationException: Unable to find table ... in source'
+  - class: INTEGRATED_CDC_EXTRACTOR_PARTIAL_EXECUTION_CLIENT_ERROR
+    level: error
+    message: full refresh attempt on the old name failed INTEGRATED_CDC_EXTRACTOR_PARTIAL_EXECUTION_CLIENT_ERROR
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: decimal(10,0)
+  post_change_row_landed: false
+  value_check: count 2 (the row inserted into C12_REN_TAB_NEW not present)
+  basis: tested
+  notes: table stops; not re-added under the new name; run case c12
+- id: drop-primary-key
+  ddl: ALTER TABLE DROP PRIMARY KEY
+  column_before: ID NUMBER(10) PRIMARY KEY
+  column_after: no PRIMARY KEY
+  source_accepted: true
+  events:
+  - class: C13_DROP_PK
+    level: error
+    message: that is not supported for replication. Dropping primary key constraint on source requires a full refresh on the target table
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: decimal(10,0) (unchanged)
+  post_change_row_landed: true
+  value_check: count 3 after the full refresh on the target table (the insert read back)
+  basis: tested
+  notes: full refresh run for this table; run case c13
+- id: add-unique
+  ddl: ALTER TABLE ADD CONSTRAINT C14_UQ_N UNIQUE (N)
+  column_before: no UNIQUE
+  column_after: UNIQUE (N)
+  source_accepted: true
+  events:
+  - class: C14_ADD_UNIQUE
+    level: error
+    message: that is not supported for replication. Adding constraint on source requires a full refresh on the target table
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: decimal(10,0) (unchanged)
+  post_change_row_landed: true
+  value_check: count 3 after the full refresh (the insert read back)
+  basis: tested
+  notes: full refresh run for this table; run case c14
+- id: null-to-not-null
+  ddl: ALTER TABLE MODIFY (N NOT NULL)
+  column_before: NUMBER(10) nullable
+  column_after: NUMBER(10) NOT NULL
+  source_accepted: true
+  events:
+  - class: FLOW_SCHEMA_CHANGED
+    level: warning
+    message: FLOW_SCHEMA_CHANGED (WARN)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: decimal(10,0) YES (nullable) at last read
+  post_change_row_landed: false
+  value_check: count 2
+  basis: partial
+  notes: restart event only.; run case c15
+- id: not-null-to-null
+  ddl: ALTER TABLE MODIFY (N NULL)
+  column_before: NUMBER(10) NOT NULL
+  column_after: NUMBER(10) nullable
+  source_accepted: true
+  events:
+  - class: FLOW_SCHEMA_CHANGED
+    level: warning
+    message: FLOW_SCHEMA_CHANGED (WARN)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: decimal(10,0) YES at last read
+  post_change_row_landed: false
+  value_check: count 2
+  basis: partial
+  notes: restart event only.; run case c16
+- id: date-to-timestamp
+  ddl: ALTER TABLE MODIFY (N TIMESTAMP(6))
+  column_before: DATE
+  column_after: TIMESTAMP(6)
+  source_accepted: true
+  events:
+  - class: FLOW_SCHEMA_CHANGED
+    level: warning
+    message: FLOW_SCHEMA_CHANGED (WARN)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: timestamp
+  post_change_row_landed: false
+  value_check: count 2 (row with TIMESTAMP value not present)
+  basis: partial
+  notes: destination type before the change was not read.; type applied; row not landed by last read; run case c17
+- id: timestamp-to-timestamptz
+  ddl: ALTER TABLE MODIFY (N TIMESTAMP(6) WITH TIME ZONE)
+  column_before: TIMESTAMP(6)
+  column_after: TIMESTAMP(6) WITH TIME ZONE (not applied)
+  source_accepted: 'ORA-01439: column to be modified must be empty to change datatype'
+  events:
+  - class: null
+    level: error
+    message: the insert with TIMESTAMP literal went through
+  outcome: not-applicable
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: string
+  post_change_row_landed: null
+  value_check: id 3 present (count 3)
+  basis: tested
+  notes: Oracle refusal; insert read back). Pre-change destination type not read; empty-column variant not run.; run case c18; recorded as 'timestamp-to-timestamp-tz'
+- id: drop-table
+  ddl: DROP TABLE C19_DROP_TAB
+  column_before: table C19_DROP_TAB
+  column_after: table absent
+  source_accepted: not-run
+  events: []
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: unknown
+  post_change_row_landed: null
+  value_check: not run
+  basis: null
+  notes: not run (pipeline P1 stalled; not executed); run case c19
+- id: truncate
+  ddl: TRUNCATE TABLE C20_TRUNCATE; insert one row
+  column_before: table with 2 rows
+  column_after: table with 1 row
+  source_accepted: true
+  events:
+  - class: null
+    level: error
+    message: update <id> RUNNING at 2026-10-27 00:48 UTC
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: decimal(10,0)
+  post_change_row_landed: unverified
+  value_check: count 2 at last read (truncate and insert not yet visible)
+  basis: partial
+  notes: result still pending; run case c20

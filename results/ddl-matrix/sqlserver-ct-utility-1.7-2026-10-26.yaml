@@ -1,0 +1,161 @@
+environment:
+  product: Azure SQL Database
+  edition_tier: serverless GP_S_Gen5_1
+  version: Microsoft SQL Azure (RTM) - 12.0.2000.8 Oct 9 2026
+  pipeline_mode: integrated
+  compute: serverless
+  runtime:
+    dbr_version: '18.3'
+    channel: CURRENT
+    image_key: dlt:18.3.8-delta-pipelines-aarch64-photon-dlt-release-dp-20261015-rc0-commit-48da011-image-5bafb35
+    dp_build: dp-20261015-rc0
+    cloud_region: AWS us-west-2
+    basis: read from this run's pipeline
+  workspace:
+    cloud: AWS
+    region: us-west-2
+  date: '2026-10-26'
+  engine: sqlserver
+  mechanism: ct
+  setup: utility-1.7
+  source_setup: utility script 1.7 (sha256 prefix 8636499c79e0e143), @CreateDdlSupportingObjects = 1 (audit table and trigger), lakeflowFixPermissions
+  method: batch
+  caveats:
+  - The audit trigger recorded all 8 DDLs. Each case's outcome is the same as the no-utility run for the cases both ran (the run notes).
+cases:
+- id: add-nullable
+  ddl: ADD c INT NULL
+  column_before: absent
+  column_after: INT NULL
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: restart (class not recorded in the run notes)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: int
+  post_change_row_landed: true
+  value_check: new row landed
+  basis: tested
+  notes: 'recorded: restart; destination c int; new row landed; same as without the utility script (run notes)'
+- id: int-to-bigint
+  ddl: n INT -> BIGINT
+  column_before: INT
+  column_after: BIGINT
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: restart (class not recorded in the run notes)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: bigint
+  post_change_row_landed: true
+  value_check: 3000000000 landed
+  basis: tested
+  notes: 'recorded: restart; destination bigint; 3000000000 landed; recorded as ''alter-numeric-widen''; same as without the utility script (run notes)'
+- id: decimal-10-2-to-18-4
+  ddl: DECIMAL(10,2) -> DECIMAL(18,4)
+  column_before: DECIMAL(10,2)
+  column_after: DECIMAL(18,4)
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: restart (class not recorded in the run notes)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: decimal(18,4)
+  post_change_row_landed: true
+  value_check: row landed
+  basis: tested
+  notes: 'recorded: restart; destination decimal(18,4); row landed; recorded as ''alter-decimal-widen''; same as without the utility script (run notes)'
+- id: string-length-narrow
+  ddl: NVARCHAR(50) -> NVARCHAR(20)
+  column_before: NVARCHAR(50)
+  column_after: NVARCHAR(20)
+  source_accepted: true
+  events:
+  - class: null
+    level: warning
+    message: restart (class not recorded in the run notes)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: string
+  post_change_row_landed: true
+  value_check: row landed
+  basis: tested
+  notes: 'recorded: restart; destination string; row landed; recorded as ''alter-string-length''; same as without the utility script (run notes)'
+- id: drop-column
+  ddl: DROP COLUMN v
+  column_before: NVARCHAR(50)
+  column_after: absent
+  source_accepted: true
+  events:
+  - class: CDC_APPLIER_SCHEMA_CHANGED_DURING_STREAMING
+    level: warning
+    message: restart (CDC_APPLIER_SCHEMA_CHANGED_DURING_STREAMING)
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: true
+  value_check: row landed
+  basis: tested
+  notes: 'recorded: restart (CDC_APPLIER_SCHEMA_CHANGED_DURING_STREAMING); destination keeps v; row landed; same as without the utility script (run notes)'
+- id: bigint-to-int
+  ddl: n BIGINT -> INT
+  column_before: BIGINT
+  column_after: INT
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+    level: error
+    message: stop, CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE, full refresh
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: stop, CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE, full refresh; recorded as ''alter-numeric-narrow''; same as without the utility script (run notes)'
+- id: int-to-string
+  ddl: n INT -> NVARCHAR(20)
+  column_before: INT
+  column_after: NVARCHAR(20)
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+    level: error
+    message: stop, CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE, full refresh
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: stop, CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE, full refresh; recorded as ''alter-incompatible''; same as without the utility script (run notes)'
+- id: add-nullable-with-default
+  ddl: ADD c INT NULL DEFAULT 5
+  column_before: absent
+  column_after: INT NULL DEFAULT 5
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL
+    level: error
+    message: stop, CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL, full refresh
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: stop, CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL, full refresh; same as without the utility script (run notes)'

@@ -1,0 +1,35 @@
+{
+  "id": "postgres-add-drop-column-stops-without-objects",
+  "title": "ADD and DROP COLUMN stop a PostgreSQL standard CDC table without the DDL support objects, though the docs list them as supported",
+  "kind": "connector-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "postgres"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "DDL matrix: PostgreSQL standard CDC reruns with and without DDL support objects"
+  },
+  "symptom": "ADD COLUMN (nullable) and DROP COLUMN each fail the update with DDL_NOT_SUPPORTED and stop the table; the docs' feature table lists new and deleted columns as supported",
+  "cause": "The run's messages show the connector can't parse a column add or drop without the DDL support objects (DDL_NOT_SUPPORTED); with them and inline DDL tracking, the change is applied. The connector code wasn't read for this rerun",
+  "effect": "Each change needs a table reset with a full refresh; without one the new row doesn't land",
+  "fix": "Install the DDL support objects and enable inline DDL tracking (by Databricks support). With both, ADD COLUMN lands the new row through CDC (no interruption) and DROP COLUMN keeps the column in the destination",
+  "where": [
+    "skills/lfc-schema-change-test/references/ddl-matrix-results.md"
+  ],
+  "refs": [
+    "https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/postgresql"
+  ],
+  "notes": "Inline DDL tracking is documented as on hold for stabilization; this rerun used it as enabled by Databricks support."
+}

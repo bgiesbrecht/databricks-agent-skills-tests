@@ -1,0 +1,32 @@
+{
+  "id": "postgres-generated-column-not-replicated",
+  "title": "An added PostgreSQL generated column is not replicated, and no error is raised",
+  "kind": "connector-behavior",
+  "status": "open",
+  "applies": {
+    "source": [
+      "postgres"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "DDL matrix: PostgreSQL standard CDC reruns with and without DDL support objects"
+  },
+  "symptom": "ADD COLUMN cc INTEGER GENERATED ALWAYS AS (n * 2) STORED: the update completes with no error, and the destination has no cc column",
+  "cause": "Not read from the connector code. The run shows the generated column is not carried into the destination on the standard CDC path without the DDL support objects",
+  "effect": "Silent: a reader of the destination finds no column and no event explains it",
+  "fix": "Carry the value as a plain column, or compute it downstream. With the DDL support objects and inline DDL tracking the add stops the table, and the reset snapshot materialises the generated values (20, 40, 60)",
+  "where": [
+    "skills/lfc-schema-change-test/references/ddl-matrix-results.md"
+  ],
+  "notes": "Rerun 2026-10-26, no objects: row 3 landed for id, n and v; the destination has no cc."
+}

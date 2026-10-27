@@ -15,6 +15,8 @@ line of its usage. Run a script with no arguments for its full usage instead of 
 - `bin/scripts_index.py` [--check]: write SCRIPTS.md, one line per runnable script (a #! line): its path and the first line of its usage heade...
 - `bin/stop_after.sh` Stop each pipeline's latest update once it has run longer than a limit.
 - `bin/test_scripts.sh` regression tests for the skills' scripts.
+- `bin/test_scripts.sh` regression tests for the skills' scripts.
+- `bin/test_scripts.sh` regression tests for the skills' scripts.
 
 ## account-token-fallback
 
@@ -47,6 +49,8 @@ line of its usage. Run a script with no arguments for its full usage instead of 
 
 ## lfc-schema-change-test
 
+- `skills/lfc-schema-change-test/scripts/ddl-matrix-validate.py` [FILES...]: check schema-change matrix result files (results/ddl-matrix/*.yaml).
+- `skills/lfc-schema-change-test/scripts/ddl-matrix.py` the schema-change matrix. One case catalog (ddl-cases.yaml) for every engine and mechanism.
 - `skills/lfc-schema-change-test/scripts/external-reads.sh` who else can read a Lakeflow Connect destination streaming table? Answers a field question (dbt and external engines)...
 - `skills/lfc-schema-change-test/scripts/integrated-scd2-ct.sh` SCD_TYPE_2 on a change-tracking table, on integrated CDC. Tables (10 rows each): s1ct (change tracking, SCD type 1), ...
 - `skills/lfc-schema-change-test/scripts/integrated-split-boundary.sh` does integrated CDC on SQL Server load every row of a table whose snapshot splits on a DATETIME2(7) column? Tables (1...
