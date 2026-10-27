@@ -4,14 +4,18 @@
 #   masters                                   the masters a database can start from ($ROOT/masters)
 #   ls [--all]                                your databases (--all: everyone's): engine, state, port, created, last up
 #   up <engine> <name> [--from <master> | --empty]
-#                                             start <name>: resume it if it exists, else clone a master (juicefs clone;
-#                                             postgres, mysql, sqlserver) or start empty. Engines: postgres, mysql,
+#                                             start <name>: resume it if it exists, else clone a master (fs_clone:
+#                                             juicefs clone or an XFS reflink) or start empty. Engines: postgres, mysql,
 #                                             sqlserver, oracle, mariadb, db2, informix, cockroachdb, yugabytedb.
 #                                             Parks your other running database first when you're at MAX_PER_OWNER.
 #                                             Prints one JSON line: name, engine, host, port, user, password, container,
 #                                             state, and service (oracle: the PDB lfc_user lives in) and database (the
 #                                             database a test uses, where the engine has one)
 #   park <name>                               stop it; the data stays on JuiceFS
+#   clone <name> <new name>                   copy your database <name> to a new parked database <new name> (up starts
+#                                             it, with its own port and lfc_user password). JuiceFS: juicefs clone;
+#                                             XFS: cp --reflink=always; both share blocks, so it takes seconds. A
+#                                             running <name> is stopped for the copy and started again after
 #   rm <name>                                 stop it and delete its data
 #   usage [--days <n>] [--all]                hours running per owner in the last n days (default 7), from the ledger
 #   sql <name> [database] [--wide]            run SQL from stdin as the engine's admin in your running database <name>
@@ -182,6 +186,22 @@ admin_sql() {
 all_metas() { find "$STATE" -mindepth 2 -maxdepth 2 -name '*.json' 2>/dev/null; }
 field() { jq -r ".$2 // empty" "$1"; }
 
+# fs_clone <from> <to>: a copy that shares blocks with <from>: juicefs clone on a JuiceFS ROOT (metadata only), else
+# cp --reflink=always (XFS with reflink, as disk-setup.sh formats it); no silent full copy
+fs_clone() {
+  if [ "$(findmnt -n -o FSTYPE --target "$ROOT" 2>/dev/null)" = fuse.juicefs ]; then
+    juicefs clone --preserve "$1" "$2" >/dev/null
+  else
+    cp -a --reflink=always "$1" "$2" || { rm -rf "${2:?}"; die "no reflink copy on $ROOT: it must be XFS with reflink=1 (disk-setup.sh)"; }
+  fi
+}
+free_port() {   # the first port in the range that no record holds and nothing listens on (a container started elsewhere)
+  local used p
+  used=$( { for m in $(all_metas); do field "$m" port; done; ss -Htln | awk '{n = split($4, a, ":"); print a[n]}'; } | sort -n)
+  for p in $(seq "$PORT_MIN" "$PORT_MAX"); do grep -qx "$p" <<<"$used" || { echo "$p"; return; }; done
+  die "no free port in $PORT_MIN-$PORT_MAX"
+}
+
 park_one() {   # owner name
   local c; c=$(cname "$1" "$2")
   if podman container exists "$c"; then podman stop -t 120 "$c" >/dev/null 2>&1 || true; podman rm -f "$c" >/dev/null 2>&1 || true; fi
@@ -233,7 +253,7 @@ case $CMD in
         if [ -n "$FROM" ]; then
           [[ $FROM =~ ^[A-Za-z0-9._-]+$ ]] && [ -d "$ROOT/masters/$FROM" ] || die "no master $FROM (slot.sh masters)"
           [ -f "$SECRETS/$E.env" ] || die "no admin env $SECRETS/$E.env for the $E masters"
-          juicefs clone --preserve "$ROOT/masters/$FROM" "$D" >/dev/null 2>&1 || cp -a --reflink=auto "$ROOT/masters/$FROM" "$D"
+          fs_clone "$ROOT/masters/$FROM" "$D"
           cp "$SECRETS/$E.env" "$STATE/$OWNER/$N.env"
         else
           install -d "$D"
@@ -253,10 +273,7 @@ case $CMD in
           esac > "$STATE/$OWNER/$N.env"
         fi
         pw > "$STATE/$OWNER/$N.login"
-        # ports in the ledger, and ports something else listens on (a container started outside slot.sh)
-        used=$( { for m in $(all_metas); do field "$m" port; done; ss -Htln | awk '{n = split($4, a, ":"); print a[n]}'; } | sort -n)
-        P=""; for p in $(seq "$PORT_MIN" "$PORT_MAX"); do grep -qx "$p" <<<"$used" || { P=$p; break; }; done
-        [ -n "$P" ] || die "no free port in $PORT_MIN-$PORT_MAX"
+        P=$(free_port)
         jq -n --arg e "$E" --arg p "$P" --arg c "$(now)" --arg f "${FROM:-empty}" --arg i "$IMAGE" \
           '{engine: $e, port: ($p | tonumber), created: $c, from: $f, image: $i}' > "$M"
         umask 022
@@ -292,6 +309,30 @@ case $CMD in
     N=${1:-}; name_ok "$N"; [ -f "$(meta "$OWNER" "$N")" ] || die "no database $N"
     exec 9>"$LOCK"; flock 9
     if running "$OWNER" "$N"; then park_one "$OWNER" "$N"; echo "parked $N: its data stays in $ROOT/dbs/$OWNER/$N"; else echo "$N is already parked"; fi ;;
+
+  clone)
+    N=${1:-}; T=${2:-}; name_ok "$N"; name_ok "$T"; [ "$N" != "$T" ] || die "clone to a new name"
+    M=$(meta "$OWNER" "$N"); MT=$(meta "$OWNER" "$T"); [ -f "$M" ] || die "no database $N"
+    D=$ROOT/dbs/$OWNER/$N; DT=$ROOT/dbs/$OWNER/$T
+    exec 9>"$LOCK"; flock 9
+    [ -f "$MT" ] && die "$T exists"
+    [ -e "$DT" ] && die "$DT exists without a record; remove it or pick another name"
+    E=$(field "$M" engine); was=0
+    if running "$OWNER" "$N"; then was=1; echo "slot: stopping $N for a consistent copy" >&2; park_one "$OWNER" "$N"; fi
+    t0=$(date +%s)
+    umask 077
+    fs_clone "$D" "$DT"
+    cp "$STATE/$OWNER/$N.env" "$STATE/$OWNER/$T.env"   # the admin password is inside the copied data
+    pw > "$STATE/$OWNER/$T.login"                      # up sets lfc_user's password to it
+    PT=$(free_port)
+    jq --arg p "$PT" --arg c "$(now)" --arg f "clone:$N" '.port = ($p | tonumber) | .created = $c | .from = $f' "$M" > "$MT"
+    umask 022
+    log "$T" clone
+    secs=$(( $(date +%s) - t0 ))
+    if [ $was = 1 ]; then exec 9>&-; "$0" --owner "$OWNER" up "$E" "$N" >/dev/null || echo "slot: $N didn't start again: up $E $N" >&2; fi
+    jq -cn --arg n "$T" --arg e "$E" --arg f "$N" --arg s "$secs" --arg p "$(field "$MT" port)" \
+      '{name: $n, engine: $e, from: $f, port: ($p | tonumber), state: "parked", seconds: ($s | tonumber)}'
+    echo "slot: up $E $T starts it" >&2 ;;
 
   rm)
     N=${1:-}; name_ok "$N"; M=$(meta "$OWNER" "$N"); [ -f "$M" ] || die "no database $N"
