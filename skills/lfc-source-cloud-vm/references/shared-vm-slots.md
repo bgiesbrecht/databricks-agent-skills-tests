@@ -13,6 +13,7 @@ On the VM as root (`slot.sh [--owner <owner>] <command>`), or from a laptop thro
 | `up <engine> <name> --empty` | starts an empty database |
 | `up <engine> <name>` | resumes a parked database (no change if it's running) |
 | `park <name>` | stops the container; the data stays |
+| `clone <name> <new name>` | copies your database to a new parked one (`up` starts it, with its own port and `lfc_user` password): `juicefs clone` on a JuiceFS volume, `cp --reflink=always` on XFS, so blocks are shared and it takes seconds; a running database is stopped for the copy and started again |
 | `rm <name>` | stops it and deletes its data |
 | `ls [--all]` | your databases (`--all`: everyone's): engine, state, port, created, from |
 | `usage [--days n] [--all]` | hours running per owner and database in the last n days (default 7) |
