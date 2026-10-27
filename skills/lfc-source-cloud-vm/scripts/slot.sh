@@ -29,7 +29,7 @@
 # Settings, from /etc/lfc-slot.env if present: HOST (address printed for connections; set it on Azure, see host()),
 # ROOT (/mnt/jfs), STATE (/var/lib/lfc/slots), PORT_MIN/PORT_MAX (30000/30063), MAX_RUNNING (vCPUs / CPUS_PER_DB, at least 1), CPUS_PER_DB (2; 1 on a personal VM),
 # MAX_PER_OWNER (1; 0 = no limit, for a personal VM), SECRETS (/root/lfc-src: the admin env files tpc-master.sh used),
-# LOCK (the lock file for one command at a time; default $STATE/.lock: keep it on a local disk when STATE is on a
+# LOCK_WAIT (600 s: how long a command waits for another to finish), LOCK (the lock file for one command at a time; default $STATE/.lock: keep it on a local disk when STATE is on a
 # JuiceFS volume, where flock isn't checked here). STATE on /mnt/jfs needs that volume mounted, or the command stops.
 set -euo pipefail
 [ -r /etc/lfc-slot.env ] && . /etc/lfc-slot.env
@@ -38,6 +38,9 @@ PORT_MIN=${PORT_MIN:-30000} PORT_MAX=${PORT_MAX:-30063} MAX_PER_OWNER=${MAX_PER_
 CPUS_PER_DB=${CPUS_PER_DB:-2}
 MAX_RUNNING=${MAX_RUNNING:-$(( $(nproc) / CPUS_PER_DB ))}; [ "$MAX_RUNNING" -ge 1 ] || MAX_RUNNING=1
 LOCK=${LOCK:-$STATE/.lock}
+lock() {   # one command at a time; LOCK_WAIT (600 s) bounds the wait behind another command instead of hanging with it
+  flock -w "${LOCK_WAIT:-600}" 9 || die "another slot command still holds $LOCK after ${LOCK_WAIT:-600} s: see it with pgrep -af lfc-slot"
+}
 usage() { sed -n '2,/^[^#]/p' "$0" | sed '$d' >&2; exit 2; }
 die() { echo "slot: $*" >&2; exit 1; }
 OWNER="admin"
@@ -101,19 +104,22 @@ engine() {
   esac
 }
 # sql <container> <engine>: run stdin as the engine's admin (Db2: connected to LFCDB; Informix: in sysmaster)
-sql() {
+sql() {   # PROBE_TIMEOUT=<s>: give up on one call after that long (the readiness probe sets it; real work doesn't)
+  local t=(); [ -n "${PROBE_TIMEOUT:-}" ] && t=(timeout "$PROBE_TIMEOUT")
+  {   # fd 9 is the lock: an exec (and its conmon) must not hold it after this command ends
   case $2 in
-    postgres) podman exec -i -e PGOPTIONS="-c client_min_messages=warning" "$1" psql -v ON_ERROR_STOP=1 -q -U postgres -d postgres ;;
-    mysql) podman exec -i "$1" sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot' ;;
-    sqlserver) podman exec -i "$1" sh -c 'f=$(mktemp); cat > $f; /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "$MSSQL_SA_PASSWORD" -b -i $f; r=$?; rm -f $f; exit $r' ;;
-    oracle) { echo "whenever sqlerror exit failure"; cat; echo "exit"; } | podman exec -i "$1" sqlplus -s -L / as sysdba ;;
-    mariadb) podman exec -i "$1" sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" mariadb -uroot' ;;
-    db2) podman exec -i "$1" bash -c 'f=$(mktemp); chmod 644 "$f"; { echo "connect to LFCDB;"; cat; } > "$f"; su - db2inst1 -c "db2 -x -t -s -f $f"; r=$?; rm -f "$f"; [ $r -lt 4 ]' ;;
-    informix) podman exec -i "$1" bash -lc 'dbaccess sysmaster -' ;;   # the container's user is informix; dbaccess is on its login PATH
-    cockroachdb) podman exec -i "$1" /cockroach/cockroach sql --insecure --format=tsv ;;
+    postgres) "${t[@]}" podman exec -i -e PGOPTIONS="-c client_min_messages=warning" "$1" psql -v ON_ERROR_STOP=1 -q -U postgres -d postgres ;;
+    mysql) "${t[@]}" podman exec -i "$1" sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot' ;;
+    sqlserver) "${t[@]}" podman exec -i "$1" sh -c 'f=$(mktemp); cat > $f; /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "$MSSQL_SA_PASSWORD" -b -i $f; r=$?; rm -f $f; exit $r' ;;
+    oracle) { echo "whenever sqlerror exit failure"; cat; echo "exit"; } | "${t[@]}" podman exec -i "$1" sqlplus -s -L / as sysdba ;;
+    mariadb) "${t[@]}" podman exec -i "$1" sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" mariadb -uroot' ;;
+    db2) "${t[@]}" podman exec -i "$1" bash -c 'f=$(mktemp); chmod 644 "$f"; { echo "connect to LFCDB;"; cat; } > "$f"; su - db2inst1 -c "db2 -x -t -s -f $f"; r=$?; rm -f "$f"; [ $r -lt 4 ]' ;;
+    informix) "${t[@]}" podman exec -i "$1" bash -lc 'dbaccess sysmaster -' ;;   # the container's user is informix; dbaccess is on its login PATH
+    cockroachdb) "${t[@]}" podman exec -i "$1" /cockroach/cockroach sql --insecure --format=tsv ;;
     yugabytedb) ip=$(podman inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$1")
-                podman exec -i "$1" bin/ysqlsh -h "$ip" -U yugabyte -v ON_ERROR_STOP=1 -q -At ;;
+                "${t[@]}" podman exec -i "$1" bin/ysqlsh -h "$ip" -U yugabyte -v ON_ERROR_STOP=1 -q -At ;;
   esac
+  } 9>&-
 }
 probe() {   # the query that says the engine answers (Oracle: once its PDB is open too)
   case $1 in
@@ -130,7 +136,7 @@ ready() {
   elif [ "$2" = db2 ]; then    # Db2's setup (instance, then the database) runs after the start; the image logs its end
     [ "$(podman logs "$1" 2>&1 | grep -cF '(*) Setup has completed')" -gt 0 ] || return 1
   fi
-  probe "$2" | sql "$1" "$2" >/dev/null 2>&1
+  probe "$2" | PROBE_TIMEOUT=30 sql "$1" "$2" >/dev/null 2>&1
 }
 # prep <engine> <container> <password> <env file>: what a start needs before lfc_user's login: OS users (Db2, Informix),
 # the Informix admin's OS password from its env file, the Informix test database. Every start runs it again (idempotent)
@@ -226,7 +232,7 @@ case $CMD in
     E=${1:-}; N=${2:-}; shift 2 || usage; name_ok "$N"; engine "$E"
     FROM="" EMPTY=0
     while [ $# -gt 0 ]; do case $1 in --from) FROM=${2:-}; shift 2 ;; --empty) EMPTY=1; shift ;; *) usage ;; esac; done
-    exec 9>"$LOCK"; flock 9
+    exec 9>"$LOCK"; lock
     M=$(meta "$OWNER" "$N"); D=$ROOT/dbs/$OWNER/$N; C=$(cname "$OWNER" "$N")
     if [ -f "$M" ]; then
       [ "$(field "$M" engine)" = "$E" ] || die "$N is a $(field "$M" engine) database"
@@ -291,7 +297,8 @@ case $CMD in
     fi
     # every up, started or already running: an up cut short (its ssh dropped during a first start) leaves a running
     # container without lfc_user, so the login runs again here (it's idempotent)
-    for _ in $(seq 1 $((WAIT / 2))); do
+    deadline=$((SECONDS + WAIT))   # wall time: a probe that hangs counts against the wait (each probe gives up after 30 s)
+    while [ "$SECONDS" -lt "$deadline" ]; do
       ready "$C" "$E" && break
       [ "$(podman inspect -f '{{.State.Running}}' "$C" 2>/dev/null)" = true ] || die "$E in $C stopped: podman logs $C"
       sleep 2
@@ -307,14 +314,14 @@ case $CMD in
 
   park)
     N=${1:-}; name_ok "$N"; [ -f "$(meta "$OWNER" "$N")" ] || die "no database $N"
-    exec 9>"$LOCK"; flock 9
+    exec 9>"$LOCK"; lock
     if running "$OWNER" "$N"; then park_one "$OWNER" "$N"; echo "parked $N: its data stays in $ROOT/dbs/$OWNER/$N"; else echo "$N is already parked"; fi ;;
 
   clone)
     N=${1:-}; T=${2:-}; name_ok "$N"; name_ok "$T"; [ "$N" != "$T" ] || die "clone to a new name"
     M=$(meta "$OWNER" "$N"); MT=$(meta "$OWNER" "$T"); [ -f "$M" ] || die "no database $N"
     D=$ROOT/dbs/$OWNER/$N; DT=$ROOT/dbs/$OWNER/$T
-    exec 9>"$LOCK"; flock 9
+    exec 9>"$LOCK"; lock
     [ -f "$MT" ] && die "$T exists"
     [ -e "$DT" ] && die "$DT exists without a record; remove it or pick another name"
     E=$(field "$M" engine); was=0
@@ -336,7 +343,7 @@ case $CMD in
 
   rm)
     N=${1:-}; name_ok "$N"; M=$(meta "$OWNER" "$N"); [ -f "$M" ] || die "no database $N"
-    exec 9>"$LOCK"; flock 9
+    exec 9>"$LOCK"; lock
     running "$OWNER" "$N" && park_one "$OWNER" "$N"
     D=$ROOT/dbs/$OWNER/$N
     if [ -d "$D" ]; then juicefs rmr "$D" >/dev/null 2>&1 || rm -rf "${D:?}"; fi
