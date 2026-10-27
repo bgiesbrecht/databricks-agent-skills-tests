@@ -32,9 +32,12 @@ class Engine:
             if t in tabs: tabs[t].parents.add(p)
             if n == 1: fk[(t, c)] = p
         # insertable columns: not generated, and not a non-key AUTO_INCREMENT column (the database numbers it)
-        cur.execute("""SELECT table_name, column_name, ordinal_position, data_type, column_type, character_maximum_length, numeric_precision,
-                              numeric_scale, column_key, extra, column_comment, srs_id
-                       FROM information_schema.columns WHERE table_schema = %s AND generation_expression = ''
+        # srs_id is MySQL 8's column (spatial types); MariaDB has none, so it reads as 0 there
+        cur.execute("SELECT VERSION()")
+        srs = "0" if "mariadb" in str(cur.fetchone()[0]).lower() else "srs_id"
+        cur.execute(f"""SELECT table_name, column_name, ordinal_position, data_type, column_type, character_maximum_length, numeric_precision,
+                              numeric_scale, column_key, extra, column_comment, {srs}
+                       FROM information_schema.columns WHERE table_schema = %s AND COALESCE(generation_expression, '') = ''
                        ORDER BY table_name, ordinal_position""", (sch,))
         for t, c, pos, dt, ct, ml, p, s, key, extra, cm, srs in cur.fetchall():
             if t not in tabs or ("auto_increment" in extra and key != "PRI"): continue

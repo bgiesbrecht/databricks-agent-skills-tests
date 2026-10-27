@@ -13,8 +13,8 @@ CREATE TABLE IF NOT EXISTS lfc_seed.tags (db VARCHAR(64), tbl VARCHAR(64), col V
 -- lfc_tabs: the tables that qualify (a one-column primary key, or lfc:n), with their key formula.
 DROP TEMPORARY TABLE IF EXISTS lfc_tabs;
 CREATE TEMPORARY TABLE lfc_tabs AS
-SELECT t.table_schema AS db, t.table_name AS tbl, REGEXP_SUBSTR(CONCAT(t.table_comment, ' ', COALESCE((SELECT g.tag FROM lfc_seed.tags g WHERE g.db = t.table_schema AND g.tbl = t.table_name AND g.col = ''), '')), '(?<=lfc:n=\\{)[^}]*') AS nkey,
-       REGEXP_SUBSTR(CONCAT(t.table_comment, ' ', COALESCE((SELECT g.tag FROM lfc_seed.tags g WHERE g.db = t.table_schema AND g.tbl = t.table_name AND g.col = ''), '')), '(?<=lfc:by=\\{)[^}]*') AS byc,
+SELECT t.table_schema AS db, t.table_name AS tbl, NULLIF(REGEXP_SUBSTR(CONCAT(t.table_comment, ' ', COALESCE((SELECT g.tag FROM lfc_seed.tags g WHERE g.db = t.table_schema AND g.tbl = t.table_name AND g.col = ''), '')), '(?<=lfc:n=\\{)[^}]*'), '') AS nkey,
+       NULLIF(REGEXP_SUBSTR(CONCAT(t.table_comment, ' ', COALESCE((SELECT g.tag FROM lfc_seed.tags g WHERE g.db = t.table_schema AND g.tbl = t.table_name AND g.col = ''), '')), '(?<=lfc:by=\\{)[^}]*'), '') AS byc,
        (SELECT COUNT(*) FROM information_schema.statistics s WHERE s.table_schema = t.table_schema AND s.table_name = t.table_name
           AND s.index_name = 'PRIMARY') AS npk,
        (SELECT s.column_name FROM information_schema.statistics s WHERE s.table_schema = t.table_schema AND s.table_name = t.table_name
@@ -25,8 +25,8 @@ DROP TEMPORARY TABLE IF EXISTS lfc_cols;
 CREATE TEMPORARY TABLE lfc_cols AS
 SELECT c.table_schema AS db, c.table_name AS tbl, c.column_name AS col, c.ordinal_position AS pos, c.column_key = 'PRI' AS is_pk,
   c.column_key IN ('PRI', 'UNI') AS is_unique, fk.referenced_table_schema AS fk_db, fk.referenced_table_name AS fk_tbl,
-  c.cm LIKE '%lfc:added%' AS added, REGEXP_SUBSTR(c.cm, '(?<=lfc:v=\\{)[^}]*') AS v,
-  REGEXP_SUBSTR(c.cm, '(?<=lfc:e=\\{)[^}]*') AS e,
+  c.cm LIKE '%lfc:added%' AS added, NULLIF(REGEXP_SUBSTR(c.cm, '(?<=lfc:v=\\{)[^}]*'), '') AS v,
+  NULLIF(REGEXP_SUBSTR(c.cm, '(?<=lfc:e=\\{)[^}]*'), '') AS e,
   CASE c.data_type
     -- integers (signed / unsigned)
     WHEN 'tinyint'   THEN IF(c.column_type LIKE '%unsigned%', 'x.n % 255', 'x.n % 127')
@@ -93,7 +93,7 @@ SELECT c.table_schema AS db, c.table_name AS tbl, c.column_name AS col, c.ordina
   END AS chk,
   -- length to generate: the declared length, or @lob_len (default 100) for text and blob types, capped at the type's max
   -- (or the column's lfc:len={L}, for a source's average width)
-  COALESCE(CAST(REGEXP_SUBSTR(c.cm, '(?<=lfc:len=\\{)[0-9]+') AS UNSIGNED),
+  COALESCE(CAST(NULLIF(REGEXP_SUBSTR(c.cm, '(?<=lfc:len=\\{)[0-9]+'), '') AS UNSIGNED),   -- '' on no match (MariaDB) would fail strict CAST
            CASE WHEN c.data_type IN ('char', 'varchar', 'binary', 'varbinary') THEN c.character_maximum_length
                 ELSE LEAST(GREATEST(COALESCE(@lob_len, 100), 38), c.character_maximum_length) END) AS len,
   CASE WHEN c.data_type IN ('tinyint', 'smallint', 'mediumint', 'int', 'bigint') THEN CONCAT('`', c.column_name, '`')
@@ -110,7 +110,7 @@ LEFT JOIN (SELECT table_schema, table_name, column_name, MAX(referenced_table_sc
                     AND k2.constraint_name = k.constraint_name AND k2.table_name = k.table_name) = 1
            GROUP BY table_schema, table_name, column_name) fk
   ON fk.table_schema = c.table_schema AND fk.table_name = c.table_name AND fk.column_name = c.column_name AND c.column_key <> 'PRI'
-WHERE c.table_schema = @db AND c.generation_expression = ''
+WHERE c.table_schema = @db AND COALESCE(c.generation_expression, '') = ''
   AND NOT (c.extra LIKE '%auto_increment%' AND c.column_key <> 'PRI');     -- the database numbers a non-key AUTO_INCREMENT column
 -- strings: zero-padded n at the start and (from 38 characters) the end, MD5 filler between, to the length;
 -- the audit checks both ends and the length, so a truncated value shows up. A non-digit where n should be is a mismatch.
