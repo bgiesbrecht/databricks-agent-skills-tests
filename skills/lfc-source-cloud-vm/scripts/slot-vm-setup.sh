@@ -15,13 +15,23 @@
 #   RESTORE_DUMP=<gzipped juicefs dump>: when the metadata store is empty, load this dump into it instead of formatting
 #   the volume (a VM rebuilt over the data its volume has in object storage). Without it, an empty store is formatted.
 #   JFS_VERSION=<x.y.z>: install this JuiceFS release (when the client isn't installed yet). Unset: the latest release.
+#   STORAGE=local: no JuiceFS and no object storage while the VM runs (a cloud without credentials for the VM, e.g. AWS
+#   with no instance profile): the databases live on the data disk itself, ROOT=/var/lib/containers (masters/, dbs/,
+#   .state/, .secrets/ for the admin env files), and slot.sh clones a master with `cp --reflink`. VOLUME, BUCKET and
+#   azure.env aren't used. A disk from the old layout (lfc-data/masters, lfc-data/secrets) is moved into place. rclone
+#   and zstd are installed for the copy to object storage the admin runs before the VM is deleted.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-: "${VOLUME:?VOLUME=<volume name>}" "${BUCKET:?BUCKET=https://<container>.core.windows.net}" "${HOST:?HOST=<public address>}"
+STORAGE=${STORAGE:-juicefs}
+case $STORAGE in juicefs|local) ;; *) echo "STORAGE: juicefs or local, not $STORAGE"; exit 1 ;; esac
+: "${HOST:?HOST=<public address>}"
 DISK=${DISK:-/dev/disk/azure/scsi1/lun0}
-[ -s /etc/juicefs/azure.env ] || { echo "no /etc/juicefs/azure.env: write the storage connection string first"; exit 1; }
 PERSONAL=0; [ "${KIND:-}" = personal ] && PERSONAL=1
-chmod 600 /etc/juicefs/azure.env
+if [ "$STORAGE" = juicefs ]; then
+  : "${VOLUME:?VOLUME=<volume name>}" "${BUCKET:?BUCKET=https://<container>.core.windows.net}"
+  [ -s /etc/juicefs/azure.env ] || { echo "no /etc/juicefs/azure.env: write the storage connection string first"; exit 1; }
+  chmod 600 /etc/juicefs/azure.env
+fi
 step() { echo "== $*"; }
 
 step "packages (after cloud-init's own)"
@@ -29,7 +39,9 @@ cloud-init status --wait >/dev/null 2>&1 || true
 export DEBIAN_FRONTEND=noninteractive
 command -v podman >/dev/null && command -v jq >/dev/null && dpkg -s fuse3 >/dev/null 2>&1 \
   || { apt-get update -qq && apt-get install -y -qq podman fuse3 jq xfsprogs >/dev/null; }
-if ! command -v juicefs >/dev/null; then
+if [ "$STORAGE" = local ]; then
+  command -v rclone >/dev/null && command -v zstd >/dev/null || apt-get install -y -qq rclone zstd >/dev/null
+elif ! command -v juicefs >/dev/null; then
   if [ -n "${JFS_VERSION:-}" ]; then V="v${JFS_VERSION#v}"; else V=$(curl -fsSL https://api.github.com/repos/juicedata/juicefs/releases/latest | jq -r .tag_name); fi
   T=$(mktemp -d); trap 'rm -rf "${T:?}"' EXIT
   (cd "$T" && curl -fsSLO "https://github.com/juicedata/juicefs/releases/download/$V/juicefs-${V#v}-linux-amd64.tar.gz" \
@@ -37,10 +49,26 @@ if ! command -v juicefs >/dev/null; then
     && grep " juicefs-${V#v}-linux-amd64.tar.gz" checksums.txt | sha256sum -c - >/dev/null \
     && tar xzf "juicefs-${V#v}-linux-amd64.tar.gz" juicefs && install juicefs /usr/local/bin/)
 fi
-juicefs version | head -1
+[ "$STORAGE" = local ] || juicefs version | head -1
 
 step "data disk at /var/lib/containers"
 DISK=$DISK MNT=/var/lib/containers bash "$here/disk-setup.sh"
+
+if [ "$STORAGE" = local ]; then
+step "databases on the data disk (no JuiceFS)"
+R=/var/lib/containers
+xfs_growfs $R >/dev/null   # a disk made larger than the snapshot it came from
+install -d -m 755 $R/masters $R/dbs; install -d -m 700 $R/.secrets
+for old in masters secrets; do   # a disk from the old layout: same filesystem, so a rename
+  [ -d $R/lfc-data/$old ] || continue
+  dst=$R/masters; [ $old = secrets ] && dst=$R/.secrets
+  for d in $R/lfc-data/$old/*; do [ -e "$d" ] && { [ -e "$dst/$(basename "$d")" ] || mv "$d" "$dst/"; }; done
+  rmdir $R/lfc-data/$old 2>/dev/null || true
+done
+rmdir $R/lfc-data 2>/dev/null || true
+[ $PERSONAL = 0 ] || install -d -m 700 $R/.state
+systemctl enable --now podman-restart.service >/dev/null 2>&1
+else
 J=/var/lib/containers/jfs; install -d $J/cache $J/redis /mnt/jfs
 CACHE_MB=${CACHE_MB:-$(( $(df -m --output=size /var/lib/containers | tail -1) / 2 ))}
 
@@ -91,15 +119,19 @@ for _ in $(seq 1 30); do findmnt -t fuse.juicefs /mnt/jfs >/dev/null && break; s
 findmnt -t fuse.juicefs /mnt/jfs >/dev/null || { echo "FAIL: /mnt/jfs isn't mounted: journalctl -u lfc-jfs"; exit 1; }
 install -d /mnt/jfs/masters /mnt/jfs/dbs
 [ $PERSONAL = 0 ] || install -d -m 700 /mnt/jfs/.state
+fi
 
 step "slot.sh and the slot user"
 install -m 755 "$here/slot.sh" /usr/local/sbin/lfc-slot
 install -m 755 "$here/slot-ssh.sh" /usr/local/sbin/lfc-slot-ssh
+if [ "$STORAGE" = local ]; then D=/var/lib/containers; else D=/mnt/jfs; fi
 { printf 'HOST=%s\n' "$HOST"; [ -z "${SLOT_SETTINGS:-}" ] || printf '%s\n' "$SLOT_SETTINGS"
-  [ $PERSONAL = 0 ] || printf 'STATE=/mnt/jfs/.state\nLOCK=/var/lib/lfc/lock\n'; } > /etc/lfc-slot.env
+  [ "$STORAGE" = juicefs ] || printf 'ROOT=%s\nSECRETS=%s/.secrets\n' $D $D
+  [ $PERSONAL = 0 ] || printf 'STATE=%s/.state\nLOCK=/var/lib/lfc/lock\n' $D; } > /etc/lfc-slot.env
 id slot >/dev/null 2>&1 || useradd -m -s /bin/bash slot
 echo 'slot ALL=(root) NOPASSWD: /usr/local/sbin/lfc-slot' > /etc/sudoers.d/lfc-slot; chmod 440 /etc/sudoers.d/lfc-slot
 visudo -cq
 install -d -o slot -g slot -m 700 ~slot/.ssh
 touch ~slot/.ssh/authorized_keys; chown slot:slot ~slot/.ssh/authorized_keys; chmod 600 ~slot/.ssh/authorized_keys
-echo "OK: $VOLUME mounted at /mnt/jfs (cache $CACHE_MB MiB), lfc-slot installed, HOST=$HOST"
+if [ "$STORAGE" = local ]; then echo "OK: databases on the data disk at $D (no JuiceFS), lfc-slot installed, HOST=$HOST"
+else echo "OK: $VOLUME mounted at /mnt/jfs (cache $CACHE_MB MiB), lfc-slot installed, HOST=$HOST"; fi
