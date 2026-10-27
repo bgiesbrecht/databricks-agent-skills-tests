@@ -75,7 +75,7 @@ bash $S/sqldb.sh status            # Online, Paused or Resuming
 
 ### Option B: SQL Managed Instance (production-like)
 
-**Warning:** First MI in a new subnet takes **4–6 hours** to provision; later ones 30–60 minutes.
+**Warning:** First MI in a new subnet can take **4–6 hours** to provision (one General Purpose 4-vCore instance took 2 hours on 2026-10-26); later ones 30–60 minutes.
 
 [`scripts/mi.sh`](scripts/mi.sh) does every step. It puts the instance in its own `/27` subnet in an existing VNet, delegated to `Microsoft.Sql/managedInstances`, with the subnet's own NSG (`<subnet>-nsg`) and route table (`0.0.0.0/0` to Internet), which MI needs before it's created. MI adds its own management rules to that NSG; don't attach the shared VM NSG to the subnet. The NSG starts with no rule for the public data endpoint (port 3342), so the instance is closed to everything outside the VNet until **lfc-source-firewall** syncs the laptop and Databricks egress ranges into `<subnet>-nsg`: the same list as every other source.
 
@@ -111,6 +111,8 @@ CREATE TABLE dbo.intpk (pk INT IDENTITY NOT NULL PRIMARY KEY, dt DATETIME, ops V
 CREATE TABLE dbo.dtix (pk BIGINT, dt DATETIME, ops VARCHAR(255) DEFAULT 'insert');
 ```
 
+**The utility objects script** is optional for tables read through change tracking (the same schema evolution without it) and required for CDC: without its CDC objects the first update fails with `INGESTION_GATEWAY_DDL_OBJECTS_MISSING`, for every table in that database. `CLEANUP` mode removes only the DDL support objects; [`scripts/uninstall-lakeflow.sql`](scripts/uninstall-lakeflow.sql) removes everything, checked with a before/after catalog diff. What each step adds and removes: [utility-objects.md](references/utility-objects.md).
+
 ## Register the UC connection
 
 ```bash
@@ -141,7 +143,7 @@ unset LFC_PASSWORD
 
 **Host and port:**
 - **SQL Database:** `<pfx>-mssql-<location>-<epoch>.database.windows.net:1433`
-- **SQL MI (public endpoint):** `<public_fqdn>:3342`
+- **SQL MI (public endpoint):** `<public_fqdn>:3342`, the host `mi.sh endpoint` prints (`<name>.public.<dns zone>.database.windows.net`)
 
 ## Verify connectivity
 
