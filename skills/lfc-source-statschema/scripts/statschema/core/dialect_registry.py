@@ -27,6 +27,9 @@ DIALECT_ALIASES: dict[str, str] = {
     "cockroach":   "postgres",   # CockroachDB — Postgres wire protocol; DDL is Postgres-compatible
     "cockroachdb": "postgres",
     "crdb":        "postgres",
+    "yugabytedb":  "postgres",   # YugabyteDB YSQL — PostgreSQL wire protocol and catalog (fork of Postgres)
+    "yugabyte":    "postgres",
+    "yb":          "postgres",
     "mariadb":     "mysql",      # MariaDB — MySQL wire protocol; DDL is MySQL-compatible
     "maria":       "mysql",
     "mariadb_columnstore": "mysql",
@@ -58,7 +61,7 @@ SQLGLOT_DIALECT: dict[str, str] = {
 
 # ``schema_source`` / ``format_hint`` strings that mean Postgres-flavored DDL (not enum members).
 SCHEMA_SOURCE_POSTGRES_ALIASES: frozenset[str] = frozenset(
-    {"postgresql", "pg", "neon", "neondb", "cockroach", "cockroachdb", "crdb", "lakebase"}
+    {"postgresql", "pg", "neon", "neondb", "cockroach", "cockroachdb", "crdb", "yugabytedb", "yugabyte", "yb", "lakebase"}
 )
 
 # ``schema_source`` / ``format_hint`` strings that mean MySQL-flavored DDL (not enum members).
@@ -74,7 +77,7 @@ SCHEMA_SOURCE_DB2_ALIASES: frozenset[str] = frozenset(
 # Wire-protocol families used by query collectors, replayers, and CLI routing.
 # All product names and aliases that share the same driver / system views.
 PG_FAMILY: frozenset[str] = frozenset(
-    {"postgres", "postgresql", "neon", "neondb", "cockroach", "cockroachdb", "crdb", "lakebase"}
+    {"postgres", "postgresql", "neon", "neondb", "cockroach", "cockroachdb", "crdb", "yugabytedb", "yugabyte", "yb", "lakebase"}
 )
 MYSQL_FAMILY: frozenset[str] = frozenset(
     {"mysql", "mariadb", "maria", "mariadb_columnstore"}
