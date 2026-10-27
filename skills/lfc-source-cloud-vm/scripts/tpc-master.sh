@@ -60,7 +60,7 @@ cockroachdb|yugabytedb)   # PostgreSQL-protocol servers: the Postgres planners t
     P=5433; U=yugabyte; ADMIN=yugabyte; DDLD=postgres
     chown 10001:100 $M   # the image runs as yugabyte (uid 10001, group users), as slot.sh does
     podman run -d --name $C --label lfc.engine=$E --label lfc.purpose=tpc-master --label lfc.master=$NAME -v $M:/yb:Z docker.io/yugabytedb/yugabyte:2026.1.2.0-b137 \
-      bin/yugabyted start --base_dir=/yb --advertise_address=127.0.0.1 --background=false > /dev/null
+      bin/yugabyted start --base_dir=/yb --advertise_address=127.0.0.1 --tserver_flags=pgsql_proxy_bind_address=0.0.0.0:5433 --background=false > /dev/null
     ready_sql() { podman run --rm --network container:$C docker.io/library/postgres:16 psql -X -q -At -h 127.0.0.1 -p $P -U $U -d $ADMIN -c 'SELECT 1'; }
     stop_db() { podman stop -t 120 $C > /dev/null; }
   fi
