@@ -39,7 +39,7 @@ umask 077; J=$(mktemp)
 jq -n --rawfile pw "$LOGIN_PW_FILE" --arg n "$CONNECTION_NAME" --arg h "$VM_IP" --arg p "$PORT" --arg u "$LOGIN" --arg c "$NAME" \
   '{name: $n, connection_type: "SQLSERVER", comment: ("SQL Server container " + $c + " on the test VM, port " + $p),
     options: {host: $h, port: $p, user: $u, password: ($pw | rtrimstr("\n")), trustServerCertificate: "true"}}' > "$J"
-databricks connections create --json @"$J" --profile "$PROFILE" -o json >/dev/null; rc=$?; rm -f "$J"
+rc=0; databricks connections create --json @"$J" --profile "$PROFILE" -o json >/dev/null || rc=$?; rm -f "$J"   # || rc: under set -e a failure would skip the rm and leave the password file
 [ $rc = 0 ] || { echo "connection $CONNECTION_NAME not created"; exit 2; }
 WH=$(databricks warehouses list --profile "$PROFILE" -o json | yq '[.[] | select(.enable_serverless_compute)][0].id')
 Q="SELECT * FROM remote_query('$CONNECTION_NAME', database => 'master', query => 'SELECT SUSER_NAME() AS u')" \
