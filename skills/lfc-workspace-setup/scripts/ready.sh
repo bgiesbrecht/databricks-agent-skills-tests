@@ -72,9 +72,10 @@ esac
 ADMIN=$(databricks api get /api/2.0/preview/scim/v2/Me --profile $P -o json 2>/dev/null | yq -p json -o tsv '[.groups[]?.display | select(. == "admins")] | length')
 val() { databricks api get /api/2.1/settings/$1 --profile $P -o json 2>/dev/null \
         | yq -p json -o tsv 'with(select(has("boolean_val")); .v = .boolean_val.value) | with(select(has("boolean_val") | not); .v = .effective_boolean_val.value) | .v'; }
-for s in integrated_cdc_sql_server_connector integrated_cdc_mysql_connector integrated_cdc_oracle_connector conn_cdc_col_select; do
+for s in integrated_cdc_sql_server_connector integrated_cdc_mysql_connector integrated_cdc_oracle_connector integrated_cdc_postgres_connector conn_cdc_col_select; do
   v=$(val $s); fix="databricks workspace-settings-v2 patch-public-workspace-setting $s --json '{\"name\": \"$s\", \"boolean_val\": {\"value\": true}}' --profile $P"
   if [ "$v" = true ]; then row PASS "4 preview $s" "on"; continue; fi
+  if [ "$s" = integrated_cdc_postgres_connector ] && { [ -z "$v" ] || [ "$v" = null ]; }; then row INFO "4 preview $s" "no setting on this workspace (rolled out in phases; ask the account team)"; continue; fi
   if [ $ENABLE = no ]; then row WARN "4 preview $s" "${v:-not readable}" "$fix   (workspace admin; or rerun without --no-enable)"; continue; fi
   if [ "${ADMIN:-0}" -eq 0 ]; then row WARN "4 preview $s" "${v:-not readable}; not a workspace admin, so not enabled" "$fix   (a workspace admin)"; continue; fi
   echo "      >>> turning on preview $s in $P (it was ${v:-not readable}; --no-enable to skip)"
