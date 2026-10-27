@@ -8,7 +8,7 @@ The matrix runs the same schema-change cases on each engine, mechanism and setup
 
 - `engine`: `sqlserver`, `postgres`, `mysql`, `oracle`
 - `mechanism`: `ct`, `cdc` (SQL Server), `logical-replication` (PostgreSQL), `binlog` (MySQL), `logminer` (Oracle), `query-based`
-- `setup`: `none`, `utility-1.7`, `utility-1.7-cleanup` (the utility installed, then its CDC objects removed by `CLEANUP`), `setup-package` (Oracle: the Databricks setup package). A new setup needs its slug in the validator's list. The run number after the date orders the runs of a day (no suffix is run 1).
+- `setup`: `none`, `utility-1.7`, `utility-1.7-cleanup` (the utility installed, then its CDC objects removed by `CLEANUP`), `setup-package` (Oracle: the Databricks setup package), `ddl-objects-1.0` (PostgreSQL: the DDL support objects and inline DDL tracking enabled by Databricks support). A new setup needs its slug in the validator's list. The run number after the date orders the runs of a day (no suffix is run 1).
 
 ## The `environment` block
 
@@ -55,9 +55,11 @@ Each case is one table with two starting rows, one DDL, and one insert in the ne
 - A **restart** is a running update that ends with `FLOW_SCHEMA_CHANGED` or `CDC_APPLIER_SCHEMA_CHANGED_DURING_STREAMING` and starts a new one by itself; no full refresh.
 - A **stop** is a table that needs a full refresh: a `CDC_INCOMPATIBLE_SCHEMA_CHANGES.*`, `INGESTION_GATEWAY_DDL_NOT_SUPPORTED`, `INGESTION_GATEWAY_MISSING_TABLE_IN_SOURCE`, `INGESTION_GATEWAY_UNTRACEABLE_TABLE_MODIFICATION` or `INGESTION_GATEWAY_DDL_OBJECTS_MISSING` class on the table.
 - **pipe-fails** is the pipeline stopping as a whole before any table loads.
-- **refused** is the source's own refusal of the DDL (nothing changed on the source for that statement).
+- **refused** is the source's own refusal of the DDL (nothing changed on the source for that statement). A refusal has no post-change row: `post_change_row_landed` is null and the table shows `n/a`.
 
-A stop, a pipeline failure or a refusal whose error class or refusal was seen means the row is not landed: it is written `post_change_row_landed: false` and `basis: tested`, never `unverified`. The validator refuses the other combination.
+A stop or a pipeline failure whose error class was seen means the row is not landed: it is written `post_change_row_landed: false` and `basis: tested`, never `unverified`. The validator refuses the other combination.
+
+A row that landed only after a table was reset (a table-only full refresh) came from the snapshot, not from CDC. It is written `post_change_row_landed: false` with a value check that says so; it is never CDC landed. A silent result (no error, a wrong value or a missing column) has `silent` in its value check and shows in the table.
 
 ### Landed rows, and what counts as a pass
 

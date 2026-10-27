@@ -333,7 +333,7 @@ cases:
   full_refresh_needed: null
   auto_full_refresh_applies: null
   destination_type_after: unchanged
-  post_change_row_landed: false
+  post_change_row_landed: null
   value_check: null
   basis: tested
   notes: carried from sqlserver-ct-2026-10-26 pipeline file (sqlserver-ct-2-2026-10-26.yaml); same refusal in the utility run with the full text

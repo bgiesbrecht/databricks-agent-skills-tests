@@ -340,7 +340,7 @@ cases:
   full_refresh_needed: null
   auto_full_refresh_applies: null
   destination_type_after: unchanged
-  post_change_row_landed: true
+  post_change_row_landed: null
   value_check: insert (3,...) landed; PK intact
   basis: tested
   notes: carried from sqlserver-cdc-2026-10-26.yaml; the no-utility run gave the same refusal (Msg 22979)
@@ -354,7 +354,7 @@ cases:
   full_refresh_needed: null
   auto_full_refresh_applies: null
   destination_type_after: unchanged
-  post_change_row_landed: false
+  post_change_row_landed: null
   value_check: post insert (old shape) landed on the source; destination not read (update failed)
   basis: tested
   notes: carried from sqlserver-cdc-2026-10-26.yaml
@@ -399,7 +399,7 @@ cases:
   full_refresh_needed: null
   auto_full_refresh_applies: null
   destination_type_after: unchanged
-  post_change_row_landed: false
+  post_change_row_landed: null
   value_check: null
   basis: tested
   notes: carried from sqlserver-cdc-2026-10-26.yaml; recorded as 'truncate-table'

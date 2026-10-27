@@ -330,7 +330,7 @@ cases:
   full_refresh_needed: null
   auto_full_refresh_applies: null
   destination_type_after: unchanged
-  post_change_row_landed: true
+  post_change_row_landed: null
   value_check: insert (3,3,c) landed; PK intact
   basis: tested
   notes: t_droppk; no pipeline event

@@ -181,7 +181,7 @@ cases:
   full_refresh_needed: false
   auto_full_refresh_applies: null
   destination_type_after: decimal(19,0) (unchanged)
-  post_change_row_landed: true
+  post_change_row_landed: null
   value_check: id 3, N 3 present (count 3)
   basis: tested
   notes: Oracle refusal; insert read back). Empty-column variant not run.; run case c09; recorded as 'alter-numeric-narrow'
@@ -198,7 +198,7 @@ cases:
   full_refresh_needed: false
   auto_full_refresh_applies: null
   destination_type_after: decimal(10,0) (unchanged)
-  post_change_row_landed: false
+  post_change_row_landed: null
   value_check: count 2 (no string row)
   basis: tested
   notes: Oracle refusal). Empty-column variant not run.; run case c10; recorded as 'alter-numeric-to-string'
@@ -342,7 +342,7 @@ cases:
   full_refresh_needed: false
   auto_full_refresh_applies: null
   destination_type_after: string
-  post_change_row_landed: true
+  post_change_row_landed: null
   value_check: id 3 present (count 3)
   basis: tested
   notes: Oracle refusal; insert read back). Pre-change destination type not read; empty-column variant not run.; run case c18; recorded as 'timestamp-to-timestamp-tz'

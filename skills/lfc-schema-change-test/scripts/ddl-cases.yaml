@@ -76,7 +76,7 @@ cases:
       oracle: "ALTER TABLE {t} ADD (c NUMBER(10) NULL);"
     post: "INSERT INTO {t} (id, n, v, c) VALUES (3, 30, 'c', 7);"
     expect: {id: "3", c: "7"}
-    aliases: [add-nullable-keyless, add-keyless]
+    aliases: [add-nullable-keyless, add-keyless, add-on-keyless]
     notes: "Keyless: CDC on SQL Server (change tracking needs a primary key). Postgres: REPLICA IDENTITY FULL, set by sql."
 
   - id: add-nullable-with-default
@@ -91,7 +91,7 @@ cases:
       oracle: "ALTER TABLE {t} ADD (c NUMBER(10) DEFAULT 5);"
     post: "INSERT INTO {t} (id, n, v) VALUES (3, 30, 'c');"
     expect: {id: "3"}
-    aliases: [add-nullable-with-default, add-nullable-default]
+    aliases: [add-nullable-with-default, add-nullable-default, add-nullable-default-5]
     notes: "The new column is filled in for existing rows: a backfill. The post insert omits c."
 
   - id: add-not-null-with-default
@@ -106,19 +106,20 @@ cases:
       oracle: "ALTER TABLE {t} ADD (c NUMBER(10) DEFAULT 5 NOT NULL);"
     post: "INSERT INTO {t} (id, n, v) VALUES (3, 30, 'c');"
     expect: {id: "3"}
-    aliases: [add-not-null-with-default, add-not-null-default]
+    aliases: [add-not-null-with-default, add-not-null-default, add-not-null-default-5]
     notes: "A backfill for existing rows, as the nullable form."
 
   - id: add-computed-column
     column: cc
     label: "ADD computed column cc AS (n * 2)"
     types: {sqlserver: "absent -> computed"}
-    applies: {sqlserver: [ct, cdc]}
+    applies: {sqlserver: [ct, cdc], postgres: [logical-replication]}
     ddl:
       sqlserver: "ALTER TABLE {t} ADD cc AS (n * 2);"
+      postgres: "ALTER TABLE {t} ADD COLUMN cc INTEGER GENERATED ALWAYS AS (n * 2) STORED;"
     post: "INSERT INTO {t} (id, n, v) VALUES (3, 30, 'c');"
     expect: {id: "3"}
-    aliases: [add-computed-column, add-computed]
+    aliases: [add-computed-column, add-computed, add-generated-column]
     notes: "SQL Server only."
 
   - id: add-identity-column
@@ -219,7 +220,7 @@ cases:
       oracle: "ALTER TABLE {t} MODIFY (n VARCHAR2(20));"
     post: "INSERT INTO {t} (id, n, v) VALUES (3, 'abc', 'c');"
     expect: {id: "3", n: "abc"}
-    aliases: [alter-incompatible, int-to-nvarchar, int-to-varchar, int-to-string, int-to-nvarchar-20, alter-numeric-to-string]
+    aliases: [alter-incompatible, int-to-nvarchar, int-to-varchar, int-to-string, int-to-nvarchar-20, alter-numeric-to-string, int-to-varchar-20]
     notes: "A type change, not a widen."
 
   - id: int-to-decimal-18-2

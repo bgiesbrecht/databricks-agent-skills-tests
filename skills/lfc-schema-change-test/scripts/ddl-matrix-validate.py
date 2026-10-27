@@ -27,7 +27,7 @@ ENGINES = {"sqlserver", "postgres", "mysql", "oracle"}
 MECHANISMS = {"ct", "cdc", "logical-replication", "binlog", "logminer", "query-based"}
 PIPELINE_MODES = {"integrated", "standard", "query-based"}
 COMPUTE = {"serverless", "classic"}
-SETUPS = {"none", "utility-1.7", "utility-1.7-cleanup", "setup-package"}
+SETUPS = {"none", "utility-1.7", "utility-1.7-cleanup", "setup-package", "ddl-objects-1.0"}
 METHODS = {"batch", "one-case-at-a-time", "not-recorded"}
 OUTCOMES = {"restart-no-full-refresh", "no-interruption", "table-stops-full-refresh", "pipeline-fails",
             "not-applicable", "not-run"}
@@ -43,7 +43,7 @@ CASE_KEYS = {"id", "ddl", "column_before", "column_after", "source_accepted", "e
 # PUBLIC_REPO_GUARD names its check script (the pre-commit hook runs it on the staged lines in any case).
 FORBIDDEN = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b|"
                        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|/Users/|/home/", re.I)
-NAME_RE = re.compile(r"^(?P<engine>[a-z]+)-(?P<mech>[a-z-]+?)-(?P<setup>none|utility-1\.7(?:-cleanup)?|setup-package)-"
+NAME_RE = re.compile(r"^(?P<engine>[a-z]+)-(?P<mech>[a-z-]+?)-(?P<setup>none|utility-1\.7(?:-cleanup)?|setup-package|ddl-objects-1\.0)-"
                      r"(?P<date>\d{4}-\d{2}-\d{2})(?:-(?P<n>\d+))?\.yaml$")
 
 
@@ -155,6 +155,8 @@ def check_doc(name: str, doc: object, cat: dict | None = None, text: str | None 
         stop_like = o in ("table-stops-full-refresh", "pipeline-fails", "not-applicable")
         evidence = any(isinstance(e, dict) and e.get("class") for e in (c.get("events") if isinstance(c.get("events"), list) else [])) or \
             (o == "not-applicable" and isinstance(c.get("source_accepted"), str))
+        if o == "not-applicable" and plr is not None:
+            out.append(f"{where}: a source refusal has no post-change row: post_change_row_landed is null")
         if stop_like and evidence and plr == "unverified":
             out.append(f"{where}: a stop or refusal with its error class or refusal seen is a row not landed (false), not unverified")
         if c.get("basis") == "confounded" and plr not in ("unverified", None):

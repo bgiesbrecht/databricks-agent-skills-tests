@@ -44,7 +44,7 @@ ENGINE_ORDER = ["sqlserver", "postgres", "mysql", "oracle"]
 SETUP_ORDER = {"none": 0, "utility-1.7": 1, "utility-1.7-cleanup": 2}
 DEFAULT_SCHEMA = {"sqlserver": "dbo", "postgres": "public", "mysql": "", "oracle": ""}
 UTILITY_URL = "https://learn.microsoft.com/en-us/azure/databricks/_extras/documents/utility_script.sql"
-STOP_RE = re.compile(r"CDC_INCOMPATIBLE_SCHEMA_CHANGES|INGESTION_GATEWAY_(?:DDL_|MISSING_TABLE|UNTRACEABLE|CDC_NOT)"
+STOP_RE = re.compile(r"CDC_INCOMPATIBLE_SCHEMA_CHANGES|INGESTION_GATEWAY_(?:DDL_|MISSING_TABLE|TABLE_DROPPED|UNTRACEABLE|CDC_NOT)"
                      r"|DDL_OBJECTS_MISSING|PRIMARY_KEY_CHANGE|PIPELINE_NON_RETRYABLE|SNAPSHOT_FAILED")
 RESTART_RE = re.compile(r"FLOW_SCHEMA_CHANGED|CDC_APPLIER_SCHEMA_CHANGED_DURING_STREAMING|will be restarted")
 CLASS_RE = re.compile(r"\b((?:CDC_INCOMPATIBLE_SCHEMA_CHANGES|INGESTION_GATEWAY_[A-Z_]+|FLOW_SCHEMA_CHANGED|CDC_[A-Z_]+|INTEGRATED_CDC_[A-Z_]+"
@@ -521,9 +521,11 @@ def parse_events(raw, opts: dict) -> list[dict]:
 
 def settle(entry: dict) -> dict:
     """A stop, a failed pipeline or a refusal whose error class or refusal was seen: the row is not landed (false), tested."""
-    stop_like = entry["outcome"] in ("table-stops-full-refresh", "pipeline-fails", "not-applicable")
-    evidence = any(e["class"] for e in entry["events"]) or \
-        (entry["outcome"] == "not-applicable" and isinstance(entry["source_accepted"], str))
+    if entry["outcome"] == "not-applicable":   # a source refusal: no post-change row exists
+        entry["post_change_row_landed"] = None
+        return entry
+    stop_like = entry["outcome"] in ("table-stops-full-refresh", "pipeline-fails")
+    evidence = any(e["class"] for e in entry["events"])
     if stop_like and evidence and entry["post_change_row_landed"] == "unverified":
         entry["post_change_row_landed"] = False
         if entry["basis"] != "partial":
@@ -536,8 +538,11 @@ BASIS_HEAD = re.compile(r"(tested|confounded|code-only|partial)\b")
 
 def structured_case(item: dict, env: dict, opts: dict) -> dict:
     """A case from a structured run file (cases: id/case, type_before, type_after, events as text, basis with a note)."""
-    name = str(item.get("case") or item.get("id"))
-    run_id = str(item["id"]) if item.get("case") else None
+    ident, casename = str(item.get("id") or ""), str(item.get("case") or "")
+    if re.sub(r"\s*\(.*\)$", "", ident).strip() in ALIAS or not casename:   # the name is in id (PostgreSQL) or in case (Oracle)
+        name, run_id = ident, (casename or None)
+    else:
+        name, run_id = casename, ident
     cid = ALIAS.get(re.sub(r"\s*\(.*\)$", "", name).strip())
     if cid is None:
         sys.exit(f"convert: no case in ddl-cases.yaml for {name!r}; add the name to the case's aliases")
@@ -581,10 +586,22 @@ def structured_case(item: dict, env: dict, opts: dict) -> dict:
         notes.append(f"run case {run_id}")
     if name != cid:
         notes.append(f"recorded as {name!r}")
+    dest = red(item.get("destination_type_after"), opts)
+    if dest is None and item.get("destination_describe_after_update"):
+        try:
+            cols = json.loads(str(item["destination_describe_after_update"]))
+            hit = next((r[1] for r in cols if r and r[0] == spec.get("column", "n")), None)
+            dest = hit if hit else "absent"
+        except (ValueError, IndexError, TypeError):
+            dest = None
+    note_text = " ".join(notes)
+    if vc is None and opts.get("snapshot_after_reset") and outcome in ("pipeline-fails", "table-stops-full-refresh") \
+            and landed is False and re.search(r"reset|snapshot", note_text):
+        vc = "landed by snapshot after the table reset (not CDC)"
     return {"id": cid, "ddl": red(item.get("ddl"), opts), "column_before": before, "column_after": after,
             "source_accepted": accepted, "events": parse_events(item.get("events"), opts), "outcome": outcome,
             "full_refresh_needed": fr, "auto_full_refresh_applies": None,
-            "destination_type_after": red(item.get("destination_type_after"), opts), "post_change_row_landed": landed,
+            "destination_type_after": dest, "post_change_row_landed": landed,
             "value_check": vc, "basis": basis, "notes": "; ".join(n for n in notes if n)}
 
 
@@ -648,6 +665,8 @@ def cell(entry: dict) -> str:
         RESTART_RE.search(e["class"]) or STOP_RE.search(e["class"]))), None)
     p = entry["post_change_row_landed"]
     landed = {True: "+", False: "-"}.get(p, "?" if p == "unverified" else "")
+    if o == "not-applicable":
+        landed = "n/a"
     if entry["basis"] == "partial":
         mark = "P"
     elif p == "unverified":
@@ -656,7 +675,9 @@ def cell(entry: dict) -> str:
         mark = "C"
     else:
         mark = "T"
-    return " ".join(x for x in [SHORT.get(o, o), short_class(cls), f"{landed}{mark}"] if x)
+    mark_text = f"n/a {mark}" if landed == "n/a" else f"{landed}{mark}"
+    silent = "silent" if "silent" in (entry.get("value_check") or "") else ""
+    return " ".join(x for x in [SHORT.get(o, o), short_class(cls), mark_text, silent] if x)
 
 
 def note_for(entry: dict) -> str | None:
@@ -668,6 +689,8 @@ def note_for(entry: dict) -> str | None:
         return "the source refused the DDL: " + str(entry.get("source_accepted"))
     if entry.get("value_check") and " as " in entry["value_check"]:
         return "landed with a different value: " + entry["value_check"]
+    if entry.get("value_check") and "silent" in entry["value_check"]:
+        return "silent (no error): " + entry["value_check"]
     if entry["basis"] == "confounded":
         return "confounded: the batch's update failed, so this row is not attributed to the change (unverified)"
     return None

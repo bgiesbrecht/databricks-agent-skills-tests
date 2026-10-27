@@ -64,7 +64,7 @@ cases:
   full_refresh_needed: null
   auto_full_refresh_applies: null
   destination_type_after: null
-  post_change_row_landed: true
+  post_change_row_landed: null
   value_check: landed
   basis: tested
   notes: 'recorded: refused by source, Msg 3735: primary key cannot be dropped because change tracking is enabled ("Change tracking requires a primary key constraint on the table"); no pipeline change;

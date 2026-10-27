@@ -200,7 +200,7 @@ cases:
   full_refresh_needed: null
   auto_full_refresh_applies: null
   destination_type_after: null
-  post_change_row_landed: false
+  post_change_row_landed: null
   value_check: null
   basis: tested
   notes: 'recorded: source REFUSED: "Cannot alter column ''n'' because it is ''REPLICATED''." (captured column); no pipeline change; post insert with old shape landed on source, destination not verified
@@ -232,7 +232,7 @@ cases:
   full_refresh_needed: null
   auto_full_refresh_applies: null
   destination_type_after: null
-  post_change_row_landed: true
+  post_change_row_landed: null
   value_check: post insert landed
   basis: tested
   notes: 'recorded: source REFUSED: "The unique index ''pk_c_droppk'' ... is used by Change Data Capture"; no pipeline change; post insert landed (1 row id 3)'
@@ -297,7 +297,7 @@ cases:
   full_refresh_needed: null
   auto_full_refresh_applies: null
   destination_type_after: null
-  post_change_row_landed: false
+  post_change_row_landed: null
   value_check: 2 rows from a plain insert, not a post-truncate row (the TRUNCATE was refused)
   basis: tested
   notes: 'recorded: source REFUSED: "Cannot truncate table ''dbo.c_trunc'' because it is published for replication or enabled for Change Data Capture" (Msg 4711 class per brief; server text shown here);

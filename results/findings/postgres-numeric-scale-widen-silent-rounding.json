@@ -1,0 +1,32 @@
+{
+  "id": "postgres-numeric-scale-widen-silent-rounding",
+  "title": "A PostgreSQL numeric scale widening lands rounded, with no error, without the DDL support objects",
+  "kind": "connector-behavior",
+  "status": "open",
+  "applies": {
+    "source": [
+      "postgres"
+    ],
+    "route": [
+      "lfc-scdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "DDL matrix: PostgreSQL standard CDC reruns with and without DDL support objects"
+  },
+  "symptom": "NUMERIC(10,2) to NUMERIC(18,4) on a standard CDC table: the update completes with no error, the destination keeps decimal(10,2), and 3.1234 lands as 3.12",
+  "cause": "Without the DDL support objects and inline DDL tracking, the scale change isn't applied to the destination; new values are written at the old scale",
+  "effect": "Silent loss of precision: no pipeline event, no failed update, the value in the destination differs from the source",
+  "fix": "Check the destination type after any type change. With the DDL support objects and inline DDL tracking, the same change stops the table with DDL_NOT_SUPPORTED, so it is visible; after a table reset the destination keeps decimal(18,4) and 3.1234",
+  "where": [
+    "skills/lfc-schema-change-test/references/ddl-matrix-results.md"
+  ],
+  "notes": "Rerun 2026-10-26, no objects: the update completed. With objects: the table stopped, then a table-only reset loaded 3.1234 at the new scale through the snapshot."
+}
