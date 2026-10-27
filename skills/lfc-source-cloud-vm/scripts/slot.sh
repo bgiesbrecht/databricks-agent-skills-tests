@@ -23,7 +23,7 @@
 # --owner: who the database belongs to. A forced SSH command sets it per key (see the skill), so a user can't pick
 # another owner; as root without --owner the owner is "admin".
 # Settings, from /etc/lfc-slot.env if present: HOST (address printed for connections; set it on Azure, see host()),
-# ROOT (/mnt/jfs), STATE (/var/lib/lfc/slots), PORT_MIN/PORT_MAX (30000/30063), MAX_RUNNING (vCPUs / 2),
+# ROOT (/mnt/jfs), STATE (/var/lib/lfc/slots), PORT_MIN/PORT_MAX (30000/30063), MAX_RUNNING (vCPUs / CPUS_PER_DB, at least 1), CPUS_PER_DB (2; 1 on a personal VM),
 # MAX_PER_OWNER (1; 0 = no limit, for a personal VM), SECRETS (/root/lfc-src: the admin env files tpc-master.sh used),
 # LOCK (the lock file for one command at a time; default $STATE/.lock: keep it on a local disk when STATE is on a
 # JuiceFS volume, where flock isn't checked here). STATE on /mnt/jfs needs that volume mounted, or the command stops.
@@ -31,7 +31,8 @@ set -euo pipefail
 [ -r /etc/lfc-slot.env ] && . /etc/lfc-slot.env
 ROOT=${ROOT:-/mnt/jfs} STATE=${STATE:-/var/lib/lfc/slots} SECRETS=${SECRETS:-/root/lfc-src}
 PORT_MIN=${PORT_MIN:-30000} PORT_MAX=${PORT_MAX:-30063} MAX_PER_OWNER=${MAX_PER_OWNER:-1}
-MAX_RUNNING=${MAX_RUNNING:-$(( $(nproc) / 2 ))}
+CPUS_PER_DB=${CPUS_PER_DB:-2}
+MAX_RUNNING=${MAX_RUNNING:-$(( $(nproc) / CPUS_PER_DB ))}; [ "$MAX_RUNNING" -ge 1 ] || MAX_RUNNING=1
 LOCK=${LOCK:-$STATE/.lock}
 usage() { sed -n '2,/^[^#]/p' "$0" | sed '$d' >&2; exit 2; }
 die() { echo "slot: $*" >&2; exit 1; }
@@ -221,7 +222,8 @@ case $CMD in
       fi
       run_now=$(podman ps --format '{{.Names}}' | grep -c '^lfc-slot-' || true)
       if [ "$run_now" -ge "$MAX_RUNNING" ]; then
-        die "the VM is full: $run_now of $MAX_RUNNING databases are running ($(podman ps --format '{{.Names}}' | grep '^lfc-slot-' | sed 's/^lfc-slot-//' | tr '\n' ' ')); try later, or ask for a VM of your own"
+        if [ "$MAX_PER_OWNER" = 0 ]; then next="park one, or a bigger VM (one database per $CPUS_PER_DB vCPU)"; else next="try later, or ask for a VM of your own"; fi
+        die "the VM is full: $run_now of $MAX_RUNNING databases are running ($(podman ps --format '{{.Names}}' | grep '^lfc-slot-' | sed 's/^lfc-slot-//' | tr '\n' ' ')); $next"
       fi
       if [ ! -f "$M" ]; then   # a new database: its data, admin env, login password and port
         [ -n "$FROM" ] || [ $EMPTY = 1 ] || die "new database: --from <master> or --empty (slot.sh masters)"
