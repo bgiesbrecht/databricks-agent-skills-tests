@@ -113,10 +113,11 @@ cases:
     column: cc
     label: "ADD computed column cc AS (n * 2)"
     types: {sqlserver: "absent -> computed"}
-    applies: {sqlserver: [ct, cdc], postgres: [logical-replication]}
+    applies: {sqlserver: [ct, cdc], postgres: [logical-replication], mysql: [binlog]}
     ddl:
       sqlserver: "ALTER TABLE {t} ADD cc AS (n * 2);"
       postgres: "ALTER TABLE {t} ADD COLUMN cc INTEGER GENERATED ALWAYS AS (n * 2) STORED;"
+      mysql: "ALTER TABLE {t} ADD COLUMN cc INT GENERATED ALWAYS AS (n * 2) STORED;"
     post: "INSERT INTO {t} (id, n, v) VALUES (3, 30, 'c');"
     expect: {id: "3"}
     aliases: [add-computed-column, add-computed, add-generated-column]

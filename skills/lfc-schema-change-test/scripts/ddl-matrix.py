@@ -507,8 +507,8 @@ def parse_events(raw, opts: dict) -> list[dict]:
         p = red(str(piece).strip().strip('"').strip(), opts)
         if not p or re.match(r"(?i)none\b", p):
             continue
-        m = re.match(r"([A-Z][A-Z0-9_]+(?:\.[A-Z0-9_]+)?)", p)
-        cls = m.group(1) if m and "_" in m.group(1) else None
+        m = re.search(r"\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+(?:\.[A-Z][A-Z0-9_]+)?)", p)   # a class, after any prefix
+        cls = m.group(1) if m else None
         rest = p[m.end():] if cls else p
         msg = re.sub(r"^[\s:(]*(WARN|ERROR|INFO)?[\s):]*", "", rest).strip()[:200] or p[:200]
         if cls and RESTART_RE.search(cls) or cls is None and "WARN" in p:
@@ -539,7 +539,10 @@ BASIS_HEAD = re.compile(r"(tested|confounded|code-only|partial)\b")
 def structured_case(item: dict, env: dict, opts: dict) -> dict:
     """A case from a structured run file (cases: id/case, type_before, type_after, events as text, basis with a note)."""
     ident, casename = str(item.get("id") or ""), str(item.get("case") or "")
-    if re.sub(r"\s*\(.*\)$", "", ident).strip() in ALIAS or not casename:   # the name is in id (PostgreSQL) or in case (Oracle)
+    case_map = opts.get("case_map") or {}
+    if ident in case_map:   # the run's own case names (MySQL: c01_add_null), mapped in the environment file
+        name, run_id = case_map[ident], ident
+    elif re.sub(r"\s*\(.*\)$", "", ident).strip() in ALIAS or not casename:   # the name is in id (PostgreSQL) or in case (Oracle)
         name, run_id = ident, (casename or None)
     else:
         name, run_id = casename, ident
@@ -595,9 +598,10 @@ def structured_case(item: dict, env: dict, opts: dict) -> dict:
         except (ValueError, IndexError, TypeError):
             dest = None
     note_text = " ".join(notes)
-    if vc is None and opts.get("snapshot_after_reset") and outcome in ("pipeline-fails", "table-stops-full-refresh") \
-            and landed is False and re.search(r"reset|snapshot", note_text):
-        vc = "landed by snapshot after the table reset (not CDC)"
+    if opts.get("snapshot_after_reset") and outcome in ("pipeline-fails", "table-stops-full-refresh") \
+            and landed in (True, False) and re.search(r"reset|snapshot", note_text):
+        landed = False   # a row seen only after a table reset came from the snapshot, never from CDC
+        vc = vc or "landed by snapshot after the table reset (not CDC)"
     return {"id": cid, "ddl": red(item.get("ddl"), opts), "column_before": before, "column_after": after,
             "source_accepted": accepted, "events": parse_events(item.get("events"), opts), "outcome": outcome,
             "full_refresh_needed": fr, "auto_full_refresh_applies": None,

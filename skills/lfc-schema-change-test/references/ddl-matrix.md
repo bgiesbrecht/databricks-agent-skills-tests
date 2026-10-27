@@ -98,7 +98,7 @@ uv run ddl-matrix.py collect --pipeline <pipeline-id> --profile <profile> --ware
 uv run ddl-matrix-validate.py ../../../results/ddl-matrix/*.yaml
 ```
 
-`env.yaml` is the `environment` block above, with the optional keys the converter reads (`class_map` for prose class names, `redact` for literal source names, `redact_re` for patterns such as pipeline names, profiles and IDs, `confound_no_error`, `not_run_events`, `overrides` for a case's fields; overrides apply before the stop-row rule). `collect --events-json ... --tables-json ...` runs the same parse on saved data, which is how the unit test runs.
+`env.yaml` is the `environment` block above, with the optional keys the converter reads (`class_map` for prose class names, `redact` for literal source names, `redact_re` for patterns such as pipeline names, profiles and IDs, `confound_no_error`, `not_run_events`, `overrides` for a case's fields; overrides apply before the stop-row rule), `case_map` (the run's own case names, mapped to catalog ids), `snapshot_after_reset` (a row seen only after a table reset is snapshot: false, with the value check). `collect --events-json ... --tables-json ...` runs the same parse on saved data, which is how the unit test runs.
 
 A run recorded in a structured file (`cases:` with type_before, type_after and events as text), or in prose (a scratch file, one line per case), goes through `convert`. The file's own environment block is replaced by `--env`:
 

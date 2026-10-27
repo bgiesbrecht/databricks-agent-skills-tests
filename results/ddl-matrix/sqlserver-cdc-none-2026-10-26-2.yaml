@@ -353,9 +353,9 @@ cases:
   column_after: table g_rentab_new
   source_accepted: true
   events:
-  - class: null
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
     level: error
-    message: 'rerun (separate pipeline <pipeline>, tables present at first update): INGESTION_GATEWAY_DDL_OBJECTS_MISSING (g_rentab) -> SNAPSHOT_FAILED_DUE_TO_CDC_FAILURE'
+    message: g_rentab) -> SNAPSHOT_FAILED_DUE_TO_CDC_FAILURE
   outcome: pipeline-fails
   full_refresh_needed: true
   auto_full_refresh_applies: null
@@ -370,9 +370,9 @@ cases:
   column_after: dropped
   source_accepted: true
   events:
-  - class: null
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
     level: error
-    message: 'rerun (separate pipeline): INGESTION_GATEWAY_DDL_OBJECTS_MISSING (g_droptab) -> SNAPSHOT_FAILED_DUE_TO_CDC_FAILURE'
+    message: g_droptab) -> SNAPSHOT_FAILED_DUE_TO_CDC_FAILURE
   outcome: pipeline-fails
   full_refresh_needed: true
   auto_full_refresh_applies: null

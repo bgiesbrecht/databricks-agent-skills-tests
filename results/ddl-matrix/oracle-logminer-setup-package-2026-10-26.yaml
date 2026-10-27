@@ -231,7 +231,7 @@ cases:
   - class: null
     level: error
     message: 'ReplicationException: Unable to find table ... in source'
-  - class: null
+  - class: INTEGRATED_CDC_EXTRACTOR_PARTIAL_EXECUTION_CLIENT_ERROR
     level: error
     message: full refresh attempt on the old name failed INTEGRATED_CDC_EXTRACTOR_PARTIAL_EXECUTION_CLIENT_ERROR
   outcome: table-stops-full-refresh
@@ -248,10 +248,9 @@ cases:
   column_after: no PRIMARY KEY
   source_accepted: true
   events:
-  - class: null
+  - class: C13_DROP_PK
     level: error
-    message: 'ExtractorException: CDC Connector encountered a DDL operation on table FREEPDB1.<schema>.C13_DROP_PK that is not supported for replication. Dropping primary key constraint on source requires
-      a full re'
+    message: that is not supported for replication. Dropping primary key constraint on source requires a full refresh on the target table
   outcome: table-stops-full-refresh
   full_refresh_needed: true
   auto_full_refresh_applies: null
@@ -266,10 +265,9 @@ cases:
   column_after: UNIQUE (N)
   source_accepted: true
   events:
-  - class: null
+  - class: C14_ADD_UNIQUE
     level: error
-    message: 'ExtractorException: CDC Connector encountered a DDL operation on table FREEPDB1.<schema>.C14_ADD_UNIQUE that is not supported for replication. Adding constraint on source requires a full refresh
-      on th'
+    message: that is not supported for replication. Adding constraint on source requires a full refresh on the target table
   outcome: table-stops-full-refresh
   full_refresh_needed: true
   auto_full_refresh_applies: null
