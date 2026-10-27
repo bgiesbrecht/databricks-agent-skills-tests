@@ -120,7 +120,7 @@ line of its usage. Run a script with no arguments for its full usage instead of 
 ## lfc-source-sizing
 
 - `skills/lfc-source-sizing/scripts/limits-check.py` Check a limits file against the documentation it cites: each row's quote must appear in its page's text.
-- `skills/lfc-source-sizing/scripts/size.sh` <profile> <connection> <postgres|mysql|sqlserver|oracle> [--database D | --service S] [--out DIR] [--top N] How big i...
+- `skills/lfc-source-sizing/scripts/size.sh` <profile> <connection> <postgres|mysql|mariadb|sqlserver|oracle|cockroachdb|yugabytedb> [--database D | --service S] ...
 
 ## lfc-source-statschema
 
