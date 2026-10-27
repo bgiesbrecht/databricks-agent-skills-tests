@@ -23,7 +23,7 @@ How the planner works (every row from one integer, resuming, keys only at the en
 
 A typical request: *"Create 100 tables, rows uniformly distributed up to 1 million, with a variety of data types."*
 
-**If the user doesn't know what schema they want, offer a standard one**: TPC-B (4 tables, the banking schema pgbench uses, including a table with no primary key) or TPC-H (8 tables, composite keys and foreign keys, 8.66M rows at scale factor 1), with the spec's sizes, keys, foreign keys, and constraints. See [references/tpc.md](references/tpc.md); TPC-C, TPC-DS, TPC-E, and TPC-DI come from **lfc-source-statschema**'s schemas. **If they have a database of their own but can't share its data**, build a copy with its shape from its statistics: **lfc-source-statschema**. Otherwise:
+**If the user doesn't know what schema they want, offer a standard one**: TPC-B (4 tables, the banking schema pgbench uses, including a table with no primary key) or TPC-H (8 tables, composite keys and foreign keys, 8.66M rows at scale factor 1), with the spec's sizes, keys, foreign keys, and constraints. See [references/tpc.md](references/tpc.md); `tpc-schema.sh` writes all six (TPC-C, TPC-DS, TPC-E, and TPC-DI shaped from **lfc-source-statschema**'s schemas). **If they have a database of their own but can't share its data**, build a copy with its shape from its statistics: **lfc-source-statschema**. Otherwise:
 
 | Choice | Default | Options |
 |---|---|---|
