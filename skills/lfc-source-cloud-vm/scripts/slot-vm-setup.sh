@@ -11,7 +11,8 @@
 #   supports, without the password, e.g. postgres://<role>@<host>:5432/<database>?sslmode=require for a managed
 #   Postgres; its password goes in azure.env as META_PASSWORD; default: the local Redis).
 #   KIND=personal: slot.sh's state goes on the volume at /mnt/jfs/.state (it comes back with the data when the VM is
-#   rebuilt), and its lock stays on the VM's disk (LOCK=/var/lib/lfc/lock). Any other value: as before.
+#   rebuilt), its lock stays on the VM's disk (LOCK=/var/lib/lfc/lock), and one vCPU per running database
+#   (CPUS_PER_DB=1). Any other value: as before.
 #   RESTORE_DUMP=<gzipped juicefs dump>: when the metadata store is empty, load this dump into it instead of formatting
 #   the volume (a VM rebuilt over the data its volume has in object storage). Without it, an empty store is formatted.
 #   JFS_VERSION=<x.y.z>: install this JuiceFS release (when the client isn't installed yet). Unset: the latest release.
@@ -127,7 +128,7 @@ install -m 755 "$here/slot-ssh.sh" /usr/local/sbin/lfc-slot-ssh
 if [ "$STORAGE" = local ]; then D=/var/lib/containers; else D=/mnt/jfs; fi
 { printf 'HOST=%s\n' "$HOST"; [ -z "${SLOT_SETTINGS:-}" ] || printf '%s\n' "$SLOT_SETTINGS"
   [ "$STORAGE" = juicefs ] || printf 'ROOT=%s\nSECRETS=%s/.secrets\n' $D $D
-  [ $PERSONAL = 0 ] || printf 'STATE=%s/.state\nLOCK=/var/lib/lfc/lock\n' $D; } > /etc/lfc-slot.env
+  [ $PERSONAL = 0 ] || printf 'STATE=%s/.state\nLOCK=/var/lib/lfc/lock\nCPUS_PER_DB=1\n' $D; } > /etc/lfc-slot.env
 id slot >/dev/null 2>&1 || useradd -m -s /bin/bash slot
 echo 'slot ALL=(root) NOPASSWD: /usr/local/sbin/lfc-slot' > /etc/sudoers.d/lfc-slot; chmod 440 /etc/sudoers.d/lfc-slot
 visudo -cq

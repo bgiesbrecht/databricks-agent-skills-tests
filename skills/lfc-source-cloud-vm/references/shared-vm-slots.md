@@ -38,7 +38,8 @@ Db2, Informix, CockroachDB and YugabyteDB get no CDC settings here: each test se
 | Setting (`/etc/lfc-slot.env`) | Default | When it's reached |
 |---|---|---|
 | `MAX_PER_OWNER` | 1 (0 = no limit) | `up` parks your other running database first |
-| `MAX_RUNNING` | vCPUs / 2 | `up` stops with `the VM is full` and lists what's running |
+| `MAX_RUNNING` | vCPUs / `CPUS_PER_DB`, at least 1 | `up` stops with `the VM is full` and lists what's running |
+| `CPUS_PER_DB` | 2; 1 on a personal VM (`KIND=personal`) | follows a resize: the limit is worked out from `nproc` each time |
 | `PORT_MIN`-`PORT_MAX` | 30000-30063 | `no free port`; each database keeps its port until `rm`. A port something else listens on (a container started outside slot.sh) is skipped |
 | `HOST` | the cloud metadata's public IP, else the first local IP | set it on Azure: the metadata has no public IP for a Standard SKU address |
 | `ROOT`, `STATE`, `SECRETS` | `/mnt/jfs`, `/var/lib/lfc/slots`, `/root/lfc-src` | `STATE` under `ROOT` needs `ROOT` mounted, else the command stops |
