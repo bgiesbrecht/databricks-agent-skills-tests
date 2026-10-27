@@ -6,9 +6,12 @@ environment:
   pipeline_mode: integrated
   compute: serverless
   runtime:
-    dbr: null
-    channel: null
-    image: null
+    dbr_version: '18.3'
+    channel: CURRENT
+    image_key: dlt:18.3.8-delta-pipelines-aarch64-photon-dlt-release-dp-20261015-rc0-commit-48da011-image-5bafb35
+    dp_build: dp-20261015-rc0
+    cloud_region: AWS us-west-2
+    basis: read from this run's pipeline
   workspace:
     cloud: AWS
     region: us-west-2

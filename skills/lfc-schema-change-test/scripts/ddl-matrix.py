@@ -212,10 +212,34 @@ def cli_json(args: list[str]) -> object:
 
 
 def fetch_events(pipeline: str, profile: str) -> list[dict]:
-    """All events of the pipeline: 250 a page, up to 5000 in all."""
-    data = cli_json(["pipelines", "list-pipeline-events", pipeline, "--profile", profile,
-                     "--max-results", "250", "--limit", "5000", "-o", "json"])
-    return data.get("events", []) if isinstance(data, dict) else data
+    """All events of the pipeline, with their details (the runtime is in one). The REST call pages 250 at a time: the
+    CLI's list-pipeline-events drops the details."""
+    events, tok = [], None
+    for _ in range(40):
+        path = f"/api/2.0/pipelines/{pipeline}/events?max_results=250" + (f"&page_token={tok}" if tok else "")
+        page = cli_json(["api", "get", path, "--profile", profile, "-o", "json"])
+        events += page.get("events", []) if isinstance(page, dict) else (page or [])
+        tok = page.get("next_page_token") if isinstance(page, dict) else None
+        if not tok:
+            break
+    return events
+
+
+def runtime_from_events(events: list[dict]) -> dict | None:
+    """The Lakeflow runtime of the latest runtime_details event: DBR version, channel, image key, the dp build in it,
+    and the cloud and region. None if the events have no such event."""
+    rts = [e for e in events if e.get("event_type") == "runtime_details"]
+    if not rts:
+        return None
+    e = max(rts, key=lambda x: x.get("timestamp", ""))
+    rv = ((e.get("details") or {}).get("runtime_details") or {}).get("runtime_version") or {}
+    image = rv.get("image_key") or None
+    m = re.search(r"dp-\d{8}-rc\d+", image or "") or re.search(r"dp-\d{8}", image or "")
+    origin = e.get("origin") or {}
+    cloud_region = f"{origin['cloud']} {origin['region']}" if origin.get("cloud") and origin.get("region") else None
+    return {"dbr_version": rv.get("dbr_version"), "channel": rv.get("channel"), "image_key": image,
+            "dp_build": m.group(0) if m else None, "cloud_region": cloud_region,
+            "basis": "read from this run's pipeline (the runtime_details event)"}
 
 
 def sql_rows(profile: str, warehouse: str, statement: str) -> tuple[list[str], list[list]]:
@@ -388,6 +412,12 @@ def cmd_collect(a: argparse.Namespace) -> int:
         tables = fetch_tables(a.profile, a.warehouse, a.dest, cases)
         if a.save_replay:
             Path(a.save_replay).write_text(json.dumps({"events": events, "tables": tables}, indent=1))
+    rt = runtime_from_events(events)   # read before anything is torn down: the runtime event is in the pipeline's events
+    if rt is not None:
+        env["runtime"] = rt
+    elif not env.get("runtime"):
+        env["runtime"] = {"dbr_version": None, "channel": None, "image_key": None, "dp_build": None, "cloud_region": None,
+                          "reason": "no runtime_details event in the events read; run collect before the pipeline is destroyed"}
     events = [e for e in events if since_ok(e, a.since)]
     state = update_state(events)
     present = [c for c in cases if tname(c["id"]) in tables]
@@ -641,6 +671,10 @@ def combo(env: dict) -> tuple:
     return (ENGINE_ORDER.index(env["engine"]), env["mechanism"], SETUP_ORDER.get(env["setup"], 3), env["engine"], env["setup"])
 
 
+def file_key_of(doc: dict) -> tuple:
+    return (str(doc["environment"].get("date")), 0)
+
+
 def file_key(name: str) -> tuple:
     """Run order: the date, then the run number (no suffix is run 1)."""
     m = re.search(r"-(\d{4}-\d{2}-\d{2})(?:-(\d+))?\.yaml$", name)
@@ -715,7 +749,10 @@ def render_md(files: list[tuple[str, dict]], detail: bool) -> str:
     headers = []
     for key in sorted(cols):
         e = cols[key][0]["environment"]
-        label = f"{e['engine']} {e['mechanism']} {e['setup']}" + (f" ({len(cols[key])} runs)" if len(cols[key]) > 1 else "")
+        newest = max(cols[key], key=lambda d: file_key_of(d))["environment"]
+        dp = ((newest.get("runtime") or {}).get("dp_build") or "")
+        label = f"{e['engine']} {e['mechanism']} {e['setup']}" + (f" · {dp}" if dp else "") \
+            + (f" ({len(cols[key])} runs)" if len(cols[key]) > 1 else "")
         headers.append((key, label))
     by_case: dict[str, dict[tuple, list[tuple]]] = {}
     for key, docs in cols.items():

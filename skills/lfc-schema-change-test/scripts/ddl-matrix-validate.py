@@ -33,6 +33,7 @@ OUTCOMES = {"restart-no-full-refresh", "no-interruption", "table-stops-full-refr
             "not-applicable", "not-run"}
 LEVELS = {"error", "warning", "info"}
 BASIS = {"tested", "confounded", "code-only", "partial"}
+RUNTIME_KEYS = {"dbr_version", "channel", "image_key", "dp_build", "cloud_region", "basis", "reason"}
 ENV_KEYS = {"engine", "product", "edition_tier", "version", "mechanism", "setup", "source_setup", "pipeline_mode",
             "compute", "runtime", "workspace", "date", "who_ran", "method", "caveats"}
 CASE_KEYS = {"id", "ddl", "column_before", "column_after", "source_accepted", "events", "outcome",
@@ -102,8 +103,18 @@ def check_doc(name: str, doc: object, cat: dict | None = None, text: str | None 
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(env.get("date", ""))):
         out.append("environment.date must be YYYY-MM-DD")
     rt = env.get("runtime")
-    if rt is not None and (not isinstance(rt, dict) or rt.keys() - {"dbr", "channel", "image"}):
-        out.append("environment.runtime must be a mapping of dbr, channel, image (null when not recorded)")
+    if rt is not None and (not isinstance(rt, dict) or rt.keys() - RUNTIME_KEYS):
+        out.append(f"environment.runtime must be a mapping of {sorted(RUNTIME_KEYS)}")
+    if isinstance(rt, dict):
+        if rt.get("dp_build") and not re.fullmatch(r"dp-\d{8}-rc\d+", str(rt["dp_build"])):
+            out.append("environment.runtime.dp_build must look like dp-YYYYMMDD-rcN")
+        if rt.get("dbr_version") is None and not rt.get("reason"):
+            out.append("environment.runtime with no dbr_version needs a reason")
+        if rt.get("dbr_version") is not None and not rt.get("basis"):
+            out.append("environment.runtime with a dbr_version needs a basis (where the value was read)")
+    if str(env.get("date", "")) >= "2026-10-27":   # from this date every run records its runtime build
+        if not isinstance(rt, dict) or not rt.get("dbr_version") or not rt.get("dp_build"):
+            out.append("a run from 2026-10-27 needs environment.runtime.dbr_version and dp_build")
     # the name matches the environment
     want = {"engine": m["engine"], "mechanism": m["mech"], "setup": m["setup"], "date": m["date"]}
     for k, v in want.items():

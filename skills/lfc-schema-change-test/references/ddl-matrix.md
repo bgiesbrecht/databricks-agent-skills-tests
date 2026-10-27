@@ -21,7 +21,7 @@ The matrix runs the same schema-change cases on each engine, mechanism and setup
 | `source_setup` | the setup in words: for `none`, the manual grants or enable calls; for a utility, the script version and options |
 | `pipeline_mode` | `integrated`, `standard` or `query-based` |
 | `compute` | `serverless` or `classic` |
-| `runtime` | `dbr`, `channel`, `image` of the Lakeflow runtime; each null when not recorded (don't guess) |
+| `runtime` | `dbr_version`, `channel`, `image_key`, `dp_build` (the `dp-YYYYMMDD-rcN` in the image key), `cloud_region`, and `basis` (where the values were read). `collect` reads them from the pipeline's runtime event. A null `dbr_version` needs a `reason`. From 2026-10-27 `dbr_version` and `dp_build` are required |
 | `workspace` | `cloud` and `region` of the workspace, not its name |
 | `date` | the run date, `YYYY-MM-DD` |
 | `method` | `batch` (all the DDL first, then the updates), `one-case-at-a-time`, or `not-recorded` |
@@ -29,6 +29,10 @@ The matrix runs the same schema-change cases on each engine, mechanism and setup
 | `who_ran` | optional, free text |
 
 No pipeline ID, warehouse ID, workspace name, connection name, server name, address or path goes in a file. The validator scans for the common ones; the rest is the author's check.
+
+Every run records the runtime (DBR version, channel, dp build), the setup script version, and, when a result rests on a code change, which release builds have it (the change's commit and the builds checked) and the flag's observed rollout value if one decides it.
+
+Run `collect` before the pipeline is destroyed: it reads the runtime from the pipeline's events, and after the pipeline is gone there's nothing to read.
 
 ## Cases
 
