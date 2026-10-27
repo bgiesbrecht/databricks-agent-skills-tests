@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fk-cascade-check.sh: does a database's change log carry the rows a foreign key's ON DELETE / ON UPDATE action changes?
 #
-#   VM_IP=<ip> bash fk-cascade-check.sh [mysql mariadb mysql9 postgres sqlserver oracle mysql-trigger]
+#   VM_IP=<ip> bash fk-cascade-check.sh [mysql mariadb mysql9 postgres sqlserver oracle cockroachdb yugabytedb db2 informix mysql-trigger]
 #
 # mysql-trigger: MySQL 8.4 with the workaround, a BEFORE DELETE trigger on the parent that deletes c's rows itself
 #
@@ -15,6 +15,14 @@
 # KEEP=1 keeps the containers (robertlee-fkcascade-<time>-<engine>) to look into; remove them with podman rm -f.
 # Each line: <engine> <read> <table> <operation> <rows>. Expected in the log for a complete record: p delete 1, p update 1,
 # c delete 2, n update 1, u update 1 (the inserts aside).
+# CockroachDB: a sinkless changefeed from a cursor (enables kv.rangefeed.enabled on the throwaway node). YugabyteDB, Db2,
+# Informix: the FK actions are checked by the rows left behind (c, n, u counts); their change logs are not read here (no
+# SQL reader for a yboutput slot in the image; no db2ReadLog or CDC API client in the Db2 or Informix images). Db2 has no
+# ON UPDATE CASCADE, so u is left out there. Informix takes the column-level REFERENCES clause (its table-level CONSTRAINT form is a syntax error).
+# Results (2026-10-27, shared test VM): cockroachdb: complete record (c delete 2, n update 1, p delete 1, p update 1, u update 1;
+# the insert shows after the wait). yugabytedb: cascade effects right (c 1 row, n 1 null, u pk 21); log not read. informix:
+# cascade on c right (1 row left); ON DELETE SET NULL is a syntax error there, so no n table; log not read. db2: the throwaway
+# container didn't create LFCDB within 30 minutes (two runs), so no result yet; log not read in any case.
 set -uo pipefail
 : "${VM_IP:?VM_IP}"
 WAIT=${WAIT:-60}
@@ -164,6 +172,79 @@ EXIT"
   rm_c $n
 }
 
+cockroachdb() {   # changefeed (rangefeeds on, sinkless): one row per change, the value a JSON with "before" and "after"
+  local n=robertlee-fkcascade-$TS-cockroachdb
+  vm "sudo podman run -d --name $n docker.io/cockroachdb/cockroach:v25.4.13 start-single-node --insecure >/dev/null"
+  local q="sudo podman exec -i $n /cockroach/cockroach sql --insecure --format=tsv"
+  for _ in $(seq 60); do echo 'SELECT 1' | vm "$q" >/dev/null 2>&1 && break; sleep 2; done
+  vm "$q" <<<"SET CLUSTER SETTING kv.rangefeed.enabled = true;" >/dev/null   # the feed needs rangefeeds (its own statement)
+  vm "$q" <<<"SELECT version();" | sed "s/^/cockroachdb source: /"
+  vm "$q" <<<"CREATE DATABASE t; USE t; $DDL_STD $LOAD" >/dev/null
+  local T
+  T=$(vm "$q" <<<"SELECT cluster_logical_timestamp();" | tail -1)   # the feed starts after this: the change, not the load
+  vm "$q" <<<"USE t; $CHANGE" >/dev/null
+  vm "$q" <<<"USE t; $AFTER;" | sed "s/^/cockroachdb source: /"
+  read_crdb() {   # the feed from T, for WAIT-free reads: a sinkless feed runs until the timeout
+    vm "timeout 20 sudo podman exec -i $n /cockroach/cockroach sql --insecure --format=tsv -d t -e \"EXPERIMENTAL CHANGEFEED FOR p, c, n, u WITH diff, format=json, no_initial_scan, cursor='$T'\"" |
+      grep -E '^[pcnu]	' | while IFS=$'\t' read -r tbl key val; do
+        json=$(printf '%s' "$val" | sed 's/^\\x//' | xxd -r -p)
+        case $json in *'"after": null'*) op=delete;; *'"before": null'*) op=insert;; *) op=update;; esac
+        echo "$tbl $op"; done | sort | uniq -c | awk -v e=cockroachdb -v r="$1" '{print e, r, $2, $3, $1}'; }
+  read_crdb now
+  sleep "$WAIT"; vm "$q" >/dev/null <<<"USE t; INSERT INTO p VALUES (9, 90);"
+  read_crdb "after-${WAIT}s"
+  rm_c $n
+}
+
+db2sql_run() {   # db2sql_run <container> < SQL: runs as db2inst1, connected to LFCDB (the file is copied in with podman cp)
+  local c=$1 f=/tmp/fk-db2-$TS.sql
+  { echo "CONNECT TO LFCDB;"; cat; echo "TERMINATE;"; } | vm "cat > $f"
+  vm "sudo podman cp $f $c:$f && sudo podman exec $c chmod 644 $f && sudo podman exec $c su - db2inst1 -c 'db2 -x -t -s -f $f'; r=\$?; sudo podman exec $c rm -f $f; rm -f $f; exit \$r"
+}
+yugabytedb() {   # YSQL with the FK actions; the change log is not read: no SQL reader for a yboutput slot here (see below)
+  local n=robertlee-fkcascade-$TS-yugabytedb D=/var/tmp/robertlee-fkcascade-$TS-yugabytedb
+  vm "sudo mkdir -p $D && sudo chown 10001:100 $D && sudo podman run -d --name $n -v $D:/yb:Z docker.io/yugabytedb/yugabyte:2026.1.2.0-b137 bin/yugabyted start --base_dir=/yb --advertise_address=127.0.0.1 --background=false >/dev/null"
+  local q="sudo podman exec -i $n bin/ysqlsh -h 127.0.0.1 -U yugabyte -v ON_ERROR_STOP=1 -q -At"
+  for _ in $(seq 90); do echo 'SELECT 1' | vm "$q" >/dev/null 2>&1 && break; sleep 5; done
+  vm "$q" <<<"SELECT version();" | sed 's/ on x86.*//; s/^/yugabytedb source: /'
+  vm "$q" <<<"$DDL_STD $LOAD $CHANGE" >/dev/null
+  vm "$q" <<<"$AFTER;" | sed "s/^/yugabytedb source: /"
+  # pgoutput (yboutput) slots exist, but peek functions refuse them ("WAL segment ... removed") and the image has no
+  # pg_recvlogical, so the change log is not read here
+  echo "yugabytedb now log not read: yboutput slots aren't readable with SQL here, and the image has no logical replication client"
+  vm "sudo rm -rf ${D:?}" 2>/dev/null
+  rm_c $n
+}
+db2() {          # Db2 LUW community: the FK actions with the change log not read (no db2ReadLog or ASN capture in the image)
+  local n=robertlee-fkcascade-$TS-db2
+  vm "sudo podman run -d --name $n --privileged -e LICENSE=accept -e DB2INSTANCE=db2inst1 -e DB2INST1_PASSWORD=\$(openssl rand -hex 12) -e DBNAME=LFCDB -e BLU=false -e ENABLE_ORACLE_COMPATIBILITY=false -e PERSISTENT_HOME=true -e ARCHIVE_LOGS=false -e AUTOCONFIG=false -e SAMPLEDB=false icr.io/db2_community/db2:11.5.9.0 >/dev/null"
+  for _ in $(seq 180); do vm "sudo podman exec $n su - db2inst1 -c 'db2 connect to LFCDB' >/dev/null 2>&1" && break; sleep 10; done
+  local ddl="CREATE TABLE p (id INT NOT NULL PRIMARY KEY, k INT NOT NULL UNIQUE);
+CREATE TABLE c (id INT NOT NULL PRIMARY KEY, pid INT NOT NULL REFERENCES p(id) ON DELETE CASCADE);
+CREATE TABLE n (id INT NOT NULL PRIMARY KEY, pid INT REFERENCES p(id) ON DELETE SET NULL);"   # Db2 has no ON UPDATE CASCADE
+  local sql="$ddl $(sed 's/; /;\n/g' <<<"$LOAD" | grep -v '^INSERT INTO u')
+$(sed 's/; /;\n/g' <<<"$CHANGE")
+SELECT (SELECT COUNT(*) FROM c) AS c_rows, (SELECT COUNT(*) FROM n WHERE pid IS NULL) AS n_nulls FROM sysibm.sysdummy1;"
+  printf '%s\n' "$sql" | db2sql_run "$n" | grep -v '^$' | sed 's/  */ /g' | tail -3 | sed 's/^/db2 source: /'
+  echo "db2 now log not read: the community image has no db2ReadLog client or ASN capture program"
+  rm_c $n
+}
+informix() {     # Informix Developer: the FK actions with the change log not read (no CDC API client in the image)
+  local n=robertlee-fkcascade-$TS-informix
+  vm "sudo podman run -d --name $n -e LICENSE=accept -e INFORMIX_PASSWORD=\$(openssl rand -hex 12) docker.io/ibmcom/informix-developer-database:14.10.FC7W1DE >/dev/null"
+  for _ in $(seq 120); do vm "sudo podman exec -i $n bash -lc 'echo \"SELECT 1 FROM sysmaster:sysdual;\" | dbaccess sysmaster -' >/dev/null 2>&1" && break; sleep 5; done
+  vm "sudo podman exec -i $n bash -lc 'dbaccess sysmaster -'" <<<"CREATE DATABASE fkt WITH LOG;" >/dev/null
+  vm "sudo podman exec -i $n bash -lc 'dbaccess fkt -'" >/dev/null <<EOF2
+CREATE TABLE p (id INT PRIMARY KEY, k INT NOT NULL UNIQUE);
+CREATE TABLE c (id INT PRIMARY KEY, pid INT NOT NULL REFERENCES p(id) ON DELETE CASCADE);
+# no n table: Informix rejects ON DELETE SET NULL (syntax error, tested)
+EOF2
+  vm "sudo podman exec -i $n bash -lc 'dbaccess fkt -'" >/dev/null <<<"$(sed 's/; /;\n/g' <<<"$LOAD" | grep -v '^INSERT INTO u'); $(sed 's/; /;\n/g' <<<"$CHANGE")"
+  vm "sudo podman exec -i $n bash -lc 'dbaccess fkt -'" <<<"SELECT (SELECT COUNT(*) FROM c) AS c_rows FROM systables WHERE tabid = 1;" | grep -E "^ *[0-9]" | sed 's/^/informix source: /'
+  echo "informix now log not read: the developer image has no CDC API client (onbar / ifx_cdc) for a readable change log"
+  rm_c $n
+}
+
 for e in "${ENGINES[@]}"; do
   case $e in
     mysql)   my mysql docker.io/library/mysql:8.4 mysql ;;
@@ -171,6 +252,10 @@ for e in "${ENGINES[@]}"; do
     mysql9)  my mysql9 docker.io/library/mysql:9 mysql ;;
     mariadb) my mariadb docker.io/library/mariadb:11.4 mariadb --log-bin=mysql-bin --binlog-format=ROW --server-id=1 ;;
     postgres|sqlserver|oracle) $e ;;
+    cockroachdb) cockroachdb ;;
+    yugabytedb) yugabytedb ;;
+    db2) db2 ;;
+    informix) informix ;;
     *) echo "unknown engine $e" >&2 ;;
   esac
 done
