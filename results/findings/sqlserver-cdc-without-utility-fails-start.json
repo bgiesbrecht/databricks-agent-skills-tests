@@ -1,0 +1,32 @@
+{
+  "id": "sqlserver-cdc-without-utility-fails-start",
+  "title": "SQL Server CDC without the utility objects fails the first update, and CLEANUP stops change tracking tables too",
+  "kind": "source-behavior",
+  "status": "workaround",
+  "applies": {
+    "source": [
+      "sqlserver"
+    ],
+    "route": [
+      "lfc-icdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "DDL matrix: SQL Server CDC runs with no utility script, and with utility script 1.7 then CLEANUP"
+  },
+  "symptom": "The first update fails within about 30 s: INGESTION_GATEWAY_DDL_OBJECTS_MISSING (DDL objects missing on a table; execute the DDL objects script and full refresh the table), then SNAPSHOT_FAILED_DUE_TO_CDC_FAILURE and PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR; nothing loads",
+  "cause": "CDC enabled by hand, with no utility objects, fails the gateway at the first snapshot. After CLEANUP of the utility CDC objects, every table fails the same way, change tracking tables in the same database included",
+  "effect": "No table in the pipeline loads; the tables need the objects restored and a full refresh",
+  "fix": "Install utility script 1.7 before the first update. Don't run CLEANUP on a database that a pipeline reads",
+  "where": [
+    "skills/lfc-schema-change-test/references/ddl-matrix-results.md"
+  ],
+  "notes": "The cause is the message and the run order; the gateway code wasn't read. Full-refresh and restore steps were not run."
+}

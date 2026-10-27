@@ -1,0 +1,413 @@
+# ddl-cases.yaml: the schema-change case catalog read by ddl-matrix.py (sql, bundle, collect, render, convert).
+#
+# One case = one table that starts with 2 rows, one DDL batch, one post-change insert in the new shape. The table
+# name is the case id with "-" -> "_" (tn). Placeholders in DDL and post: {q} schema qualifier (dbo., public., or
+# empty), {t} = {q}{tn}, {tn} bare name, {n} / {v} column types from the shape. The pipeline's destination table has
+# the same name as the source table.
+#
+# applies: engine -> mechanisms the case runs on. A case with no ddl for an engine is not written for that engine.
+# aliases: every name the 2026-10-26 scratch runs used for the case (ddl-matrix.py convert maps them to the id).
+# types: the column type before -> after, per engine, as the source reports it. "absent" = no such column.
+# expect: the destination row checked after the post insert (column -> value, compared as text), or null.
+#   expect_absent: the post insert goes to a new source name, so the destination must NOT get the row.
+# The oracle templates are written, not run: the oracle results file is not in the repo yet.
+#
+# The catalog is the one copy of the DDL: the sql, bundle and collect subcommands read it, the results cite its ids.
+
+version: 1
+shapes:
+  keyed:
+    sqlserver: "id INT NOT NULL, n {n}, v {v}, CONSTRAINT pk_{tn} PRIMARY KEY (id)"
+    postgres: "id INTEGER NOT NULL, n {n}, v {v}, CONSTRAINT {tn}_pkey PRIMARY KEY (id)"
+    mysql: "id INT NOT NULL, n {n}, v {v}, PRIMARY KEY (id)"
+    oracle: "id NUMBER(10) NOT NULL, n {n}, v {v}, CONSTRAINT pk_{tn} PRIMARY KEY (id)"
+  keyless:
+    sqlserver: "id INT NOT NULL, n {n}, v {v}"
+    postgres: "id INTEGER NOT NULL, n {n}, v {v}"
+    mysql: "id INT NOT NULL, n {n}, v {v}"
+    oracle: "id NUMBER(10) NOT NULL, n {n}, v {v}"
+default_types:
+  n: {sqlserver: "INT", postgres: "INTEGER", mysql: "INT", oracle: "NUMBER(10)"}
+  v: {sqlserver: "NVARCHAR(50)", postgres: "VARCHAR(50)", mysql: "VARCHAR(50)", oracle: "VARCHAR2(50)"}
+seed_n: ["1", "2"]          # the two starting rows: id 1 and 2, n = seed_n, v = 'a', 'b'
+mechanisms:
+  sqlserver: [ct, cdc]
+  postgres: [logical-replication]
+  mysql: [binlog]
+  oracle: [logminer]
+
+cases:
+  - id: start-first-update
+    column: n
+    label: "no DDL: the pipeline's first update after the initial load (control)"
+    types: {sqlserver: "-", postgres: "-", mysql: "-", oracle: "-"}
+    applies: {sqlserver: [ct, cdc], postgres: [logical-replication], mysql: [binlog], oracle: [logminer]}
+    ddl: {}
+    post: null
+    expect: null
+    aliases: []
+    notes: "No DDL. Shows whether the setup lets the first update load at all (the setup check)."
+
+  - id: add-nullable
+    column: c
+    label: "ADD COLUMN c INT NULL (keyed)"
+    types: {sqlserver: "absent -> INT NULL", postgres: "absent -> integer NULL", mysql: "absent -> INT NULL", oracle: "absent -> NUMBER(10) NULL"}
+    applies: {sqlserver: [ct, cdc], postgres: [logical-replication], mysql: [binlog], oracle: [logminer]}
+    ddl:
+      sqlserver: "ALTER TABLE {t} ADD c INT NULL;"
+      postgres: "ALTER TABLE {t} ADD COLUMN c INTEGER NULL;"
+      mysql: "ALTER TABLE {t} ADD COLUMN c INT NULL;"
+      oracle: "ALTER TABLE {t} ADD (c NUMBER(10) NULL);"
+    post: "INSERT INTO {t} (id, n, v, c) VALUES (3, 30, 'c', 7);"
+    expect: {id: "3", c: "7"}
+    aliases: [add-nullable, add-nullable-keyed]
+    notes: "The new column needs no backfill: the restart path."
+
+  - id: add-nullable-keyless
+    column: c
+    label: "ADD COLUMN c INT NULL on a table without a primary key"
+    keyed: false
+    types: {sqlserver: "absent -> INT NULL", postgres: "absent -> integer NULL", mysql: "absent -> INT NULL", oracle: "absent -> NUMBER(10) NULL"}
+    applies: {sqlserver: [cdc], postgres: [logical-replication], mysql: [binlog], oracle: [logminer]}
+    ddl:
+      sqlserver: "ALTER TABLE {t} ADD c INT NULL;"
+      postgres: "ALTER TABLE {t} ADD COLUMN c INTEGER NULL;"
+      mysql: "ALTER TABLE {t} ADD COLUMN c INT NULL;"
+      oracle: "ALTER TABLE {t} ADD (c NUMBER(10) NULL);"
+    post: "INSERT INTO {t} (id, n, v, c) VALUES (3, 30, 'c', 7);"
+    expect: {id: "3", c: "7"}
+    aliases: [add-nullable-keyless, add-keyless]
+    notes: "Keyless: CDC on SQL Server (change tracking needs a primary key). Postgres: REPLICA IDENTITY FULL, set by sql."
+
+  - id: add-nullable-with-default
+    column: c
+    label: "ADD COLUMN c INT NULL DEFAULT 5"
+    types: {sqlserver: "absent -> INT NULL DEFAULT 5", postgres: "absent -> integer NULL DEFAULT 5", mysql: "absent -> INT NULL DEFAULT 5", oracle: "absent -> NUMBER(10) DEFAULT 5"}
+    applies: {sqlserver: [ct, cdc], postgres: [logical-replication], mysql: [binlog], oracle: [logminer]}
+    ddl:
+      sqlserver: "ALTER TABLE {t} ADD c INT NULL CONSTRAINT df_{tn}_c DEFAULT 5;"
+      postgres: "ALTER TABLE {t} ADD COLUMN c INTEGER DEFAULT 5;"
+      mysql: "ALTER TABLE {t} ADD COLUMN c INT DEFAULT 5;"
+      oracle: "ALTER TABLE {t} ADD (c NUMBER(10) DEFAULT 5);"
+    post: "INSERT INTO {t} (id, n, v) VALUES (3, 30, 'c');"
+    expect: {id: "3"}
+    aliases: [add-nullable-with-default, add-nullable-default]
+    notes: "The new column is filled in for existing rows: a backfill. The post insert omits c."
+
+  - id: add-not-null-with-default
+    column: c
+    label: "ADD COLUMN c INT NOT NULL DEFAULT 5"
+    types: {sqlserver: "absent -> INT NOT NULL DEFAULT 5", postgres: "absent -> integer NOT NULL DEFAULT 5", mysql: "absent -> INT NOT NULL DEFAULT 5", oracle: "absent -> NUMBER(10) NOT NULL DEFAULT 5"}
+    applies: {sqlserver: [ct, cdc], postgres: [logical-replication], mysql: [binlog], oracle: [logminer]}
+    ddl:
+      sqlserver: "ALTER TABLE {t} ADD c INT NOT NULL CONSTRAINT df_{tn}_c DEFAULT 5;"
+      postgres: "ALTER TABLE {t} ADD COLUMN c INTEGER NOT NULL DEFAULT 5;"
+      mysql: "ALTER TABLE {t} ADD COLUMN c INT NOT NULL DEFAULT 5;"
+      oracle: "ALTER TABLE {t} ADD (c NUMBER(10) DEFAULT 5 NOT NULL);"
+    post: "INSERT INTO {t} (id, n, v) VALUES (3, 30, 'c');"
+    expect: {id: "3"}
+    aliases: [add-not-null-with-default, add-not-null-default]
+    notes: "A backfill for existing rows, as the nullable form."
+
+  - id: add-computed-column
+    column: cc
+    label: "ADD computed column cc AS (n * 2)"
+    types: {sqlserver: "absent -> computed"}
+    applies: {sqlserver: [ct, cdc]}
+    ddl:
+      sqlserver: "ALTER TABLE {t} ADD cc AS (n * 2);"
+    post: "INSERT INTO {t} (id, n, v) VALUES (3, 30, 'c');"
+    expect: {id: "3"}
+    aliases: [add-computed-column]
+    notes: "SQL Server only."
+
+  - id: add-identity-column
+    column: ident
+    label: "ADD an IDENTITY column (the table must have none yet)"
+    types: {sqlserver: "absent -> INT IDENTITY"}
+    applies: {sqlserver: [ct, cdc]}
+    ddl:
+      sqlserver: "ALTER TABLE {t} ADD ident INT IDENTITY(1,1);"
+    post: "INSERT INTO {t} (id, n, v) VALUES (3, 30, 'c');"
+    expect: {id: "3"}
+    aliases: [add-identity-column]
+    notes: "A table with an IDENTITY column can't take a second one: the 2026-10-26 run skipped it on a table that had one."
+
+  - id: drop-column
+    column: v
+    label: "DROP COLUMN v"
+    types: {sqlserver: "NVARCHAR(50) -> absent", postgres: "VARCHAR(50) -> absent", mysql: "VARCHAR(50) -> absent", oracle: "VARCHAR2(50) -> absent"}
+    applies: {sqlserver: [ct, cdc], postgres: [logical-replication], mysql: [binlog], oracle: [logminer]}
+    ddl:
+      sqlserver: "ALTER TABLE {t} DROP COLUMN v;"
+      postgres: "ALTER TABLE {t} DROP COLUMN v;"
+      mysql: "ALTER TABLE {t} DROP COLUMN v;"
+      oracle: "ALTER TABLE {t} DROP COLUMN v;"
+    post: "INSERT INTO {t} (id, n) VALUES (3, 30);"
+    expect: {id: "3", n: "30"}
+    aliases: [drop-column]
+    notes: "The destination keeps v (no drop is applied)."
+
+  - id: int-to-bigint
+    label: "n INT -> BIGINT (widen)"
+    types: {sqlserver: "INT -> BIGINT", postgres: "integer -> bigint", mysql: "INT -> BIGINT", oracle: "NUMBER(10) -> NUMBER(19)"}
+    applies: {sqlserver: [ct, cdc], postgres: [logical-replication], mysql: [binlog], oracle: [logminer]}
+    ddl:
+      sqlserver: "ALTER TABLE {t} ALTER COLUMN n BIGINT;"
+      postgres: "ALTER TABLE {t} ALTER COLUMN n TYPE BIGINT;"
+      mysql: "ALTER TABLE {t} MODIFY n BIGINT;"
+      oracle: "ALTER TABLE {t} MODIFY (n NUMBER(19));"
+    post: "INSERT INTO {t} (id, n, v) VALUES (3, 3000000000, 'c');"
+    expect: {id: "3", n: "3000000000"}
+    aliases: [alter-numeric-widen, int-to-bigint]
+    notes: "A value above the INT range: it lands only if the destination type follows the widen."
+
+  - id: decimal-10-2-to-18-4
+    label: "n DECIMAL(10,2) -> DECIMAL(18,4) (widen the scale)"
+    types: {sqlserver: "DECIMAL(10,2) -> DECIMAL(18,4)", postgres: "numeric(10,2) -> numeric(18,4)", mysql: "DECIMAL(10,2) -> DECIMAL(18,4)", oracle: "NUMBER(10,2) -> NUMBER(18,4)"}
+    n: {sqlserver: "DECIMAL(10,2)", postgres: "NUMERIC(10,2)", mysql: "DECIMAL(10,2)", oracle: "NUMBER(10,2)"}
+    applies: {sqlserver: [ct, cdc], postgres: [logical-replication], mysql: [binlog], oracle: [logminer]}
+    ddl:
+      sqlserver: "ALTER TABLE {t} ALTER COLUMN n DECIMAL(18,4);"
+      postgres: "ALTER TABLE {t} ALTER COLUMN n TYPE NUMERIC(18,4);"
+      mysql: "ALTER TABLE {t} MODIFY n DECIMAL(18,4);"
+      oracle: "ALTER TABLE {t} MODIFY (n NUMBER(18,4));"
+    post: "INSERT INTO {t} (id, n, v) VALUES (3, 3.1234, 'c');"
+    expect: {id: "3", n: "3.1234"}
+    aliases: [alter-decimal-widen, decimal-widen, numeric-10-2-to-18-4, decimal-10-2-to-18-4]
+    notes: "The value shows whether the new scale is kept: 3.1234 landed as 3.12 would mean the scale was not applied."
+
+  - id: string-length-narrow
+    column: v
+    label: "v NVARCHAR(50) -> NVARCHAR(20) (narrow the length)"
+    types: {sqlserver: "NVARCHAR(50) -> NVARCHAR(20)", postgres: "varchar(50) -> varchar(20)", mysql: "VARCHAR(50) -> VARCHAR(20)", oracle: "VARCHAR2(50) -> VARCHAR2(20)"}
+    v: {sqlserver: "NVARCHAR(50)", postgres: "VARCHAR(50)", mysql: "VARCHAR(50)", oracle: "VARCHAR2(50)"}
+    applies: {sqlserver: [ct, cdc], postgres: [logical-replication], mysql: [binlog], oracle: [logminer]}
+    ddl:
+      sqlserver: "ALTER TABLE {t} ALTER COLUMN v NVARCHAR(20);"
+      postgres: "ALTER TABLE {t} ALTER COLUMN v TYPE VARCHAR(20);"
+      mysql: "ALTER TABLE {t} MODIFY v VARCHAR(20);"
+      oracle: "ALTER TABLE {t} MODIFY (v VARCHAR2(20));"
+    post: "INSERT INTO {t} (id, n, v) VALUES (3, 30, 'abcdefghijklmnopqrst');"
+    expect: {id: "3", v: "abcdefghijklmnopqrst"}
+    aliases: [alter-string-length-narrow, alter-string-length, nvarchar-length-narrow, varchar-50-to-20]
+    notes: "A 20-character value, the new maximum."
+
+  - id: bigint-to-int
+    label: "n BIGINT -> INT (narrow)"
+    types: {sqlserver: "BIGINT -> INT", postgres: "bigint -> integer", mysql: "BIGINT -> INT", oracle: "NUMBER(19) -> NUMBER(10)"}
+    n: {sqlserver: "BIGINT", postgres: "BIGINT", mysql: "BIGINT", oracle: "NUMBER(19)"}
+    applies: {sqlserver: [ct, cdc], postgres: [logical-replication], mysql: [binlog], oracle: [logminer]}
+    ddl:
+      sqlserver: "ALTER TABLE {t} ALTER COLUMN n INT;"
+      postgres: "ALTER TABLE {t} ALTER COLUMN n TYPE INTEGER;"
+      mysql: "ALTER TABLE {t} MODIFY n INT;"
+      oracle: "ALTER TABLE {t} MODIFY (n NUMBER(10));"
+    post: "INSERT INTO {t} (id, n, v) VALUES (3, 30, 'c');"
+    expect: {id: "3"}
+    aliases: [alter-numeric-narrow, bigint-to-int]
+    notes: "Narrowing is refused by the change feed on SQL Server."
+
+  - id: int-to-string
+    label: "n INT -> NVARCHAR(20) / VARCHAR(20) (type change)"
+    types: {sqlserver: "INT -> NVARCHAR(20)", postgres: "integer -> varchar(20)", mysql: "INT -> VARCHAR(20)", oracle: "NUMBER(10) -> VARCHAR2(20)"}
+    applies: {sqlserver: [ct, cdc], postgres: [logical-replication], mysql: [binlog], oracle: [logminer]}
+    ddl:
+      sqlserver: "ALTER TABLE {t} ALTER COLUMN n NVARCHAR(20);"
+      postgres: "ALTER TABLE {t} ALTER COLUMN n TYPE VARCHAR(20) USING n::text;"
+      mysql: "ALTER TABLE {t} MODIFY n VARCHAR(20);"
+      oracle: "ALTER TABLE {t} MODIFY (n VARCHAR2(20));"
+    post: "INSERT INTO {t} (id, n, v) VALUES (3, 'abc', 'c');"
+    expect: {id: "3", n: "abc"}
+    aliases: [alter-incompatible, int-to-nvarchar, int-to-varchar, int-to-string]
+    notes: "A type change, not a widen."
+
+  - id: int-to-decimal-18-2
+    label: "n INT -> DECIMAL(18,2)"
+    types: {sqlserver: "INT -> DECIMAL(18,2)", postgres: "integer -> numeric(18,2)", mysql: "INT -> DECIMAL(18,2)", oracle: "NUMBER(10) -> NUMBER(18,2)"}
+    applies: {sqlserver: [ct, cdc], postgres: [logical-replication], mysql: [binlog], oracle: [logminer]}
+    ddl:
+      sqlserver: "ALTER TABLE {t} ALTER COLUMN n DECIMAL(18,2);"
+      postgres: "ALTER TABLE {t} ALTER COLUMN n TYPE NUMERIC(18,2);"
+      mysql: "ALTER TABLE {t} MODIFY n DECIMAL(18,2);"
+      oracle: "ALTER TABLE {t} MODIFY (n NUMBER(18,2));"
+    post: "INSERT INTO {t} (id, n, v) VALUES (3, 3.14, 'c');"
+    expect: {id: "3", n: "3.14"}
+    aliases: [int-to-decimal-18-2]
+    notes: "An INT to a decimal is a type change."
+
+  - id: varchar-to-nvarchar
+    column: v
+    label: "v VARCHAR(20) -> NVARCHAR(20) (SQL Server)"
+    types: {sqlserver: "VARCHAR(20) -> NVARCHAR(20)"}
+    v: {sqlserver: "VARCHAR(20)"}
+    applies: {sqlserver: [ct, cdc]}
+    ddl:
+      sqlserver: "ALTER TABLE {t} ALTER COLUMN v NVARCHAR(20);"
+    post: "INSERT INTO {t} (id, n, v) VALUES (3, 30, N'café');"
+    expect: {id: "3", v: "café"}
+    aliases: [varchar-to-nvarchar]
+    notes: "Non-ASCII text, so the value shows the character set."
+
+  - id: datetime-precision-up
+    label: "n DATETIME -> DATETIME2(7) (SQL Server); DATETIME -> DATETIME(6) (MySQL)"
+    types: {sqlserver: "DATETIME -> DATETIME2(7)", mysql: "DATETIME -> DATETIME(6)"}
+    n: {sqlserver: "DATETIME", mysql: "DATETIME"}
+    seed_n: ["'2026-10-01 00:00:00'", "'2026-10-02 00:00:00'"]
+    applies: {sqlserver: [ct, cdc], mysql: [binlog]}
+    ddl:
+      sqlserver: "ALTER TABLE {t} ALTER COLUMN n DATETIME2(7);"
+      mysql: "ALTER TABLE {t} MODIFY n DATETIME(6);"
+    post: "INSERT INTO {t} (id, n, v) VALUES (3, '2026-10-26 12:00:00.1234567', 'c');"
+    expect: {id: "3", n: "2026-10-26 12:00:00.1234567"}
+    aliases: [datetime-to-datetime2-7, datetime-to-datetime6]
+    notes: "The fraction shows the precision: .1234567 landed as .123 would mean milliseconds."
+
+  - id: date-to-timestamp
+    label: "n DATE -> TIMESTAMP"
+    types: {sqlserver: "DATE -> DATETIME2(0)", postgres: "date -> timestamp", mysql: "DATE -> DATETIME", oracle: "DATE -> TIMESTAMP"}
+    n: {sqlserver: "DATE", postgres: "DATE", mysql: "DATE", oracle: "DATE"}
+    seed_n: ["'2026-10-01'", "'2026-10-02'"]
+    applies: {sqlserver: [ct, cdc], postgres: [logical-replication], mysql: [binlog], oracle: [logminer]}
+    ddl:
+      sqlserver: "ALTER TABLE {t} ALTER COLUMN n DATETIME2(0);"
+      postgres: "ALTER TABLE {t} ALTER COLUMN n TYPE TIMESTAMP USING n::timestamp;"
+      mysql: "ALTER TABLE {t} MODIFY n DATETIME;"
+      oracle: "ALTER TABLE {t} MODIFY (n TIMESTAMP);"
+    post: "INSERT INTO {t} (id, n, v) VALUES (3, '2026-10-26 12:00:00', 'c');"
+    expect: {id: "3", n: "2026-10-26 12:00:00"}
+    aliases: [date-to-timestamp]
+    notes: "Not run yet."
+
+  - id: timestamp-to-timestamptz
+    label: "n TIMESTAMP -> TIMESTAMPTZ"
+    types: {postgres: "timestamp -> timestamptz", oracle: "TIMESTAMP -> TIMESTAMP WITH TIME ZONE"}
+    n: {postgres: "TIMESTAMP", oracle: "TIMESTAMP"}
+    seed_n: ["'2026-10-01 00:00:00'", "'2026-10-02 00:00:00'"]
+    applies: {postgres: [logical-replication], oracle: [logminer]}
+    ddl:
+      postgres: "ALTER TABLE {t} ALTER COLUMN n TYPE TIMESTAMPTZ;"
+      oracle: "ALTER TABLE {t} MODIFY (n TIMESTAMP WITH TIME ZONE);"
+    post: "INSERT INTO {t} (id, n, v) VALUES (3, '2026-10-26 12:00:00+00', 'c');"
+    expect: {id: "3", n: "2026-10-26 12:00:00+00"}
+    aliases: [timestamp-to-timestamptz]
+    notes: "Postgres: the value with a zone. The destination type after the change shows whether the zone is kept."
+
+  - id: null-to-not-null
+    label: "n INT NULL -> NOT NULL"
+    types: {sqlserver: "INT NULL -> INT NOT NULL", postgres: "integer NULL -> NOT NULL", mysql: "INT NULL -> INT NOT NULL", oracle: "NUMBER(10) NULL -> NOT NULL"}
+    applies: {sqlserver: [ct, cdc], postgres: [logical-replication], mysql: [binlog], oracle: [logminer]}
+    ddl:
+      sqlserver: "ALTER TABLE {t} ALTER COLUMN n INT NOT NULL;"
+      postgres: "ALTER TABLE {t} ALTER COLUMN n SET NOT NULL;"
+      mysql: "ALTER TABLE {t} MODIFY n INT NOT NULL;"
+      oracle: "ALTER TABLE {t} MODIFY (n NOT NULL);"
+    post: "INSERT INTO {t} (id, n, v) VALUES (3, 30, 'c');"
+    expect: {id: "3"}
+    aliases: [alter-not-null-from-null, not-null-from-null, null-to-not-null]
+    notes: "Nullability is a constraint change: the destination may keep its nullable column."
+
+  - id: not-null-to-null
+    label: "n INT NOT NULL -> NULL"
+    types: {sqlserver: "INT NOT NULL -> INT NULL", postgres: "integer NOT NULL -> NULL", mysql: "INT NOT NULL -> INT NULL", oracle: "NUMBER(10) NOT NULL -> NULL"}
+    n: {sqlserver: "INT NOT NULL", postgres: "INTEGER NOT NULL", mysql: "INT NOT NULL", oracle: "NUMBER(10) NOT NULL"}
+    applies: {sqlserver: [ct, cdc], postgres: [logical-replication], mysql: [binlog], oracle: [logminer]}
+    ddl:
+      sqlserver: "ALTER TABLE {t} ALTER COLUMN n INT NULL;"
+      postgres: "ALTER TABLE {t} ALTER COLUMN n DROP NOT NULL;"
+      mysql: "ALTER TABLE {t} MODIFY n INT NULL;"
+      oracle: "ALTER TABLE {t} MODIFY (n NULL);"
+    post: "INSERT INTO {t} (id, n, v) VALUES (3, NULL, 'c');"
+    expect: {id: "3", n: null}
+    aliases: [alter-null-from-not-null, not-null-to-null]
+    notes: "The post insert writes NULL into n."
+
+  - id: add-unique
+    column: v
+    label: "ADD UNIQUE (v)"
+    types: {sqlserver: "no change (UNIQUE constraint)", postgres: "no change (UNIQUE constraint)", mysql: "no change (UNIQUE constraint)", oracle: "no change (UNIQUE constraint)"}
+    applies: {sqlserver: [ct, cdc], postgres: [logical-replication], mysql: [binlog], oracle: [logminer]}
+    ddl:
+      sqlserver: "ALTER TABLE {t} ADD CONSTRAINT uq_{tn}_v UNIQUE (v);"
+      postgres: "ALTER TABLE {t} ADD CONSTRAINT uq_{tn}_v UNIQUE (v);"
+      mysql: "ALTER TABLE {t} ADD CONSTRAINT uq_{tn}_v UNIQUE (v);"
+      oracle: "ALTER TABLE {t} ADD CONSTRAINT uq_{tn}_v UNIQUE (v);"
+    post: "INSERT INTO {t} (id, n, v) VALUES (3, 30, 'uniq-3');"
+    expect: {id: "3", v: "uniq-3"}
+    aliases: [add-unique-constraint, add-unique]
+    notes: "A key change that has no column type change."
+
+  - id: drop-primary-key
+    label: "DROP the primary key"
+    types: {sqlserver: "no change (PRIMARY KEY dropped)", postgres: "no change (PRIMARY KEY dropped)", mysql: "no change (PRIMARY KEY dropped)", oracle: "no change (PRIMARY KEY dropped)"}
+    applies: {sqlserver: [ct, cdc], postgres: [logical-replication], mysql: [binlog], oracle: [logminer]}
+    ddl:
+      sqlserver: "ALTER TABLE {t} DROP CONSTRAINT pk_{tn};"
+      postgres: "ALTER TABLE {t} DROP CONSTRAINT {tn}_pkey;"
+      mysql: "ALTER TABLE {t} DROP PRIMARY KEY;"
+      oracle: "ALTER TABLE {t} DROP PRIMARY KEY;"
+    post: "INSERT INTO {t} (id, n, v) VALUES (3, 30, 'c');"
+    expect: {id: "3"}
+    aliases: [drop-pk-constraint, drop-primary-key]
+    notes: "SQL Server refuses it while change tracking or CDC is on for the table (Msg 3735 for change tracking)."
+
+  - id: rename-column
+    column: n2
+    label: "RENAME COLUMN n TO n2"
+    types: {sqlserver: "INT (n) -> INT (n2)", postgres: "integer (n) -> integer (n2)", mysql: "INT (n) -> INT (n2)", oracle: "NUMBER(10) (n) -> NUMBER(10) (n2)"}
+    applies: {sqlserver: [ct, cdc], postgres: [logical-replication], mysql: [binlog], oracle: [logminer]}
+    ddl:
+      sqlserver: "EXEC sp_rename '{t}.n', 'n2', 'COLUMN';"
+      postgres: "ALTER TABLE {t} RENAME COLUMN n TO n2;"
+      mysql: "ALTER TABLE {t} RENAME COLUMN n TO n2;"
+      oracle: "ALTER TABLE {t} RENAME COLUMN n TO n2;"
+    post: "INSERT INTO {t} (id, n2, v) VALUES (3, 30, 'c');"
+    expect: {id: "3", n2: "30"}
+    aliases: [rename-column]
+    notes: "SQL Server refuses it on a captured column."
+
+  - id: rename-table
+    column: n
+    label: "RENAME TABLE tn TO tn_new"
+    types: {sqlserver: "table name only", postgres: "table name only", mysql: "table name only", oracle: "table name only"}
+    applies: {sqlserver: [ct, cdc], postgres: [logical-replication], mysql: [binlog], oracle: [logminer]}
+    ddl:
+      sqlserver: "EXEC sp_rename '{q}{tn}', '{tn}_new';"
+      postgres: "ALTER TABLE {t} RENAME TO {tn}_new;"
+      mysql: "RENAME TABLE {t} TO {tn}_new;"
+      oracle: "ALTER TABLE {t} RENAME TO {tn}_new;"
+    post: "INSERT INTO {q}{tn}_new (id, n, v) VALUES (3, 30, 'c');"
+    expect: null
+    expect_absent: true
+    aliases: [rename-table]
+    notes: "The row goes to the new name on the source. The destination keeps the old name and must not get the row."
+
+  - id: drop-table
+    column: n
+    label: "DROP TABLE"
+    types: {sqlserver: "table dropped", postgres: "table dropped", mysql: "table dropped", oracle: "table dropped"}
+    applies: {sqlserver: [ct, cdc], postgres: [logical-replication], mysql: [binlog], oracle: [logminer]}
+    ddl:
+      sqlserver: "DROP TABLE {t};"
+      postgres: "DROP TABLE {t};"
+      mysql: "DROP TABLE {t};"
+      oracle: "DROP TABLE {t};"
+    post: null
+    expect: null
+    aliases: [drop-table]
+    notes: "No post-change insert: the table is gone. The destination keeps its rows."
+
+  - id: truncate
+    column: n
+    label: "TRUNCATE TABLE, then 1 row"
+    types: {sqlserver: "rows removed", postgres: "rows removed", mysql: "rows removed", oracle: "rows removed"}
+    applies: {sqlserver: [ct, cdc], postgres: [logical-replication], mysql: [binlog], oracle: [logminer]}
+    ddl:
+      sqlserver: "TRUNCATE TABLE {t};"
+      postgres: "TRUNCATE {t};"
+      mysql: "TRUNCATE TABLE {t};"
+      oracle: "TRUNCATE TABLE {t};"
+    post: "INSERT INTO {t} (id, n, v) VALUES (3, 30, 'c');"
+    expect: {id: "3"}
+    aliases: [truncate-table, truncate]
+    notes: "SQL Server refuses TRUNCATE on a table enabled for CDC (the source says so); on change tracking the source accepts it and the table stops."

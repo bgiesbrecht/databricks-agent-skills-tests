@@ -96,3 +96,21 @@ Each result also records the Lakeflow runtime every pipeline ran on (DBR version
 `SRC_ENV` adds the host OS, the Podman version and the container image with its digest to the result, so a reader can run the same image. Copy them into the run file and the FAQ entry's test section.
 
 Add the claim table as a new run file next to the FAQ entry's `validation.yaml`, update the entry's `## Validation` line and its `last_validated`, and say what changed since the last run.
+
+## DDL matrix
+
+The same schema-change cases run on each engine, mechanism and setup, so the results compare. The case catalog is [scripts/ddl-cases.yaml](scripts/ddl-cases.yaml); the file format and the marks are in [references/ddl-matrix.md](references/ddl-matrix.md); the table, generated from [results/ddl-matrix](../../results/ddl-matrix/), is [references/ddl-matrix-results.md](references/ddl-matrix-results.md).
+
+For one engine, mechanism and setup:
+
+1. `scripts/ddl-matrix.py sql <engine> <mechanism> --setup <none|utility-1.7|utility-1.7-cleanup>` prints the tables, the source's setup, and each case's DDL and insert. Run it on the source with your client.
+2. `scripts/ddl-matrix.py bundle --connection <uc-connection> --catalog <c> --schema <s> --source-catalog <db> --engine <engine> --mechanism <mechanism>` writes a `databricks.yml` with one table per case. Deploy it and start the pipeline.
+3. Wait for the initial snapshot. Then run each case's DDL and insert in the `sql` order, noting the UTC time before the first DDL.
+4. When the updates have finished, `scripts/ddl-matrix.py collect --pipeline <id> --profile <p> --warehouse <wh> --dest <c>.<s> --env <env.yaml> --since <utc> --out results/ddl-matrix/<engine>-<mechanism>-<setup>-<date>.yaml`.
+5. `scripts/ddl-matrix-validate.py results/ddl-matrix/*.yaml`, then `scripts/ddl-matrix.py render > references/ddl-matrix-results.md`.
+
+The rules that make the comparison valid:
+
+- Run each mechanism with and without the setup script (`none` and `utility-1.7`), on the same cases. The two columns are the comparison; a difference between them is a finding.
+- A case passes only when its destination row is verified. "Pipeline created" and "update COMPLETED" are not passes, and a batch that ran every DDL before one update can't verify a row of a table that had no error of its own. Run those cases alone.
+- Record the method (`batch` or `one-case-at-a-time`), the Lakeflow runtime if the run shows it, and anything that didn't run, in the file's `caveats`.

@@ -1,0 +1,53 @@
+environment:
+  product: Azure SQL Database
+  edition_tier: serverless GP_S_Gen5_1
+  version: Microsoft SQL Azure (RTM) - 12.0.2000.8 Oct 9 2026
+  pipeline_mode: integrated
+  compute: serverless
+  runtime:
+    dbr: null
+    channel: null
+    image: null
+  workspace:
+    cloud: AWS
+    region: us-west-2
+  date: '2026-10-26'
+  engine: sqlserver
+  mechanism: cdc
+  setup: none
+  source_setup: none, CDC enabled by hand with sp_cdc_enable_db and sp_cdc_enable_table (no change tracking)
+  method: not-recorded
+  caveats:
+  - 'Keyed table. The pipeline''s first update fails before any DDL runs (its snapshot step fails on the missing utility objects). Recorded as pipe-fails: the pipeline stopped there, and nothing loaded.'
+cases:
+- id: start-first-update
+  ddl: null
+  column_before: null
+  column_after: null
+  source_accepted: null
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: 'pipeline fails at the first update within ~30 s: INGESTION_GATEWAY_DDL_OBJECTS_MISSING ("DDL objects missing on table ''<database>.dbo.intpk''. Execute the DDL objects script and full refresh
+      the table '
+  - class: SNAPSHOT_FAILED_DUE_TO_CDC_FAILURE
+    level: error
+    message: 'pipeline fails at the first update within ~30 s: INGESTION_GATEWAY_DDL_OBJECTS_MISSING ("DDL objects missing on table ''<database>.dbo.intpk''. Execute the DDL objects script and full refresh
+      the table '
+  - class: INTEGRATED_CDC_ALL_SOURCE_TABLES_FATALLY_FAILED
+    level: error
+    message: 'pipeline fails at the first update within ~30 s: INGESTION_GATEWAY_DDL_OBJECTS_MISSING ("DDL objects missing on table ''<database>.dbo.intpk''. Execute the DDL objects script and full refresh
+      the table '
+  - class: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+    level: error
+    message: 'pipeline fails at the first update within ~30 s: INGESTION_GATEWAY_DDL_OBJECTS_MISSING ("DDL objects missing on table ''<database>.dbo.intpk''. Execute the DDL objects script and full refresh
+      the table '
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: null
+  value_check: null
+  basis: tested
+  notes: 'recorded: pipeline fails at the first update within ~30 s: INGESTION_GATEWAY_DDL_OBJECTS_MISSING ("DDL objects missing on table ''<database>.dbo.intpk''. Execute the DDL objects script and full
+    refresh the table on the Ingestion Pipeline") -> SNAPSHOT_FAILED_DUE_TO_CDC_FAILURE -> INTEGRATED_CDC_ALL_SOURCE_TABLES_FATALLY_FAILED -> PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR; nothing loads'

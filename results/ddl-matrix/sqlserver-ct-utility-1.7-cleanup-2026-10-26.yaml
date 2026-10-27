@@ -1,0 +1,42 @@
+environment:
+  product: Azure SQL Database
+  edition_tier: serverless GP_S_Gen5_1
+  version: Microsoft SQL Azure (RTM) - 12.0.2000.8 Oct 9 2026
+  pipeline_mode: integrated
+  compute: serverless
+  runtime:
+    dbr: null
+    channel: null
+    image: null
+  workspace:
+    cloud: AWS
+    region: us-west-2
+  date: '2026-10-26'
+  engine: sqlserver
+  mechanism: ct
+  setup: utility-1.7-cleanup
+  source_setup: utility script 1.7 (sha256 prefix 8636499c79e0e143), then lakeflowSetupChangeDataCapture @Mode = 'CLEANUP' (the utility's CDC objects removed); change tracking and CDC tables in the same
+    database
+  method: not-recorded
+  caveats:
+  - Recorded from the run notes; no per-case rows. Every table of the pipeline failed the same way, change tracking tables included.
+cases:
+- id: start-first-update
+  ddl: null
+  column_before: null
+  column_after: null
+  source_accepted: null
+  events:
+  - class: INGESTION_GATEWAY_DDL_OBJECTS_MISSING
+    level: error
+    message: every table fails with INGESTION_GATEWAY_DDL_OBJECTS_MISSING ("DDL objects missing on table '<database>.dbo.<table>'. Execute the DDL objects script and full refresh the table on the Ingestion
+      Pipelin
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: null
+  value_check: null
+  basis: tested
+  notes: 'recorded: every table fails with INGESTION_GATEWAY_DDL_OBJECTS_MISSING ("DDL objects missing on table ''<database>.dbo.<table>''. Execute the DDL objects script and full refresh the table on the
+    Ingestion Pipeline"), change tracking tables too; full refresh needed'

@@ -1,0 +1,32 @@
+{
+  "id": "sqlserver-ct-schema-change-same-with-utility",
+  "title": "SQL Server change tracking schema changes end the same way with and without the utility script",
+  "kind": "connector-behavior",
+  "status": "open",
+  "applies": {
+    "source": [
+      "sqlserver"
+    ],
+    "route": [
+      "lfc-icdc"
+    ],
+    "layer": [
+      "capture"
+    ],
+    "topology": [
+      "*"
+    ]
+  },
+  "found": {
+    "date": "2026-10-26",
+    "by": "DDL matrix: SQL Server change tracking runs with no utility script and with utility script 1.7"
+  },
+  "symptom": "Each change-tracking case that both runs made (add, widen, narrow, drop column, and the incompatible type and default changes) has the same outcome with the utility script and without it. The audit trigger recorded all 8 DDLs",
+  "cause": "Inferred, not read from the connector: the audit objects are not what decides whether a schema change restarts the update or stops the table",
+  "effect": "The utility script is not needed for these change-tracking schema changes; installing it changes none of the outcomes recorded",
+  "fix": "None for schema evolution. Install the utility for other reasons only",
+  "where": [
+    "skills/lfc-schema-change-test/references/ddl-matrix-results.md"
+  ],
+  "notes": "Only the cases in the table were run. The cause needs the connector's code path before it is stated as a fact."
+}

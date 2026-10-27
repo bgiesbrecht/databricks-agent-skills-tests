@@ -1,0 +1,323 @@
+environment:
+  engine: postgres
+  product: Azure Database for PostgreSQL Flexible Server
+  edition_tier: null
+  version: '16.15'
+  mechanism: logical-replication
+  setup: none
+  source_setup: none; the replication slot and publication were created by hand as the table owner (the gateway didn't create them)
+  pipeline_mode: standard
+  compute: serverless
+  runtime:
+    dbr: null
+    channel: null
+    image: null
+  workspace:
+    cloud: AWS
+    region: us-west-2
+  date: '2026-10-26'
+  method: batch
+  caveats:
+  - 'All 19 DDLs and inserts ran as one batch, then one ingestion update. That update FAILED at analysis (9 tables with DDL_NOT_SUPPORTED). The next updates re-ran the snapshot of every table, so a row
+    without an error class is confounded: basis confounded, row unverified.'
+  - The initial update (before the DDL) COMPLETED. No full refresh was run.
+cases:
+- id: add-nullable
+  ddl: ADD COLUMN c INT NULL (n integer; c integer added; id integer NOT NULL, PK kept)
+  column_before: absent
+  column_after: integer NULL
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL
+    level: error
+    message: 'ManagedIngestionNonRetryableException INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL "Schema change detected: Unable to parse a column : ''c'' in table : <database>.public.addnull"'
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: update FAILED at analysis; ManagedIngestionNonRetryableException INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL "Schema change detected: Unable to parse a column : ''c'' in table
+    : <database>.public.addnull"; full refresh required (not run); row 3 not landed'
+- id: add-nullable-with-default
+  ddl: ADD COLUMN c INT DEFAULT 5 (c integer, nullable); insert omits c
+  column_before: absent
+  column_after: integer NULL DEFAULT 5
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL
+    level: error
+    message: 'same as add-nullable: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL, "Unable to parse a column : ''c'' in table : <database>.public.adddef"'
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: same as add-nullable: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL, "Unable to parse a column : ''c'' in table : <database>.public.adddef"; full refresh not run; row 3 not landed'
+- id: add-not-null-with-default
+  ddl: ADD COLUMN c INT NOT NULL DEFAULT 5 (c integer NOT NULL); insert omits c
+  column_before: absent
+  column_after: integer NOT NULL DEFAULT 5
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL
+    level: error
+    message: 'INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL, "Unable to parse a column : ''c'' in table : <database>.public.addnn"'
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL, "Unable to parse a column : ''c'' in table : <database>.public.addnn"; full refresh not run; row 3 not landed'
+- id: add-nullable-keyless
+  ddl: ADD COLUMN c INT (table has no constraints; replica identity f)
+  column_before: absent
+  column_after: integer NULL
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL
+    level: error
+    message: 'INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL, "Unable to parse a column : ''c'' in table : <database>.public.addkeyless"'
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL, "Unable to parse a column : ''c'' in table : <database>.public.addkeyless"; full refresh not run; row 3 not landed; recorded as ''add-keyless
+    (no PK, REPLICA IDENTITY FULL)'''
+- id: drop-column
+  ddl: DROP COLUMN v (v varchar(50) removed)
+  column_before: VARCHAR(50)
+  column_after: absent
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL
+    level: error
+    message: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL, "Column(s) [v] in table <database>.public.dropcol were dropped."
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL, "Column(s) [v] in table <database>.public.dropcol were dropped."; full refresh not run; row 3 not landed; destination keeps v'
+- id: int-to-bigint
+  ddl: ALTER COLUMN n TYPE BIGINT (integer -> bigint); insert n = 3000000000
+  column_before: integer
+  column_after: bigint
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL
+    level: error
+    message: 'INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL, "Schema change detected: Unable to parse the column value, type mis-match found. New type: INT8 does not match type: INT4"'
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: int
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL, "Schema change detected: Unable to parse the column value, type mis-match found. New type: INT8 does not match type: INT4"; not a
+    silent keep: error surfaced; row 3000000000 NOT landed; destination stays int; full refresh not run'
+- id: decimal-10-2-to-18-4
+  ddl: ALTER COLUMN n TYPE DECIMAL(18,4) (numeric(10,2) -> numeric(18,4)); insert n = 3.1234
+  column_before: numeric(10,2)
+  column_after: numeric(18,4)
+  source_accepted: true
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: decimal(10,2)
+  post_change_row_landed: unverified
+  value_check: null
+  basis: confounded
+  notes: 'recorded: no error event for this table; destination stays decimal(10,2); row 3 landed as 3.12 (rounded to destination scale); not separated from snapshot re-read; recorded as ''numeric-10-2-to-18-4'''
+- id: string-length-narrow
+  ddl: ALTER COLUMN v TYPE VARCHAR(20) (varchar(50) -> varchar(20)); insert 20-char v
+  column_before: varchar(50)
+  column_after: varchar(20)
+  source_accepted: true
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: string
+  post_change_row_landed: unverified
+  value_check: null
+  basis: confounded
+  notes: 'recorded: no error event; destination stays string; 20-char row landed (confounded as above); recorded as ''varchar-50-to-20'''
+- id: bigint-to-int
+  ddl: ALTER COLUMN n TYPE INT (bigint -> integer); insert n = 30
+  column_before: bigint
+  column_after: integer
+  source_accepted: true
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: bigint
+  post_change_row_landed: unverified
+  value_check: null
+  basis: confounded
+  notes: 'recorded: no error event; destination keeps bigint; row 3 landed (confounded)'
+- id: int-to-string
+  ddl: ALTER COLUMN n TYPE VARCHAR(20) USING n::text (integer -> varchar(20)); insert n = 'abc'
+  column_before: integer
+  column_after: varchar(20)
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL
+    level: error
+    message: 'INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL, "Schema change detected: Unable to parse the column value, type mis-match found. New type: VARCHAR(20) does not match type: INT4"'
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: int
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL, "Schema change detected: Unable to parse the column value, type mis-match found. New type: VARCHAR(20) does not match type: INT4";
+    full refresh not run; row 3 not landed; destination int; recorded as ''int-to-varchar'''
+- id: rename-column
+  ddl: RENAME COLUMN n TO n2 (integer)
+  column_before: integer (n)
+  column_after: integer (n2)
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL
+    level: error
+    message: 'INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL, "Unable to parse a column : ''n2'' in table : <database>.public.rencol"'
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.UNSUPPORTED_DDL, "Unable to parse a column : ''n2'' in table : <database>.public.rencol"; full refresh not run; row 3 not landed; destination keeps
+    n'
+- id: rename-table
+  ddl: ALTER TABLE rentbl RENAME TO rentbl_new; insert into rentbl_new
+  column_before: table name only
+  column_after: table name only
+  source_accepted: true
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: confounded
+  notes: 'recorded: no error event for this table; destination table rentbl unchanged (2 rows), rentbl_new not created; row 3 not landed'
+- id: drop-primary-key
+  ddl: ALTER TABLE droppk DROP CONSTRAINT droppk_pkey (id integer NOT NULL, no constraints; replica identity default); insert
+  column_before: no change (PRIMARY KEY dropped)
+  column_after: no change (PRIMARY KEY dropped)
+  source_accepted: true
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: confounded
+  notes: 'recorded: no error event; destination unchanged in schema; row 3 landed (confounded)'
+- id: add-unique
+  ddl: ADD CONSTRAINT addunq_n_key UNIQUE (n) (integer)
+  column_before: no change (UNIQUE constraint)
+  column_after: no change (UNIQUE constraint)
+  source_accepted: true
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: confounded
+  notes: 'recorded: no error event; destination unchanged; row 3 landed (confounded)'
+- id: null-to-not-null
+  ddl: ALTER COLUMN n SET NOT NULL (integer NULL -> NOT NULL)
+  column_before: integer NULL
+  column_after: NOT NULL
+  source_accepted: true
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: confounded
+  notes: 'recorded: no error event; destination unchanged; row 3 landed (confounded)'
+- id: not-null-to-null
+  ddl: ALTER COLUMN n DROP NOT NULL (integer NOT NULL -> NULL); insert n = NULL
+  column_before: integer NOT NULL
+  column_after: 'NULL'
+  source_accepted: true
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: confounded
+  notes: 'recorded: no error event; destination unchanged; row 3 with n NULL landed (confounded)'
+- id: timestamp-to-timestamptz
+  ddl: ALTER COLUMN n TYPE TIMESTAMPTZ (timestamp without time zone -> timestamp with time zone); insert '2026-10-26 12:00:00+00'
+  column_before: timestamp
+  column_after: timestamptz
+  source_accepted: true
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: string
+  post_change_row_landed: unverified
+  value_check: null
+  basis: confounded
+  notes: 'recorded: no error event; destination n is string (type as in the initial snapshot); the new value landed as the text ''2026-10-26 12:00:00+00'' (confounded)'
+- id: drop-table
+  ddl: DROP TABLE droptbl
+  column_before: table dropped
+  column_after: table dropped
+  source_accepted: true
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: null
+  value_check: null
+  basis: confounded
+  notes: 'recorded: no error event; destination table droptbl kept with its 2 rows'
+- id: truncate
+  ddl: TRUNCATE trunc; insert (3,30,'c')
+  column_before: rows removed
+  column_after: rows removed
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.TRUNCATE_TABLE
+    level: error
+    message: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.TRUNCATE_TABLE "TRUNCATE TABLE on the source table requires a full refresh on the target table"
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: 'recorded: INGESTION_GATEWAY_DDL_NOT_SUPPORTED.TRUNCATE_TABLE "TRUNCATE TABLE on the source table requires a full refresh on the target table"; full refresh not run; row 3 not landed; destination
+    keeps 2 rows'
