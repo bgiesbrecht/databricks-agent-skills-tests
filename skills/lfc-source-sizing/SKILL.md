@@ -1,6 +1,6 @@
 ---
 name: lfc-source-sizing
-description: "How big is a source database, and how much of it will Lakeflow Connect move? Per table and in total: rows, data on disk, indexes, large values (TOAST / LOB), the database's total size for the infrastructure team, and the average row size, read from the catalog through the UC connection (no table scans, no count(*)), with row counts cross-checked when statistics are stale. PostgreSQL, MySQL, SQL Server, Oracle."
+description: "How big is a source database, and how much of it will Lakeflow Connect move? Per table and in total: rows, data on disk, indexes, large values (TOAST / LOB), the database's total size for the infrastructure team, and the average row size, read from the catalog through the UC connection (no table scans, no count(*)), with row counts cross-checked when statistics are stale. PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, CockroachDB, YugabyteDB; Db2 and Informix by hand."
 parent: lfc-source-setup
 ---
 
@@ -15,10 +15,13 @@ S=skills/lfc-source-sizing/scripts
 bash $S/size.sh <PROFILE> <connection> postgres  --database <database>
 bash $S/size.sh <PROFILE> <connection> mysql                                   # every user database at once
 bash $S/size.sh <PROFILE> <connection> sqlserver --database <database>
+bash $S/size.sh <PROFILE> <connection> mariadb                                 # a MYSQL connection to MariaDB; every database
+bash $S/size.sh <PROFILE> <connection> cockroachdb --database <database>       # a POSTGRESQL connection
+bash $S/size.sh <PROFILE> <connection> yugabytedb --database <database>        # a POSTGRESQL connection
 bash $S/size.sh <PROFILE> <pdb-connection> oracle --service <PDB>              # a connection whose service is the PDB
 ```
 
-[`size.sh`](scripts/size.sh) runs the engine's query ([`postgres.sql`](scripts/postgres.sql), [`mysql.sql`](scripts/mysql.sql) / [`mysql-process.sql`](scripts/mysql-process.sql), [`sqlserver.sql`](scripts/sqlserver.sql), [`oracle.sql`](scripts/oracle.sql)), keeps one row per table in `tables.csv`, and prints, with DuckDB:
+[`size.sh`](scripts/size.sh) runs the engine's query ([`postgres.sql`](scripts/postgres.sql), [`mysql.sql`](scripts/mysql.sql) / [`mysql-process.sql`](scripts/mysql-process.sql), [`sqlserver.sql`](scripts/sqlserver.sql), [`oracle.sql`](scripts/oracle.sql), [`yugabytedb.sql`](scripts/yugabytedb.sql), [`cockroachdb.sql`](scripts/cockroachdb.sql)), keeps one row per table in `tables.csv`, and prints, with DuckDB:
 
 | Line | For | What it counts |
 |---|---|---|
@@ -51,6 +54,10 @@ Tested: a Postgres table with 2,000,000 rows whose statistics said 1,000,000 (ha
 - **PostgreSQL:** one database per run (`--database`). The data size is the table's file plus TOAST; `pg_stats` (and so the logical width) shows only tables the connection's user can `SELECT`.
 - **MySQL:** every user database in one run. `data_length` is the clustered index, rows and large values together, so large values aren't split out. Run `ANALYZE TABLE` first, or set `information_schema_stats_expiry = 0` in a session, for current figures; `remote_query` can't set it.
 - **SQL Server:** one database per run. Needs `VIEW DATABASE STATE` (the Lakeflow utility script's `lakeflowFixPermissions` grants what's needed). In-row data, LOB and row-overflow pages are reported separately.
+- **MariaDB:** the MySQL query, with no `PROCESS` variant (MariaDB has no `innodb_tablespaces`). Tested on MariaDB 11.4: 3,207 rows estimated for a table of 3,245 (InnoDB's sampled estimate, as on MySQL), 58,695 for 60,000.
+- **YugabyteDB:** `yugabytedb.sql`, not `postgres.sql`: the rows live in DocDB, so `postgres.sql` reads 0 for a table's own file and NULL for the database size. Here a table's data is one figure (no TOAST split), indexes are separate. Tested on YugabyteDB 2026.1: 20,000 and 60,000 rows exact after `ANALYZE`.
+- **CockroachDB:** `cockroachdb.sql`: rows from `crdb_internal.table_row_statistics` (per database: needs statistics), bytes from `SHOW RANGES`. A range holding two tables counts for the first, so per-table bytes are approximate; the database total is the sum of the ranges. Tested on v25.4: rows exact; the database total 24.5 MB for 2 tables.
+- **Db2 and Informix:** no Unity Catalog connection type, so `size.sh` doesn't run them. [`db2.sql`](scripts/db2.sql) (`SYSCAT.TABLES`, `SYSCAT.INDEXES`, `SYSIBMADM.TBSP_UTILIZATION`) and [`informix.sql`](scripts/informix.sql) (`systables`, `sysmaster:sysptnhdr`) are the catalog queries to run with the engine's client: `db2 -x -t -s -f db2.sql` after `CONNECT TO <db>`, or `dbaccess <db> informix.sql`. Tested on Db2 11.5.9 (RUNSTATS: 60,000 and 20,000 rows, exact) and Informix 14.10 (UPDATE STATISTICS: the same two counts).
 - **Oracle:** a connection whose `service_name` is the **PDB**: a connection on the CDB service (as integrated CDC needs) puts `remote_query` in `CDB$ROOT`, where the PDB's tables don't exist, whatever `service_name =>` argument you pass (tested). Needs `SELECT` on the `DBA_` views (the Databricks Oracle setup package grants it).
 
 ## Is it possible? Documented limits
@@ -70,4 +77,4 @@ python3 scripts/limits-check.py references/limits/*.yaml --cache /tmp/limits-cac
 python3 scripts/limits-check.py --find https://www.postgresql.org/docs/current/limits.html "relation size"
 ```
 
-Not covered yet: MySQL's own documentation (it refuses scripted fetches, so MySQL rows come from the managed services' pages), MariaDB, Db2, YugabyteDB and Kafka. Add rows the same way, checked, in the same pull request as the test that needed them.
+Not covered yet: MySQL's own documentation (it refuses scripted fetches, so MySQL rows come from the managed services' pages), MariaDB, Db2 and Informix (IBM's docs index has no limit pages that curl reaches), YugabyteDB, and Kafka. Add rows the same way, checked, in the same pull request as the test that needed them.

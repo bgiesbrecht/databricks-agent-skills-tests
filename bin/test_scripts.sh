@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # bin/test_scripts.sh: regression tests for the skills' scripts.
 #   Offline (always): shell syntax, every markdown link, the script rules (bin/lint_scripts.py) and SCRIPTS.md, the six TPC schemas through shape.py and ddl.py for seven
-#   dialects, a DDL import round trip, the Python fill planner compiles, and the shared DuckDB runners.
+#   dialects, every TPC workload from tpc-schema.sh through ddl-to-schema.py and ddl.py for seven dialects, a DDL import
+#   round trip, the Python fill planner compiles, and the shared DuckDB runners.
 #   With databases (PSQL and/or MYSQL set, e.g. PSQL="podman exec -i dg-pg psql -U postgres",
-#   MYSQL="podman exec -i dg-my mysql -uroot"): fill TPC-C (1 warehouse) and the TPC-H spec schema (SF 0.1) on each, and
-#   check every table is at its target, TPC-H's spec rules, and the audit (0 bad rows). Schemas test_* are dropped first.
+#   MYSQL="podman exec -i dg-my mysql -uroot"): fill each of the six workloads from tpc-schema.sh at a small scale (TPC-C 1
+#   warehouse, TPC-H SF 0.1, TPC-B SF 1 (its smallest), TPC-DS, TPC-E, TPC-DI SF 0.01) on each, and check every table is at its
+#   target, TPC-H's spec rules, and the audit (0 bad rows). Schemas test_* are dropped first.
 #   The planner files must be readable by the client: with podman exec, copy them in and set DIR_PG / DIR_MY to that path.
 set -uo pipefail
 R=$(cd "$(dirname "$0")/.." && pwd); SK=$R/skills; SS=$SK/lfc-source-statschema/scripts; DG=$SK/lfc-source-datagen/scripts
@@ -25,6 +27,16 @@ for w in tpcb tpcc tpch tpcdi tpcds tpce; do
   done
   check "validate.py $w" uv run -q "$SS/validate.py" "$T/$w.yaml"
 done
+tpc_dialects() {                              # tpc_dialects <workload>: its DDL, read back, then written for seven dialects
+  bash "$DG/tpc/tpc-schema.sh" "$1" 1 | uv run -q "$SS/ddl-to-schema.py" --dialect mysql > "$T/t-$1.yaml" 2>/dev/null || return 1
+  for d in postgres mysql tsql oracle db2 informix databricks; do uv run -q "$SS/ddl.py" "$T/t-$1.yaml" --dialect $d > "$T/t-$1.$d.sql" && grep -q 'CREATE TABLE' "$T/t-$1.$d.sql" || return 1; done
+  uv run -q "$SS/validate.py" "$T/t-$1.yaml"
+}
+for w in tpcb tpcc tpch tpcds tpce tpcdi; do
+  n=$(case $w in tpcb) echo 4;; tpcc) echo 9;; tpch) echo 8;; tpcds) echo 24;; tpce) echo 32;; tpcdi) echo 18;; esac)
+  check "tpc-schema.sh $w (SF 1): $n tables, through ddl-to-schema and ddl.py to seven dialects" tpc_dialects $w
+  check "tpc-schema.sh $w (SF 1): $n tables in the schema" test "$(grep -c '^- name:' "$T/t-$w.yaml")" -eq $n
+done
 check "ddl-to-schema.py round trip (TPC-H spec)" bash -c "bash '$DG/tpc/tpc-schema.sh' tpch 0.1 | uv run -q '$SS/ddl-to-schema.py' --dialect mysql > '$T/spec.yaml' \
   && uv run -q '$SS/ddl.py' '$T/spec.yaml' --dialect mysql | uv run -q '$SS/ddl-to-schema.py' --dialect mysql > '$T/spec2.yaml' \
   && python3 -c \"import sys, yaml; f = lambda p: [{k: ([{c: v for c, v in x.items() if c != 'native_type'} for x in v] if k == 'columns' else v) for k, v in t.items()} for t in yaml.safe_load(open(p))['tables']]; sys.exit(f('$T/spec.yaml') != f('$T/spec2.yaml'))\""
@@ -36,11 +48,12 @@ export WANT="10.0.0.0/24 10.9.0.0/24" HAVE="10.0.0.0/16"
 check "q.sh missing.sql" sh -c "'$SK/shell-json-scripting/scripts/q.sh' '$SK/lfc-source-firewall/scripts/missing.sql' | grep -qE \"^MISSING='?10.9.0.0/24'?$\""
 check "q.py missing.sql" sh -c "uv run -q '$SK/shell-json-scripting/scripts/q.py' '$SK/lfc-source-firewall/scripts/missing.sql' | grep -qE \"^MISSING='?10.9.0.0/24'?$\""
 
-db() {                                         # db <pg|my> <client> <planner dir>: fill and check two schemas
+db() {                                         # db <pg|my> <client> <planner dir>: fill and check each workload at a small scale
   local e=$1 cli=$2 dir=$3 dial; [ "$e" = pg ] && dial=postgres || dial=mysql
   echo "== $dial"
-  for w in tpcc_s:tpcc tpch_spec:spec; do local db=test_${w%:*} src=${w#*:} y
-    if [ "$src" = spec ]; then y=$T/spec.yaml; else uv run -q "$SS/shape.py" "$SK/lfc-source-statschema/schemas/tpcc.yaml" --sf 1 --expected /dev/null > "$T/c.yaml" 2>/dev/null; y=$T/c.yaml; fi
+  for w in tpcb tpcc tpch tpcds tpce tpcdi; do local db=test_$w sf y
+    case $w in tpcb|tpcc) sf=1 ;; tpch) sf=0.1 ;; *) sf=0.01 ;; esac
+    y=$T/$w.live.yaml; bash "$DG/tpc/tpc-schema.sh" $w $sf | uv run -q "$SS/ddl-to-schema.py" --dialect mysql > "$y" 2>/dev/null
     uv run -q "$SS/ddl.py" "$y" --dialect $dial > "$T/$db.sql"
     if [ "$e" = pg ]; then { echo "DROP SCHEMA IF EXISTS $db CASCADE; CREATE SCHEMA $db; SET search_path = $db;"; cat "$T/$db.sql"; } | $cli -q -v ON_ERROR_STOP=1 > /dev/null 2>&1
       out=$(PSQL="$cli" DIR=$dir bash "$DG/fill.sh" pg $db 2>&1)
@@ -48,10 +61,15 @@ db() {                                         # db <pg|my> <client> <planner di
       out=$(MYSQL="$cli" DIR=$dir bash "$DG/fill.sh" my $db 2>&1); fi
     n=$(echo "$out" | awk -F'|' 'NF == 5' | wc -l); short=$(echo "$out" | awk -F'|' 'NF == 5 && $4 != $5' | wc -l)
     [ "$n" -gt 0 ] && [ "$short" -eq 0 ] && ok "$db: $n tables at target" || { no "$db: $short of $n short"; echo "$out" | tail -3 | sed 's/^/        /'; }
-    if [ "$src" = spec ]; then
+    if [ "$w" = tpch ]; then
       if [ "$e" = pg ]; then bad=$({ echo "SET search_path = $db;"; sed -E 's/DATEDIFF\(([^,]+), ([^)]+)\)/(\1 - \2)/g' "$DG/tpc/tpch-verify.sql"; } | $cli -At | grep '^bad' | cut -d'|' -f2- | tr '|' '\n' | awk '$1 != 0' | wc -l)
       else bad=$($cli -N $db < "$DG/tpc/tpch-verify.sql" | grep '^bad' | cut -f2- | tr '\t' '\n' | awk '$1 != 0' | wc -l); fi
       [ "$bad" -eq 0 ] && ok "$db: TPC-H spec rules" || no "$db: $bad spec rules broken"
+    fi
+    if [ "$w" = tpcb ]; then                  # tpcb-verify.sql: one "bad: ... <count>" row per check (psql: |, mysql: tab)
+      if [ "$e" = pg ]; then bad=$({ echo "SET search_path = $db;"; cat "$DG/tpc/tpcb-verify.sql"; } | $cli -At | awk -F'|' '/^bad/ && $NF != 0' | wc -l)
+      else bad=$($cli -N $db < "$DG/tpc/tpcb-verify.sql" | awk -F'\t' '/^bad/ && $NF != 0' | wc -l); fi
+      [ "$bad" -eq 0 ] && ok "$db: TPC-B scaling and relationships" || no "$db: $bad TPC-B checks broken"
     fi
     if [ "$e" = pg ]; then a=$(cat "$DG/postgres/cast.sql" "$DG/postgres/plan-audit.sql" | $cli -At -q -v schema=$db -v plain_every=4 | $cli -At | awk -F'|' '{ b += $3 } END { print b + 0 }')
     else a=$({ echo "SET @db='$db', @plain_every=4, @block=1000;"; cat "$DG/mysql/cast.sql" "$DG/mysql/plan-audit.sql"; } | $cli -N -B -r $db | $cli -N $db | awk -F'\t' '{ b += $3 } END { print b + 0 }'); fi

@@ -56,33 +56,26 @@ az group exists --name <resource_group>
 
 ### Option A: SQL Database (recommended for testing)
 
-See [azure-sql-database.md](references/azure-sql-database.md) for full steps (prerequisites, firewall config, verification).
-
-**Quick summary:**
-> `az` takes the admin password only as a flag (`--admin-password`), so it's briefly visible in this machine's process list while the command runs. Run it on a machine you control, and delete `admin.pw` once the UC connection exists.
+[`scripts/sqldb.sh`](scripts/sqldb.sh) makes a logical server with public access and no firewall rules, then a serverless General Purpose database (Gen5, 1 vCore, minimum 0.5) that **auto-pauses** after `AUTO_PAUSE` minutes idle (default 60). Then [`scripts/lfc-setup.sh`](scripts/lfc-setup.sh) adds the test login, the seed tables and change tracking + CDC, and **lfc-source-firewall**'s `server-fw.py` opens it to the same sources as every other source, scoped to fit the server's 128-rule cap.
 
 ```bash
-# Create logical server
-umask 077
-echo "Lfc1$(openssl rand -hex 12)" > admin.pw
-az sql server create --resource-group <rg> --name <pfx>-mssql-<loc>-<epoch> \
-  --location <location> --admin-user sqladmin \
-  --admin-password "$(cat admin.pw)" --enable-public-network true
-
-# Create database
-az sql db create --resource-group <rg> --server <pfx>-mssql-<loc>-<epoch> \
-  --name <pfx>_mssql_db_<epoch> --service-objective GP_S_Gen5_2 \
-  --collation SQL_Latin1_General_CP1_CI_AS
-
-# Add firewall rule for Databricks egress CIDR
-az sql server firewall-rule create --resource-group <rg> \
-  --server <pfx>-mssql-<loc>-<epoch> --name "databricks-serverless" \
-  --start-ip-address "198.51.100.0" --end-ip-address "198.51.100.255"
+export RG=<resource-group> LOCATION=<location> SERVER=<pfx>-mssql-<loc>-<epoch> DB=<database>
+S=skills/lfc-source-azure-sql/scripts
+bash $S/sqldb.sh plan
+ADMIN_PW_FILE=admin.pw bash $S/sqldb.sh create
+python3 skills/lfc-source-firewall/scripts/server-fw.py sql $SERVER --nsg <shared-nsg> --regions <cloud>:<region>,... --apply
+HOST=$SERVER.database.windows.net ADMIN_PW_FILE=admin.pw LOGIN_PW_FILE=lfc_user.pw bash $S/lfc-setup.sh
+bash $S/sqldb.sh status            # Online, Paused or Resuming
 ```
+
+- **Auto-pause:** an idle database pauses itself; there's nothing to stop by hand. The next login resumes it, and that first login fails with error 40613 ("Database ... is not currently available") until it's online, about a minute: `sqldb.sh wake` logs in until it answers. Run it before a test that starts with a paused database.
+- **The free offer** (`FREE=1`: `--use-free-limit --free-limit-exhaustion-behavior AutoPause`) failed with `InternalServerError` on every try in the test subscription; the same database without it was created at once. Leave `FREE` unset unless the subscription is known to have the offer.
+- **The test login's password can't contain part of its name:** `lfc_user` splits at `_`, so a password starting `Lfc` fails with error 40632 ("not complex enough") although it has upper, lower and digits.
+- `lfc-setup.sh` creates the login and its user in `master` over a separate connection (SQL Database has no `USE master`), and passes every batch as a file: go-sqlcmd doesn't read a batch from standard input.
 
 ### Option B: SQL Managed Instance (production-like)
 
-**Warning:** First MI in a new subnet takes **4–6 hours** to provision; later ones 30–60 minutes.
+**Warning:** First MI in a new subnet can take **4–6 hours** to provision (one General Purpose 4-vCore instance took 2 hours on 2026-10-26); later ones 30–60 minutes.
 
 [`scripts/mi.sh`](scripts/mi.sh) does every step. It puts the instance in its own `/27` subnet in an existing VNet, delegated to `Microsoft.Sql/managedInstances`, with the subnet's own NSG (`<subnet>-nsg`) and route table (`0.0.0.0/0` to Internet), which MI needs before it's created. MI adds its own management rules to that NSG; don't attach the shared VM NSG to the subnet. The NSG starts with no rule for the public data endpoint (port 3342), so the instance is closed to everything outside the VNet until **lfc-source-firewall** syncs the laptop and Databricks egress ranges into `<subnet>-nsg`: the same list as every other source.
 
@@ -118,6 +111,8 @@ CREATE TABLE dbo.intpk (pk INT IDENTITY NOT NULL PRIMARY KEY, dt DATETIME, ops V
 CREATE TABLE dbo.dtix (pk BIGINT, dt DATETIME, ops VARCHAR(255) DEFAULT 'insert');
 ```
 
+**The utility objects script** is optional for tables read through change tracking (the same schema evolution without it) and required for CDC: without its CDC objects the first update fails with `INGESTION_GATEWAY_DDL_OBJECTS_MISSING`, for every table in that database. `CLEANUP` mode removes only the DDL support objects; [`scripts/uninstall-lakeflow.sql`](scripts/uninstall-lakeflow.sql) removes everything, checked with a before/after catalog diff. What each step adds and removes: [utility-objects.md](references/utility-objects.md).
+
 ## Register the UC connection
 
 ```bash
@@ -134,7 +129,8 @@ cat > conn.json <<EOF
     "host": "<server-fqdn>",
     "port": "<1433-or-3342>",
     "user": "lfc_user",
-    "password": "${LFC_PASSWORD}"
+    "password": "${LFC_PASSWORD}",
+    "trustServerCertificate": "true"
   }
 }
 EOF
@@ -148,7 +144,7 @@ unset LFC_PASSWORD
 
 **Host and port:**
 - **SQL Database:** `<pfx>-mssql-<location>-<epoch>.database.windows.net:1433`
-- **SQL MI (public endpoint):** `<public_fqdn>:3342`
+- **SQL MI (public endpoint):** `<public_fqdn>:3342`, the host `mi.sh endpoint` prints (`<name>.public.<dns zone>.database.windows.net`)
 
 ## Verify connectivity
 
@@ -189,8 +185,8 @@ See [azure-sql-lifecycle.md](references/azure-sql-lifecycle.md):
 ## Top gotchas
 
 1. **MI provisioning is slow:** 4–6 hours for first MI in a new subnet.
-2. **SQL Database CDC tier required:** Not available on `Basic` or `S0`–`S2`; use `GP_S_Gen5` or higher.
-3. **Password complexity:** Uppercase, lowercase, digits, symbols; no spaces. Test before provisioning.
+2. **SQL Database CDC tier required:** Not available on `Basic` or `S0`–`S2`; the serverless `GP_S_Gen5` database `sqldb.sh` makes has it.
+3. **Password complexity:** three of upper, lower, digits, symbols; no spaces; and no part of the login's name (error 40632).
 4. **LFC user grants:** Must have `db_owner` and `db_ddladmin` roles.
 5. **Collation is fixed at creation:** Changing collation later requires migration. Specify at database creation time if you need case-sensitive.
 

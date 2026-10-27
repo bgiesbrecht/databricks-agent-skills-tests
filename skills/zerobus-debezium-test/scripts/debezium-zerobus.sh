@@ -1322,7 +1322,7 @@ if [ "$PHASE" -ge 2 ]; then
   case $SOURCE in crdb) export DB_USER=root DB_PASS=unused-insecure-node;; yb) export DB_USER=yugabyte DB_PASS=yugabyte;;
     pg) DB_PASS=$(vm "cat $RD/src.pw"); export DB_USER=postgres DB_PASS;; esac
   yq -n -o json '.name = strenv(CONN) | .connection_type = "POSTGRESQL" |
-    .options = {"host": strenv(VM_IP), "port": strenv(SRC_PORT), "user": strenv(DB_USER), "password": strenv(DB_PASS)}' > "$W/conn.json"
+    .options = {"host": strenv(VM_IP), "port": strenv(SRC_PORT), "user": strenv(DB_USER), "password": strenv(DB_PASS), "trustServerCertificate": "true"}' > "$W/conn.json"
   dbx connections create --json @"$W/conn.json" >/dev/null || { echo "connection create failed"; exit 2; }
   link "connection $CONN" "$HOST/explore/connections/$CONN"
   # the current source's: table, ordinal, column, Databricks type, 1 when in the primary key, default; then canonical

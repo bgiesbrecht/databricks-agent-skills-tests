@@ -31,8 +31,11 @@ esac
 # --- workspace: Unity Catalog, connector previews
 databricks metastores current --profile $P -o json 2>/dev/null > $T/ms.json; MS=$(yq -p json -o tsv '.metastore_id // ""' $T/ms.json); WSID=$(yq -p json -o tsv '.workspace_id // ""' $T/ms.json)
 [ -n "$MS" ] && row PASS "Unity Catalog metastore assigned" "" || row FAIL "Unity Catalog metastore assigned" "none" "assign the workspace to a metastore (account admin)"
-for e in sql_server mysql oracle; do has icdc || break
+# the database connectors in the CDC overview (MySQL, PostgreSQL, Microsoft SQL Server, Oracle). PostgreSQL has no setting
+# on a workspace whose rollout hasn't reached it yet: the API says "not yet available", and that is an INFO, not a WARN
+for e in sql_server mysql oracle postgres; do has icdc || break
   v=$(api /api/2.1/settings/integrated_cdc_${e}_connector | yq -p json -o tsv 'with(select(has("boolean_val")); .v = .boolean_val.value) | with(select(has("boolean_val") | not); .v = .effective_boolean_val.value) | .v')
+  [ "$e" = postgres ] && [ -z "$v" -o "$v" = null ] && { row INFO "integrated CDC preview: $e" "no setting on this workspace (rolled out in phases)"; continue; }
   [ "$v" = true ] && row PASS "integrated CDC preview: $e" "on" || row WARN "integrated CDC preview: $e" "${v:-not found}" "enable it (lfc-workspace-setup step 1), or ask the account team"
 done
 

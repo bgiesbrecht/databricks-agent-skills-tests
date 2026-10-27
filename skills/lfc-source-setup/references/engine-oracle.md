@@ -107,9 +107,10 @@ END;
 The [public setup](https://docs.databricks.com/aws/en/ingestion/lakeflow-connect/oracle-integrated-setup) supports Oracle 12c to 26ai (not RAC, standby, or multi-tenant RDS) and uses a Databricks PL/SQL package, `DBX_ORACLE_SETUP_UTIL`, instead of hand-written grants. Tested on `docker.io/gvenzl/oracle-free:23` (which is now 26ai Free 23.26; CDB `FREE`, PDB `FREEPDB1`), as `sqlplus / as sysdba` inside the container: `VALIDATE_SETUP` passes, and both query-based ingestion and integrated CDC (snapshot, then inserts, updates and deletes, on a table with a primary key and one without) run with this user. The UC connection needs `service_name` = the CDB's service (`FREE`), see **lfc-source-setup** step 2. A workspace where Oracle CDC isn't enabled refuses the pipeline with `Ingestion source 'ORACLE' is not supported in your workspace`.
 
 ```sql
--- 1. Recovery area and ARCHIVELOG (restarts the database; the container keeps running)
+-- 1. Recovery area and ARCHIVELOG (restarts the database; the container keeps running). 10G filled in one
+--    schema-change test round (ORA-19809, then ORA-00257 archiver error, which stops the extractor): use 50G
 host mkdir -p /opt/oracle/oradata/fra
-ALTER SYSTEM SET db_recovery_file_dest_size = 10G SCOPE=BOTH;
+ALTER SYSTEM SET db_recovery_file_dest_size = 50G SCOPE=BOTH;
 ALTER SYSTEM SET db_recovery_file_dest = '/opt/oracle/oradata/fra' SCOPE=BOTH;
 SHUTDOWN IMMEDIATE
 STARTUP MOUNT
@@ -425,6 +426,12 @@ ALTER SYSTEM SWITCH LOGFILE;
 ALTER SYSTEM SET db_recovery_file_dest_size = 50G SCOPE=BOTH;
 ALTER SYSTEM SET db_flashback_retention_target = 2880 SCOPE=BOTH;
 ```
+
+### Recovery Area Full
+
+**Symptom:** `ORA-19809: limit exceeded for recovery files`, then `ORA-00257: archiver error`; the extractor stops and its lag grows (tested 2026-10-26, Oracle Free 23.26.3, 10G area, about 20 tables changed and refreshed).
+
+**Fix:** `ALTER SYSTEM SET db_recovery_file_dest_size = 50G SCOPE=BOTH;` (the archiver resumes by itself), then check the extractor catches up.
 
 ### PDB Service Shows INTERNAL_ERROR
 

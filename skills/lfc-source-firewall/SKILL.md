@@ -30,6 +30,8 @@ Counts are from `ip-ranges.json` at the time of writing; recount with the comman
 
 **An NSG that can't be the shared one** (a SQL Managed Instance subnet's: MI adds its own rules to it) gets the shared NSG's sources for its one port: `RG=<resource-group> bash scripts/nsg-copy.sh <shared-nsg> <subnet-nsg> 3342 [--apply]`. It copies every inbound Allow rule's source list (serverless, VPN, workspace egress, known hosts) under the same name and priority, TCP to that port only; rerun it after the shared NSG is synced.
 
+**Azure SQL Database and Flexible Server** take start-end rules, capped at 128 (SQL Database), 500 (MySQL) and 500 (Postgres), and the shared NSG's every-region lists merge to about 1,200 ranges. `RG=<resource-group> python3 scripts/server-fw.py sql|pg|mysql <server> --nsg <shared-nsg> --regions <cloud>:<region>,... [--profiles <p>,...] [--cidrs <classic egress>] [--apply]` takes the shared NSG's other sources (VPN, office, known hosts), the serverless ranges of each named workspace's region, the extra CIDRs and this machine's IP, merges them, checks the cap, and syncs only its own `lfc-<n>` rules. Three regions came to about 60 rules. A Flexible Server adds a rule in about a minute, so put the test workspaces and this machine on first: `--skip . --profiles <test workspaces> --no-drop --apply` (`--skip .` leaves out the shared NSG's rules; `--no-drop` keeps `lfc-` rules outside the list instead of deleting them), then the full list later with `--no-drop`.
+
 ## Inputs
 
 | Input | How to get it |
