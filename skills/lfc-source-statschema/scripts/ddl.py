@@ -92,6 +92,9 @@ def sql(e):
             e = f if m is e else (m.replace(f), e)[1]
     return e.sql(R, identify=QUOTE)
 def node(text): return sqlglot.parse_one(text, read=R)          # a rewrite, written in the target dialect (Postgres for Db2, Informix)
+def textual(x, ints):                                           # a text column, or its first characters, read as an integer
+    x = x.this if isinstance(x, exp.Left) else x
+    return isinstance(x, exp.Column) and x.name.lower() not in ints
 def rewrite(n, ints):                                           # one node of a MySQL formula -> the target dialect
     if isinstance(n, exp.IntDiv):                               # DIV: integer division, truncated toward zero
         if D == "tsql": return node(f"CAST({sql(n.this)} AS BIGINT) / CAST({sql(n.expression)} AS BIGINT)")
@@ -116,6 +119,10 @@ def rewrite(n, ints):                                           # one node of a 
             d = inner.args.get("default")
             return exp.Case(ifs=[exp.If(this=i.this, true=pick(i.args["true"])) for i in inner.args["ifs"]],
                             default=pick(d) if d is not None else n.args.get("default"))
+    if CRDB and isinstance(n, exp.Cast) and n.to.this == exp.DataType.Type.BIGINT and textual(n.this, ints):
+        # a text key read as an integer (lfc:n of TPC-E's taxrate: CAST(tx_id AS SIGNED)): CockroachDB reads a leading zero
+        # as octal ('0320'::BIGINT is 208), so the text goes through DECIMAL, which is base 10 ('0320' is 320)
+        return node(f"CAST(CAST({sql(n.this)} AS DECIMAL) AS BIGINT)")
     if D == "postgres" and isinstance(n, (exp.Add, exp.Sub)) and isinstance(n.expression, exp.Literal) \
             and not n.expression.is_string and "." in n.expression.this and not isinstance(n.this, exp.Literal):
         # <int> + 0.5 (a unit draw) is DECIMAL on CockroachDB, which won't multiply a float by it (normal, zipf):
