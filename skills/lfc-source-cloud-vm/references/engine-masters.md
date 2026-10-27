@@ -43,6 +43,24 @@ sudo systemd-run --unit=lfc-master-pg --collect -E SECRETS=/root/lfc-src/masters
 | MySQL 8.4 | a seed table of 2^20 keys, filled by doubling with `INSERT ... SELECT` | no binary log, `innodb_flush_log_at_trx_commit=0` |
 | SQL Server 2022 | `GENERATE_SERIES` (compatibility level 160) | `SIMPLE` recovery, `WITH (TABLOCK)` |
 | Oracle 23ai Free | `CONNECT BY LEVEL` | `/*+ APPEND */` (direct path), autocommit per statement |
+| MariaDB 11.4 | the MySQL planners (`--skip-log-bin`; `innodb_log_file_size` instead of the redo-log capacity) | as MySQL |
+| CockroachDB 25.4 | `fill.py` (the Postgres planners need `pg_temp` functions, which CockroachDB can't create), 50,000 rows per statement | `--insecure`, published on 127.0.0.1 for the driver |
+| YugabyteDB 2026.1 | the Postgres planners through a `psql` sidecar on the server's network (`--network container:`), `SRC=series` | `yugabyted` with `advertise_address=127.0.0.1`; `chown 10001:100` |
+| Db2 11.5 | `fill.py` (two sessions), DDL through `sq.py`; `PCKCACHESZ 16384`, `LOGSECOND 200` | `--privileged`, published on 127.0.0.1 |
+| Informix 14.10 | `fill.py` (one session), one database per workload in a `datadbs` dbspace | the chunk file must exist, owner `informix`, mode 660; the developer image caps the dbspace (see below) |
+
+**Built on the shared VM, SF 1 (2026-10-27).** Each master was built with `tpc-master.sh` and each table checked against its target (`fill.py status`) on a slot cloned from it with `slot.sh up`:
+
+| Engine | Master | Built | Rows at target | Build time | Master size | Failure, exact error |
+|---|---|---|---|---|---|---|
+| MariaDB 11.4 | `mariadb114-tpc-sf1` | yes | 109,712,237 in 95 tables; all six workloads | 2,360 s | 19.43 GiB | none |
+| CockroachDB 25.4 | `crdb25-tpc-sf1` | no | TPC-B, C, H, DS at target; TPC-E fails | 631 s to the failure | not copied | TPC-E round 2: `UniqueViolation: duplicate key value violates unique constraint "taxrate_pkey"`. The probe reads `CAST(tx_id AS BIGINT)` of `'0320'` as octal (208); the tag `lfc:n={CAST("tx_id" AS BIGINT)}` comes from statschema's `ddl.py` CockroachDB output |
+| YugabyteDB 2026.1 | `yb2026-tpc-sf1` | in progress | TPC-B, C, H, DS loaded; TPC-E running when this was written | | | none so far |
+| Db2 11.5 | none | no | | | | `SQL0293N Error accessing a table space container.` on `CREATE DATABASE LFCDB`, on a bind-mounted XFS volume and inside the container (the instance user can write there; direct I/O and `fallocate` work) |
+| Informix 14.10 | none | no | SF 0.1 TPC-B and TPC-H reach target (scratch) | | | `onspaces ... -s 31457280` (30 GB): `The limits of the Informix Dynamic Server Demo Version have been exceeded`; 1 GB (`-s 1000000`) is accepted, so SF 1 (about 110M rows) doesn't fit |
+| Oracle 23ai Free | none | no | | | | no SF 1 master on the VM; not built in this pass |
+
+CockroachDB's TPC-H `lineitem` (6M rows) loaded at about 100,000 rows a minute at 50,000 rows per statement. A single 600,000-row statement ran 12 minutes without committing a row.
 
 The lfc tags stay in each master, so a clone can be topped up or appended to with the same planners. Results: below, and in `results/runs/` (`recall.py --test other --grep tpc-master`).
 
