@@ -485,15 +485,126 @@ def convert_one(item: dict, env: dict, opts: dict) -> dict:
             "notes": "; ".join(notes)}
 
 
+def red(text, opts):
+    """Replace the source names the notes quote: literal pairs (redact) and patterns (redact_re), in any text."""
+    if text is None:
+        return None
+    text = str(text)
+    for a, b in (opts.get("redact") or {}).items():
+        text = text.replace(a, b)
+    for pat, b in (opts.get("redact_re") or {}).items():
+        text = re.sub(pat, b, text)
+    return text
+
+
+def parse_events(raw, opts: dict) -> list[dict]:
+    """Events from a list or from one text with '; ' between them: 'CLASS (WARN): message', or prose ('none' = no event)."""
+    if raw is None:
+        return []
+    pieces = raw if isinstance(raw, list) else re.split(r";\s*", str(raw))
+    out: list[dict] = []
+    for piece in pieces:
+        p = red(str(piece).strip().strip('"').strip(), opts)
+        if not p or re.match(r"(?i)none\b", p):
+            continue
+        m = re.match(r"([A-Z][A-Z0-9_]+(?:\.[A-Z0-9_]+)?)", p)
+        cls = m.group(1) if m and "_" in m.group(1) else None
+        rest = p[m.end():] if cls else p
+        msg = re.sub(r"^[\s:(]*(WARN|ERROR|INFO)?[\s):]*", "", rest).strip()[:200] or p[:200]
+        if cls and RESTART_RE.search(cls) or cls is None and "WARN" in p:
+            level = "warning"
+        else:
+            level = "error"
+        out.append({"class": cls, "level": level, "message": msg})
+    return out
+
+
+def settle(entry: dict) -> dict:
+    """A stop, a failed pipeline or a refusal whose error class or refusal was seen: the row is not landed (false), tested."""
+    stop_like = entry["outcome"] in ("table-stops-full-refresh", "pipeline-fails", "not-applicable")
+    evidence = any(e["class"] for e in entry["events"]) or \
+        (entry["outcome"] == "not-applicable" and isinstance(entry["source_accepted"], str))
+    if stop_like and evidence and entry["post_change_row_landed"] == "unverified":
+        entry["post_change_row_landed"] = False
+        if entry["basis"] != "partial":
+            entry["basis"] = "tested"
+    return entry
+
+
+BASIS_HEAD = re.compile(r"(tested|confounded|code-only|partial)\b")
+
+
+def structured_case(item: dict, env: dict, opts: dict) -> dict:
+    """A case from a structured run file (cases: id/case, type_before, type_after, events as text, basis with a note)."""
+    name = str(item.get("case") or item.get("id"))
+    run_id = str(item["id"]) if item.get("case") else None
+    cid = ALIAS.get(re.sub(r"\s*\(.*\)$", "", name).strip())
+    if cid is None:
+        sys.exit(f"convert: no case in ddl-cases.yaml for {name!r}; add the name to the case's aliases")
+    spec = CASES[cid]
+    src = item.get("source_accepted")
+    not_run_text = isinstance(src, str) and src.lower().startswith("not run")
+    raw_outcome = str(item.get("outcome") or "")
+    outcome = "not-run" if (raw_outcome == "not-run" or not_run_text) else raw_outcome
+    if outcome not in OUTCOMES_KNOWN:
+        sys.exit(f"convert: {name}: outcome {raw_outcome!r} is not one of {sorted(OUTCOMES_KNOWN)}")
+    basis_raw = str(item.get("basis") or "").strip()
+    bm = BASIS_HEAD.match(basis_raw)
+    if bm:
+        basis, basis_note = bm.group(1), basis_raw[bm.end():].strip(" ;:()")
+    else:
+        basis, basis_note = None, basis_raw
+    if outcome == "not-run" and basis == "tested":
+        basis = None
+    fr = item.get("full_refresh_needed")
+    fr = {"yes": True, "true": True, "no": False, "false": False}.get(str(fr).lower(), None) if not isinstance(fr, bool) else fr
+    landed = item.get("post_change_row_landed")
+    if isinstance(landed, str):
+        landed = None if landed.lower() in ("none", "null") else "unverified"
+    if spec.get("post") is None:   # no post-change insert in the catalog (a drop): nothing to land
+        landed = None
+    vc = red(item.get("value_check"), opts)
+    vc = None if vc in (None, "none") else vc
+    if isinstance(src, bool):
+        accepted = src
+    elif src is None or not_run_text:
+        accepted = None
+    else:
+        accepted = red(src, opts)
+    before = red(item.get("type_before"), opts)
+    after = red(item.get("type_after"), opts)
+    before = "absent" if before == "none" else before
+    notes = [red(item.get("notes"), opts) or ""]
+    if basis_note:
+        notes.append(red(basis_note, opts))
+    if run_id:
+        notes.append(f"run case {run_id}")
+    if name != cid:
+        notes.append(f"recorded as {name!r}")
+    return {"id": cid, "ddl": red(item.get("ddl"), opts), "column_before": before, "column_after": after,
+            "source_accepted": accepted, "events": parse_events(item.get("events"), opts), "outcome": outcome,
+            "full_refresh_needed": fr, "auto_full_refresh_applies": None,
+            "destination_type_after": red(item.get("destination_type_after"), opts), "post_change_row_landed": landed,
+            "value_check": vc, "basis": basis, "notes": "; ".join(n for n in notes if n)}
+
+
+OUTCOMES_KNOWN = {"restart-no-full-refresh", "no-interruption", "table-stops-full-refresh", "pipeline-fails",
+                  "not-applicable", "not-run"}
+
+
 def cmd_convert(a: argparse.Namespace) -> int:
     env, opts = load_env(a.env)
     for kv in a.set or []:
         k, v = kv.split("=", 1)
         env[k] = v
-    items = yaml.safe_load(Path(a.scratch).read_text())
-    cases = [convert_one(i, env, opts) for i in items]
+    raw = yaml.safe_load(Path(a.scratch).read_text())
+    if isinstance(raw, dict):   # a structured run file: cases: [...] (its own environment block is replaced by --env)
+        cases = [structured_case(i, env, opts) for i in raw["cases"]]
+    else:
+        cases = [convert_one(i, env, opts) for i in raw]
     for c in cases:
         c.update((opts.get("overrides") or {}).get(c["id"], {}))
+    cases = [settle(c) for c in cases]   # last: an override can't leave a stop's row unverified
     write_checked({"environment": env, "cases": cases}, a.out)
     print(f"wrote {a.out}: {len(cases)} cases")
     return 0
@@ -506,7 +617,13 @@ SHORT = {"restart-no-full-refresh": "restart", "no-interruption": "no-int", "tab
 
 
 def combo(env: dict) -> tuple:
-    return (ENGINE_ORDER.index(env["engine"]), env["mechanism"], SETUP_ORDER[env["setup"]], env["engine"], env["setup"])
+    return (ENGINE_ORDER.index(env["engine"]), env["mechanism"], SETUP_ORDER.get(env["setup"], 3), env["engine"], env["setup"])
+
+
+def file_key(name: str) -> tuple:
+    """Run order: the date, then the run number (no suffix is run 1)."""
+    m = re.search(r"-(\d{4}-\d{2}-\d{2})(?:-(\d+))?\.yaml$", name)
+    return (m.group(1), int(m.group(2) or 1)) if m else ("", 0)
 
 
 SHORT = {"restart-no-full-refresh": "restart", "no-interruption": "no-int", "table-stops-full-refresh": "stops",
@@ -531,7 +648,9 @@ def cell(entry: dict) -> str:
         RESTART_RE.search(e["class"]) or STOP_RE.search(e["class"]))), None)
     p = entry["post_change_row_landed"]
     landed = {True: "+", False: "-"}.get(p, "?" if p == "unverified" else "")
-    if p == "unverified":
+    if entry["basis"] == "partial":
+        mark = "P"
+    elif p == "unverified":
         mark = "U"
     elif entry["basis"] == "confounded":
         mark = "C"
@@ -565,16 +684,17 @@ def render_md(files: list[tuple[str, dict]], detail: bool) -> str:
     cols: dict[tuple, list[dict]] = {}
     for _, doc in files:
         cols.setdefault(combo(doc["environment"]), []).append(doc)
+    run_of = {id(doc): file_key(name) for name, doc in files}
     headers = []
     for key in sorted(cols):
         e = cols[key][0]["environment"]
         label = f"{e['engine']} {e['mechanism']} {e['setup']}" + (f" ({len(cols[key])} runs)" if len(cols[key]) > 1 else "")
         headers.append((key, label))
-    by_case: dict[str, dict[tuple, list[dict]]] = {}
+    by_case: dict[str, dict[tuple, list[tuple]]] = {}
     for key, docs in cols.items():
         for doc in docs:
             for c in doc["cases"]:
-                by_case.setdefault(c["id"], {}).setdefault(key, []).append(c)
+                by_case.setdefault(c["id"], {}).setdefault(key, []).append((run_of[id(doc)], c))
     numbers: dict[str, int] = {}
     out = ["# DDL matrix results", "",
            "Generated from the run files in [results/ddl-matrix](../../../results/ddl-matrix/) by "
@@ -582,7 +702,7 @@ def render_md(files: list[tuple[str, dict]], detail: bool) -> str:
            "Don't edit by hand. The file format and the method: [ddl-matrix.md](ddl-matrix.md).", "",
            "Cell: outcome, error class, row check and basis. Outcome: `restart` (the update restarts, no full refresh), `no-int` (no "
            "interruption), `stops` (the table stops and needs a full refresh), `pipe-fails`, `refused` (the source refused the DDL), "
-           "`not run`. Row: `+` landed, `-` not landed, `?` not verified. Basis: `T` tested, `C` confounded by a batch, `U` unverified. "
+           "`not run`. Row: `+` landed, `-` not landed, `?` not verified. Basis: `T` tested, `C` confounded by a batch, `U` unverified, `P` partial (the run recorded only part of the case). "
            "Notes are linked from the cell.", ""]
     out += ["| Case | Types (SQL Server) | " + " | ".join(lbl for _, lbl in headers) + " |", "|" + "---|" * (len(headers) + 2)]
     for c in CAT["cases"]:
@@ -590,7 +710,9 @@ def render_md(files: list[tuple[str, dict]], detail: bool) -> str:
         row = [f"`{c['id']}`", types]
         for key, _ in headers:
             texts = []
-            for e in by_case.get(c["id"], {}).get(key, []):
+            cands = by_case.get(c["id"], {}).get(key, [])
+            shown = [max(cands, key=lambda rc: rc[0])[1]] if cands else []   # the newest run with this case
+            for e in shown:
                 t = cell(e)
                 text = note_for(e)
                 if text:
@@ -600,7 +722,7 @@ def render_md(files: list[tuple[str, dict]], detail: bool) -> str:
                 texts.append(t)
             row.append(" / ".join(dict.fromkeys(texts)))
         out.append("| " + " | ".join(row) + " |")
-    out += ["", "A `(N runs)` column merges the runs of one setup; two different cells in one column are joined with ` / `. "
+    out += ["", "A `(N runs)` column shows, for each case, the newest run that has the case; `--detail` lists every run. "
             "Each mechanism's `none` column and its `utility` column are the same cases with and without the setup script.", "",
             "## Notes", ""]
     out += [f'<a id="n{i}"></a>{i}. {text}' for text, i in sorted(numbers.items(), key=lambda kv: kv[1])]

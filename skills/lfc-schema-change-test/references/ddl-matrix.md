@@ -8,7 +8,7 @@ The matrix runs the same schema-change cases on each engine, mechanism and setup
 
 - `engine`: `sqlserver`, `postgres`, `mysql`, `oracle`
 - `mechanism`: `ct`, `cdc` (SQL Server), `logical-replication` (PostgreSQL), `binlog` (MySQL), `logminer` (Oracle), `query-based`
-- `setup`: `none`, `utility-1.7`, `utility-1.7-cleanup` (the utility installed, then its CDC objects removed by `CLEANUP`)
+- `setup`: `none`, `utility-1.7`, `utility-1.7-cleanup` (the utility installed, then its CDC objects removed by `CLEANUP`), `setup-package` (Oracle: the Databricks setup package). A new setup needs its slug in the validator's list. The run number after the date orders the runs of a day (no suffix is run 1).
 
 ## The `environment` block
 
@@ -47,7 +47,7 @@ Each case is one table with two starting rows, one DDL, and one insert in the ne
 | `destination_type_after` | the destination's type for the case's column after the change |
 | `post_change_row_landed` | `true`, `false`, `unverified`, or null when the case has no post-change insert |
 | `value_check` | what the row shows, e.g. `3000000000 landed`, `source .1234567 landed as .123` |
-| `basis` | `tested` (the outcome and row are observed), `confounded` (a failed batch update could explain it), `code-only`; null when not run |
+| `basis` | `tested` (the outcome and row are observed), `confounded` (a failed batch update could explain it), `partial` (the run recorded only part of the case; kept as recorded), `code-only`; null when not run |
 | `notes` | the run's own words, verbatim (`recorded: ...`) and anything added |
 
 ### Outcome rules
@@ -56,6 +56,8 @@ Each case is one table with two starting rows, one DDL, and one insert in the ne
 - A **stop** is a table that needs a full refresh: a `CDC_INCOMPATIBLE_SCHEMA_CHANGES.*`, `INGESTION_GATEWAY_DDL_NOT_SUPPORTED`, `INGESTION_GATEWAY_MISSING_TABLE_IN_SOURCE`, `INGESTION_GATEWAY_UNTRACEABLE_TABLE_MODIFICATION` or `INGESTION_GATEWAY_DDL_OBJECTS_MISSING` class on the table.
 - **pipe-fails** is the pipeline stopping as a whole before any table loads.
 - **refused** is the source's own refusal of the DDL (nothing changed on the source for that statement).
+
+A stop, a pipeline failure or a refusal whose error class or refusal was seen means the row is not landed: it is written `post_change_row_landed: false` and `basis: tested`, never `unverified`. The validator refuses the other combination.
 
 ### Landed rows, and what counts as a pass
 
@@ -79,7 +81,8 @@ A batch runs every case's DDL before one update. If that update fails, every tab
 Cell: outcome, error class, then the row and the basis.
 
 - Row: `+` landed, `-` not landed, `?` unverified.
-- Basis: `T` tested, `C` confounded, `U` unverified (the row is unverified, or the basis is confounded and the row isn't landed).
+- Basis: `T` tested, `C` confounded, `U` unverified (the row is unverified, or the basis is confounded and the row isn't landed), `P` partial.
+- A column with more than one run shows, for each case, the newest run that has the case. `render --detail` lists every run.
 
 ## Running one combination
 
@@ -93,9 +96,9 @@ uv run ddl-matrix.py collect --pipeline <pipeline-id> --profile <profile> --ware
 uv run ddl-matrix-validate.py ../../../results/ddl-matrix/*.yaml
 ```
 
-`env.yaml` is the `environment` block above, with the optional keys the converter reads (`class_map` for prose class names, `redact` for source names quoted in the notes, `confound_no_error`, `not_run_events`, `overrides`). `collect --events-json ... --tables-json ...` runs the same parse on saved data, which is how the unit test runs.
+`env.yaml` is the `environment` block above, with the optional keys the converter reads (`class_map` for prose class names, `redact` for literal source names, `redact_re` for patterns such as pipeline names, profiles and IDs, `confound_no_error`, `not_run_events`, `overrides` for a case's fields; overrides apply before the stop-row rule). `collect --events-json ... --tables-json ...` runs the same parse on saved data, which is how the unit test runs.
 
-A run recorded in prose (a scratch file, one line per case) goes through `convert`:
+A run recorded in a structured file (`cases:` with type_before, type_after and events as text), or in prose (a scratch file, one line per case), goes through `convert`. The file's own environment block is replaced by `--env`:
 
 ```bash
 uv run ddl-matrix.py convert scratch.yaml --env env.yaml --out ../../../results/ddl-matrix/<name>.yaml
@@ -105,7 +108,7 @@ Each scratch `case:` must be a catalog id or one of its aliases. A value with `:
 
 ## Oracle
 
-Oracle's results go in `results/ddl-matrix/oracle-logminer-<setup>-<date>.yaml` once they exist. Its templates are in the catalog (`oracle:` entries) and are not run yet; `sql oracle logminer` prints them.
+Oracle's run is `results/ddl-matrix/oracle-logminer-setup-package-2026-10-26.yaml`: the setup package, a C## user, and no DDL-tracking objects. Its environment records the recovery-area fix (the area filled at 10G and was raised to 50G). The catalog's Oracle templates are written; `sql oracle logminer` prints them.
 
 ## Rendering
 

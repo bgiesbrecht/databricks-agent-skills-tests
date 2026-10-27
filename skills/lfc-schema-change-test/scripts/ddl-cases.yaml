@@ -118,7 +118,7 @@ cases:
       sqlserver: "ALTER TABLE {t} ADD cc AS (n * 2);"
     post: "INSERT INTO {t} (id, n, v) VALUES (3, 30, 'c');"
     expect: {id: "3"}
-    aliases: [add-computed-column]
+    aliases: [add-computed-column, add-computed]
     notes: "SQL Server only."
 
   - id: add-identity-column
@@ -190,7 +190,7 @@ cases:
       oracle: "ALTER TABLE {t} MODIFY (v VARCHAR2(20));"
     post: "INSERT INTO {t} (id, n, v) VALUES (3, 30, 'abcdefghijklmnopqrst');"
     expect: {id: "3", v: "abcdefghijklmnopqrst"}
-    aliases: [alter-string-length-narrow, alter-string-length, nvarchar-length-narrow, varchar-50-to-20]
+    aliases: [alter-string-length-narrow, alter-string-length, nvarchar-length-narrow, varchar-50-to-20, nvarchar-50-to-20]
     notes: "A 20-character value, the new maximum."
 
   - id: bigint-to-int
@@ -219,7 +219,7 @@ cases:
       oracle: "ALTER TABLE {t} MODIFY (n VARCHAR2(20));"
     post: "INSERT INTO {t} (id, n, v) VALUES (3, 'abc', 'c');"
     expect: {id: "3", n: "abc"}
-    aliases: [alter-incompatible, int-to-nvarchar, int-to-varchar, int-to-string]
+    aliases: [alter-incompatible, int-to-nvarchar, int-to-varchar, int-to-string, int-to-nvarchar-20, alter-numeric-to-string]
     notes: "A type change, not a widen."
 
   - id: int-to-decimal-18-2
@@ -290,7 +290,7 @@ cases:
       oracle: "ALTER TABLE {t} MODIFY (n TIMESTAMP WITH TIME ZONE);"
     post: "INSERT INTO {t} (id, n, v) VALUES (3, '2026-10-26 12:00:00+00', 'c');"
     expect: {id: "3", n: "2026-10-26 12:00:00+00"}
-    aliases: [timestamp-to-timestamptz]
+    aliases: [timestamp-to-timestamptz, timestamp-to-timestamp-tz]
     notes: "Postgres: the value with a zone. The destination type after the change shows whether the zone is kept."
 
   - id: null-to-not-null

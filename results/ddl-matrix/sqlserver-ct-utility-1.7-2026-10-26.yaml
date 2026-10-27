@@ -118,7 +118,7 @@ cases:
   full_refresh_needed: true
   auto_full_refresh_applies: null
   destination_type_after: null
-  post_change_row_landed: unverified
+  post_change_row_landed: false
   value_check: null
   basis: tested
   notes: 'recorded: stop, CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE, full refresh; recorded as ''alter-numeric-narrow''; same as without the utility script (run notes)'
@@ -135,7 +135,7 @@ cases:
   full_refresh_needed: true
   auto_full_refresh_applies: null
   destination_type_after: null
-  post_change_row_landed: unverified
+  post_change_row_landed: false
   value_check: null
   basis: tested
   notes: 'recorded: stop, CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE, full refresh; recorded as ''alter-incompatible''; same as without the utility script (run notes)'
@@ -152,7 +152,7 @@ cases:
   full_refresh_needed: true
   auto_full_refresh_applies: null
   destination_type_after: null
-  post_change_row_landed: unverified
+  post_change_row_landed: false
   value_check: null
   basis: tested
   notes: 'recorded: stop, CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL, full refresh; same as without the utility script (run notes)'

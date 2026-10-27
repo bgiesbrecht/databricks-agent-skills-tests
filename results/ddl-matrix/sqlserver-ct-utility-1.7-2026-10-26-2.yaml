@@ -1,0 +1,410 @@
+environment:
+  engine: sqlserver
+  product: Azure SQL Database
+  edition_tier: serverless GP_S_Gen5_1
+  version: Microsoft SQL Azure (RTM) - 12.0.2000.8 Oct 9 2026 20:51:24
+  pipeline_mode: integrated
+  compute: serverless
+  runtime:
+    dbr: null
+    channel: null
+    image: null
+  workspace:
+    cloud: AWS
+    region: us-west-2
+  date: '2026-10-26'
+  method: batch
+  mechanism: ct
+  setup: utility-1.7
+  source_setup: 'utility script 1.7 (published): lakeflowSetupChangeTracking with @CreateDdlSupportingObjects = 1, then lakeflowFixPermissions'
+  caveats:
+  - The pipeline is integrated with continuous false (triggered). The runtime_details event carries no DBR version, channel or image.
+  - Carried rows are from the earlier change-tracking files. RENAME TABLE and DROP TABLE were run in their own pipeline.
+cases:
+- id: add-nullable
+  ddl: ALTER TABLE ADD c INT NULL
+  column_before: INT
+  column_after: + c INT NULL
+  source_accepted: true
+  events:
+  - class: FLOW_SCHEMA_CHANGED
+    level: warning
+    message: FLOW_SCHEMA_CHANGED
+  - class: CDC_APPLIER_SCHEMA_CHANGED_DURING_STREAMING
+    level: warning
+    message: update restarted
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: c int
+  post_change_row_landed: true
+  value_check: new row landed
+  basis: tested
+  notes: carried from sqlserver-ct-with-utility-2026-10-26.yaml
+- id: add-nullable-with-default
+  ddl: ALTER TABLE ADD c INT NULL CONSTRAINT df DEFAULT 5
+  column_before: INT
+  column_after: + c INT NULL DEFAULT 5
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL
+    level: error
+    message: table stops
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: no c
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: carried from sqlserver-ct-with-utility-2026-10-26.yaml; recorded as 'add-nullable-default'
+- id: add-not-null-with-default
+  ddl: ALTER TABLE ADD c INT NOT NULL CONSTRAINT df DEFAULT 5
+  column_before: INT
+  column_after: + c INT NOT NULL DEFAULT 5
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL
+    level: error
+    message: table stops
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: no c
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: t_addnn; recorded as 'add-not-null-default'
+- id: add-computed-column
+  ddl: ALTER TABLE ADD cc AS (n * 2)
+  column_before: INT
+  column_after: + cc computed
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.ADD_COLUMN_WITH_BACKFILL
+    level: error
+    message: table stops
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: no cc
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: t_addcomp; recorded as 'add-computed'
+- id: add-nullable-keyless
+  ddl: ADD c INT NULL on a table with no PK
+  column_before: no PK
+  column_after: no PK + c
+  source_accepted: null
+  events: []
+  outcome: not-run
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: null
+  post_change_row_landed: unverified
+  value_check: null
+  basis: code-only
+  notes: CT needs a PK; the keyless case is CDC only; recorded as 'add-keyless'
+- id: drop-column
+  ddl: ALTER TABLE DROP COLUMN v
+  column_before: NVARCHAR(50)
+  column_after: dropped
+  source_accepted: true
+  events:
+  - class: FLOW_SCHEMA_CHANGED
+    level: warning
+    message: FLOW_SCHEMA_CHANGED
+  - class: CDC_APPLIER_SCHEMA_CHANGED_DURING_STREAMING
+    level: warning
+    message: update restarted
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: v string kept
+  post_change_row_landed: true
+  value_check: new row v NULL
+  basis: tested
+  notes: carried from sqlserver-ct-with-utility-2026-10-26.yaml
+- id: int-to-bigint
+  ddl: ALTER COLUMN n BIGINT
+  column_before: INT
+  column_after: BIGINT
+  source_accepted: true
+  events:
+  - class: FLOW_SCHEMA_CHANGED
+    level: warning
+    message: FLOW_SCHEMA_CHANGED
+  - class: CDC_APPLIER_SCHEMA_CHANGED_DURING_STREAMING
+    level: warning
+    message: CDC_APPLIER_SCHEMA_CHANGED_DURING_STREAMING
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: bigint
+  post_change_row_landed: true
+  value_check: 3000000000 landed
+  basis: tested
+  notes: carried from sqlserver-ct-with-utility-2026-10-26.yaml (alter-numeric-widen)
+- id: decimal-10-2-to-18-4
+  ddl: ALTER COLUMN n DECIMAL(18,4)
+  column_before: DECIMAL(10,2)
+  column_after: DECIMAL(18,4)
+  source_accepted: true
+  events:
+  - class: FLOW_SCHEMA_CHANGED
+    level: warning
+    message: FLOW_SCHEMA_CHANGED
+  - class: CDC_APPLIER_SCHEMA_CHANGED_DURING_STREAMING
+    level: warning
+    message: CDC_APPLIER_SCHEMA_CHANGED_DURING_STREAMING
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: decimal(18,4)
+  post_change_row_landed: true
+  value_check: row landed
+  basis: tested
+  notes: carried from sqlserver-ct-with-utility-2026-10-26.yaml
+- id: string-length-narrow
+  ddl: ALTER COLUMN v NVARCHAR(20)
+  column_before: NVARCHAR(50)
+  column_after: NVARCHAR(20)
+  source_accepted: true
+  events:
+  - class: FLOW_SCHEMA_CHANGED
+    level: warning
+    message: FLOW_SCHEMA_CHANGED
+  - class: CDC_APPLIER_SCHEMA_CHANGED_DURING_STREAMING
+    level: warning
+    message: CDC_APPLIER_SCHEMA_CHANGED_DURING_STREAMING
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: string
+  post_change_row_landed: true
+  value_check: row landed
+  basis: tested
+  notes: carried from sqlserver-ct-with-utility-2026-10-26.yaml; recorded as 'nvarchar-50-to-20'
+- id: varchar-to-nvarchar
+  ddl: ALTER COLUMN n NVARCHAR(50)
+  column_before: VARCHAR(50)
+  column_after: NVARCHAR(50)
+  source_accepted: true
+  events:
+  - class: FLOW_SCHEMA_CHANGED
+    level: warning
+    message: applier t_vch cdc flow)
+  - class: CDC_APPLIER_SCHEMA_CHANGED_DURING_STREAMING
+    level: warning
+    message: update restarted
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: string
+  post_change_row_landed: true
+  value_check: N'café' lands as café
+  basis: tested
+  notes: t_vch
+- id: datetime-precision-up
+  ddl: ALTER COLUMN n DATETIME2(7)
+  column_before: DATETIME
+  column_after: DATETIME2(7)
+  source_accepted: true
+  events:
+  - class: FLOW_SCHEMA_CHANGED
+    level: warning
+    message: applier t_dt cdc flow)
+  - class: CDC_APPLIER_SCHEMA_CHANGED_DURING_STREAMING
+    level: warning
+    message: update restarted
+  outcome: restart-no-full-refresh
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: timestamp
+  post_change_row_landed: true
+  value_check: source .1234567 lands as .123 (milliseconds)
+  basis: tested
+  notes: t_dt; recorded as 'datetime-to-datetime2-7'
+- id: int-to-decimal-18-2
+  ddl: ALTER COLUMN n DECIMAL(18,2)
+  column_before: INT
+  column_after: DECIMAL(18,2)
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+    level: error
+    message: table stops
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: int
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: t_int2dec
+- id: bigint-to-int
+  ddl: ALTER COLUMN n INT
+  column_before: BIGINT
+  column_after: INT
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+    level: error
+    message: table stops
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: bigint
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: carried from sqlserver-ct-with-utility-2026-10-26.yaml (alter-numeric-narrow)
+- id: int-to-string
+  ddl: ALTER COLUMN n NVARCHAR(20)
+  column_before: INT
+  column_after: NVARCHAR(20)
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.UNSUPPORTED_DATA_TYPE_CHANGE
+    level: error
+    message: table stops
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: int
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: carried from sqlserver-ct-with-utility-2026-10-26.yaml (alter-incompatible); recorded as 'int-to-nvarchar-20'
+- id: null-to-not-null
+  ddl: ALTER COLUMN n INT NOT NULL
+  column_before: INT NULL
+  column_after: INT NOT NULL
+  source_accepted: true
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: int (nullable YES)
+  post_change_row_landed: true
+  value_check: row (3,3,c) landed
+  basis: tested
+  notes: t_null2nn; no event
+- id: not-null-to-null
+  ddl: ALTER COLUMN n INT NULL
+  column_before: INT NOT NULL
+  column_after: INT NULL
+  source_accepted: true
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: int (nullable YES)
+  post_change_row_landed: true
+  value_check: row (3,NULL,c) landed, n null
+  basis: tested
+  notes: t_nn2null; no event
+- id: add-unique
+  ddl: ALTER TABLE ADD CONSTRAINT uq_t_uq UNIQUE (v)
+  column_before: no UNIQUE
+  column_after: UNIQUE (v)
+  source_accepted: true
+  events: []
+  outcome: no-interruption
+  full_refresh_needed: false
+  auto_full_refresh_applies: null
+  destination_type_after: unchanged
+  post_change_row_landed: true
+  value_check: row (3,3,c) landed; 3 rows
+  basis: tested
+  notes: t_uq; no event
+- id: drop-primary-key
+  ddl: ALTER TABLE DROP CONSTRAINT pk_t_droppk
+  column_before: PRIMARY KEY (id)
+  column_after: none
+  source_accepted: 'refused. Msg 3735: The primary key constraint ''pk_t_droppk'' on table ''t_droppk'' cannot be dropped because change tracking is enabled on the table. Change tracking requires a primary
+    key constraint on the table. Disable change tracking before dropping the constraint. Then Msg 3727: Could not drop constraint. See previous errors.'
+  events: []
+  outcome: not-applicable
+  full_refresh_needed: null
+  auto_full_refresh_applies: null
+  destination_type_after: unchanged
+  post_change_row_landed: true
+  value_check: insert (3,3,c) landed; PK intact
+  basis: tested
+  notes: t_droppk; no pipeline event
+- id: rename-column
+  ddl: EXEC sp_rename 'dbo.t_rencol.n', 'n2', 'COLUMN'
+  column_before: INT n
+  column_after: INT n2
+  source_accepted: true
+  events:
+  - class: CDC_INCOMPATIBLE_SCHEMA_CHANGES.COLUMNS_ADDED_AND_DELETED
+    level: error
+    message: table stops
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: n int (old name kept)
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: t_rencol; the post insert (3,n2,c) did not land
+- id: rename-table
+  ddl: EXEC sp_rename 'dbo.t_rentab', 't_rentab_new'
+  column_before: table t_rentab
+  column_after: table t_rentab_new
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_MISSING_TABLE_IN_SOURCE
+    level: error
+    message: full refresh needed
+  - class: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+    level: error
+    message: update <id> FAILED at analysis
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: t_rentab kept (2 rows); t_rentab_new not created
+  post_change_row_landed: false
+  value_check: 2 rows kept
+  basis: tested
+  notes: separate pipeline <pipeline>
+- id: drop-table
+  ddl: DROP TABLE dbo.t_droptab
+  column_before: table t_droptab
+  column_after: dropped
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_MISSING_TABLE_IN_SOURCE
+    level: error
+    message: full refresh needed
+  - class: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+    level: error
+    message: PIPELINE_NON_RETRYABLE_ANALYSIS_CLIENT_ERROR
+  outcome: pipeline-fails
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: t_droptab kept (2 rows)
+  post_change_row_landed: null
+  value_check: 2 rows kept
+  basis: tested
+  notes: separate pipeline <pipeline>
+- id: truncate
+  ddl: TRUNCATE TABLE dbo.t_truncate
+  column_before: table
+  column_after: table (emptied), then 1 row inserted
+  source_accepted: true
+  events:
+  - class: INGESTION_GATEWAY_UNTRACEABLE_TABLE_MODIFICATION
+    level: error
+    message: Table logs cleaned up. Full refresh required for table
+  outcome: table-stops-full-refresh
+  full_refresh_needed: true
+  auto_full_refresh_applies: null
+  destination_type_after: unchanged
+  post_change_row_landed: false
+  value_check: null
+  basis: tested
+  notes: t_truncate; the source allows TRUNCATE on a CT table; recorded as 'truncate-table'
