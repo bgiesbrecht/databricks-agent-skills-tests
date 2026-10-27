@@ -39,7 +39,7 @@ t() { local s=$(date +%s); "$@"; local r=$?; echo "  [$(( $(date +%s) - s )) s] 
 podman rm -f $C > /dev/null 2>&1; rm -rf "${M:?}"; mkdir -p $M
 case $E in
 postgres)
-  podman run -d --name $C --shm-size 4g --env-file $SECRETS/$E.env -v $M:/var/lib/postgresql/data:Z docker.io/library/postgres:16 \
+  podman run -d --name $C --label lfc.engine=$E --label lfc.purpose=tpc-master --label lfc.master=$NAME --shm-size 4g --env-file $SECRETS/$E.env -v $M:/var/lib/postgresql/data:Z docker.io/library/postgres:16 \
     -c shared_buffers=4GB -c maintenance_work_mem=1GB -c max_wal_size=16GB -c fsync=off -c synchronous_commit=off -c full_page_writes=off > /dev/null
   wait_for podman exec $C pg_isready -h 127.0.0.1 -q; sleep 2
   PG="podman exec -i $C psql -X -U postgres -d postgres -q -v ON_ERROR_STOP=1"
@@ -52,14 +52,14 @@ cockroachdb|yugabytedb)   # PostgreSQL-protocol servers: the Postgres planners t
   if [ $E = cockroachdb ]; then
     P=26257; U=root; ADMIN=defaultdb; DDLD=cockroachdb; CP=${CRP:-26299}
     : > $W/empty                # insecure: fill.py reads the (empty) password file
-    podman run -d --name $C -v $M:/cockroach/cockroach-data:Z -p 127.0.0.1:$CP:26257 docker.io/cockroachdb/cockroach:v25.4.13 \
+    podman run -d --name $C --label lfc.engine=$E --label lfc.purpose=tpc-master --label lfc.master=$NAME -v $M:/cockroach/cockroach-data:Z -p 127.0.0.1:$CP:26257 docker.io/cockroachdb/cockroach:v25.4.13 \
       start-single-node --insecure --cache=2GiB --max-sql-memory=2GiB > /dev/null
     ready_sql() { podman run --rm --network container:$C docker.io/library/postgres:16 psql -X -q -At -h 127.0.0.1 -p $P -U $U -d $ADMIN -c 'SELECT 1'; }
     stop_db() { podman exec $C /cockroach/cockroach node drain --self --insecure --shutdown > /dev/null 2>&1; podman stop -t 120 $C > /dev/null; }
   else
     P=5433; U=yugabyte; ADMIN=yugabyte; DDLD=postgres
     chown 10001:100 $M   # the image runs as yugabyte (uid 10001, group users), as slot.sh does
-    podman run -d --name $C -v $M:/yb:Z docker.io/yugabytedb/yugabyte:2026.1.2.0-b137 \
+    podman run -d --name $C --label lfc.engine=$E --label lfc.purpose=tpc-master --label lfc.master=$NAME -v $M:/yb:Z docker.io/yugabytedb/yugabyte:2026.1.2.0-b137 \
       bin/yugabyted start --base_dir=/yb --advertise_address=127.0.0.1 --background=false > /dev/null
     ready_sql() { podman run --rm --network container:$C docker.io/library/postgres:16 psql -X -q -At -h 127.0.0.1 -p $P -U $U -d $ADMIN -c 'SELECT 1'; }
     stop_db() { podman stop -t 120 $C > /dev/null; }
@@ -85,7 +85,7 @@ mysql|mariadb)
     CLI=mysql; PWV=MYSQL_ROOT_PASSWORD; IMG=docker.io/library/mysql:8.4
     ARGS="--skip-log-bin --innodb-buffer-pool-size=4G --innodb-flush-log-at-trx-commit=0 --innodb-redo-log-capacity=2G"
   fi
-  podman run -d --name $C --env-file $SECRETS/$E.env -v $M:/var/lib/mysql:Z $IMG $ARGS > /dev/null
+  podman run -d --name $C --label lfc.engine=$E --label lfc.purpose=tpc-master --label lfc.master=$NAME --env-file $SECRETS/$E.env -v $M:/var/lib/mysql:Z $IMG $ARGS > /dev/null
   wait_for podman exec $C sh -c "MYSQL_PWD=\$$PWV $CLI -uroot -e 'SELECT 1'"
   podman exec $C sh -c 'umask 077; printf "[client]\nuser=root\npassword=%s\n" "$'$PWV'" > /root/.my.cnf'   # not on a command line
   MY="podman exec -i $C $CLI"
@@ -100,7 +100,7 @@ mysql|mariadb)
              $MY -e "DROP TABLE lfc_seed.seed" && podman stop -t 300 $C > /dev/null; } ;;
 sqlserver)
   chown 10001:0 $M
-  podman run -d --name $C --memory 6g --env-file $SECRETS/$E.env -e MSSQL_MEMORY_LIMIT_MB=5120 -v $M:/var/opt/mssql:Z mcr.microsoft.com/mssql/server:2022-latest > /dev/null
+  podman run -d --name $C --label lfc.engine=$E --label lfc.purpose=tpc-master --label lfc.master=$NAME --memory 6g --env-file $SECRETS/$E.env -e MSSQL_MEMORY_LIMIT_MB=5120 -v $M:/var/opt/mssql:Z mcr.microsoft.com/mssql/server:2022-latest > /dev/null
   # the client: a script, since a command in a variable can't hold quotes; sqlcmd gets a file (-i): it splits long stdin lines
   cat > $W/sq <<Q
 #!/bin/bash
@@ -113,7 +113,7 @@ Q
   finish() { for w in $WL; do echo "EXEC sp_updatestats;" | $SQ $w > /dev/null || return 1; done; echo "SHUTDOWN;" | $SQ > /dev/null; podman stop -t 120 $C > /dev/null; } ;;
 oracle)
   chown 54321:54321 $M
-  podman run -d --name $C --memory 4g --shm-size 2g --env-file $SECRETS/$E.env -v $M:/opt/oracle/oradata:Z docker.io/gvenzl/oracle-free:23-slim > /dev/null
+  podman run -d --name $C --label lfc.engine=$E --label lfc.purpose=tpc-master --label lfc.master=$NAME --memory 4g --shm-size 2g --env-file $SECRETS/$E.env -v $M:/opt/oracle/oradata:Z docker.io/gvenzl/oracle-free:23-slim > /dev/null
   cat > $W/sq <<Q
 #!/bin/bash
 exec podman exec -i $C bash -c '{ echo "SET FEEDBACK OFF"; echo "ALTER SESSION SET CONTAINER = FREEPDB1;"; cat; } | sqlplus -s / as sysdba'
@@ -128,7 +128,7 @@ Q
   finish() { for w in $WL; do printf "EXEC DBMS_STATS.GATHER_SCHEMA_STATS('%s')\n" $(echo $w | tr a-z A-Z) | $SQ; done; podman stop -t 120 $C > /dev/null; } ;;
 db2)   # Db2 Community: the image makes LFCDB at its first start; fill.py fills each schema (the Db2 planner isn't SQL)
   install -m 600 /dev/null $W/pw; sed -n 's/^DB2INST1_PASSWORD=//p' $SECRETS/$E.env > $W/pw
-  podman run -d --name $C --privileged --env-file $SECRETS/$E.env -v $M:/database:Z -p 127.0.0.1:$HP:50000 \
+  podman run -d --name $C --label lfc.engine=$E --label lfc.purpose=tpc-master --label lfc.master=$NAME --privileged --env-file $SECRETS/$E.env -v $M:/database:Z -p 127.0.0.1:$HP:50000 \
     icr.io/db2_community/db2:11.5.9.0 > /dev/null
   db2_ok() { [ "$(podman logs $C 2>&1 | grep -cF '(*) Setup has completed')" -gt 0 ] && echo "SELECT 1 FROM SYSIBM.SYSDUMMY1;" | $PYC; }
   PYC="$PY $DG/python/sq.py db2 --host 127.0.0.1 --port $HP --user db2inst1 --database LFCDB --password-file $W/pw"
@@ -141,7 +141,7 @@ db2)   # Db2 Community: the image makes LFCDB at its first start; fill.py fills 
 informix)   # Informix Developer: one database per workload in a dbspace of its own (the image's root dbspace is 1.6 GB)
   install -d $M/cfg
   install -m 600 /dev/null $W/ipw; sed -n 's/^INFORMIX_PASSWORD=//p' $SECRETS/$E.env > $W/ipw
-  podman run -d --name $C --env-file $SECRETS/$E.env -v $M:/opt/ibm/data:U,Z -v $M/cfg:/opt/ibm/config:U,Z \
+  podman run -d --name $C --label lfc.engine=$E --label lfc.purpose=tpc-master --label lfc.master=$NAME --env-file $SECRETS/$E.env -v $M:/opt/ibm/data:U,Z -v $M/cfg:/opt/ibm/config:U,Z \
     -p 127.0.0.1:$IP:9088 docker.io/ibmcom/informix-developer-database:14.10.FC7W1DE > /dev/null
   ifx_ok() { echo "SELECT 1 FROM sysmaster:sysdual;" | $PYS > /dev/null; }
   PYS="$PY $DG/python/sq.py ifx --host 127.0.0.1 --port $IP --user informix --password-file $W/ipw --database sysmaster"
