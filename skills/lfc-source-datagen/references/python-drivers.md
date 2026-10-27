@@ -93,7 +93,7 @@ Db2 and Informix are slow on TPC-E: at SF 0.1, 433 s and 1,650 s, against 45 s o
 | CockroachDB | The Postgres planners create their functions in `pg_temp`, which CockroachDB refuses (`cannot create user-defined functions under a temporary schema`) | `fill.py postgres` (no SQL functions); `tpc-master.sh` does this |
 | CockroachDB | A leading-zero string casts to an integer as octal: `'0008'::bigint` fails, `CAST('0320' AS BIGINT)` is 208. TPC-E's `lfc:n={CAST(tx_id AS BIGINT)}` tags make the probes wrong, and a second round re-inserts keys (`taxrate_pkey`) | The planner's text-key cast strips leading zeros (fixed in `engines/postgres.py`); the tag itself is `ddl.py`'s CockroachDB output and isn't fixed yet |
 | CockroachDB | One 600,000-row INSERT with its foreign-key checks ran 12 minutes without committing a row | `--rows 50000` (about 100,000 rows a minute on the shared VM) |
-| Informix | The developer image refuses a 30 GB dbspace (`Demo Version limits exceeded`); 1 GB is accepted. The chunk file must exist, owner `informix`, mode 660 | Size the dbspace to the demo's limit; SF 1 (about 110M rows) doesn't fit |
+| Informix | The developer image refuses a 30 GB dbspace (`Demo Version limits exceeded`); 1 GB is accepted. The chunk file must exist, owner `informix`, mode 660 | Size the dbspace to the demo's limit: the SF 0.1 master holds all six workloads (13.0M rows) in 1 GB; SF 1 (about 110M rows) doesn't fit |
 | Db2 | `CREATE DATABASE` fails with `SQL0293N` in the community image (11.5.9) on the shared VM, on XFS and in the container's own filesystem | Not solved; the instance user can write the data path, and direct I/O and `fallocate` work |
 
 `ddl.py`'s own sqlglot gotchas for the two new dialects are listed in **lfc-source-statschema**.

@@ -18,6 +18,9 @@
 #   insecure: an empty env file. Run it as a systemd unit (watch-progress): it takes an hour or more.
 #   The data directory is mounted with :Z, for hosts with SELinux enforcing (Fedora, as in a Lima VM); elsewhere it's a no-op.
 #   Db2 and Informix publish their port on 127.0.0.1 (HP, IP) for the drivers; the build stops them cleanly before the copy.
+#   Informix's developer image refuses a dbspace of 30 GB ("Demo Version limits exceeded"): 1 GB (IFX_DBSPACE_KB, the default) is accepted,
+#   so the Informix master is SF 0.1: DDL = shape.py --sf 0.1, then ddl.py --dialect informix, in $DDL (see lfc-source-cloud-vm's
+#   references/engine-masters.md for the measured fit). Name it informix1410-tpc-sf0.1.
 set -uo pipefail
 E=$1; NAME=$2; shift 2; WL=${*:-tpcb tpcc tpch tpcds tpce tpcdi}
 DDL=${DDL:-/tmp/dg/ddl}; DG=${DG:-/tmp/dg}; DATA=${DATA:-/var/lib/containers/lfc-data}; OUT=${OUT:-/mnt/jfs/masters}
