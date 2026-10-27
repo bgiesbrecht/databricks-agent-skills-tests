@@ -129,7 +129,8 @@ cat > conn.json <<EOF
     "host": "<server-fqdn>",
     "port": "<1433-or-3342>",
     "user": "lfc_user",
-    "password": "${LFC_PASSWORD}"
+    "password": "${LFC_PASSWORD}",
+    "trustServerCertificate": "true"
   }
 }
 EOF

@@ -115,8 +115,7 @@ cat > /tmp/uc_connection.json <<EOF
     "port": "3306" or "5432",
     "user": "${ADMIN_USER}",
     "password": "${ADMIN_PASSWORD}",
-    "database": "${DB_NAME}",
-    "ssl": "require"
+    "trustServerCertificate": "true"
   }
 }
 EOF

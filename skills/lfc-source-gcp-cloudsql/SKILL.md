@@ -152,7 +152,7 @@ eval "$(gcloud sql instances describe "${INSTANCE_NAME}" \
 
 cat > conn.json <<EOF
 {"name": "jane-doe-mysql-uscentral1-${EPOCH}", "connection_type": "MYSQL",
- "options": {"host": "$HOST", "port": "3306", "user": "lfc_user", "password": "$(cat lfc_user.pw)"}}
+ "options": {"host": "$HOST", "port": "3306", "user": "lfc_user", "password": "$(cat lfc_user.pw)", "trustServerCertificate": "true"}}
 EOF
 ```
 

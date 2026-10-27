@@ -160,10 +160,12 @@ LFC requires:
 
 A UC connection on a laptop container is only useful for checking the request body: Databricks serverless can't reach `127.0.0.1` or a laptop's port. To ingest, run the same containers on a cloud VM in the workspace's region (**lfc-source-cloud-vm**), open the published ports to serverless (**lfc-source-firewall**), and register the connection with the VM's public IP, as **lfc-source-setup** "After the database exists" shows. Per engine:
 
+Set `"trustServerCertificate": "true"` on every connection (TLS stays on; the server certificate isn't verified), or give the CA in `userProvidedServerCertificate` instead, never both. Oracle ignores it.
+
 | Engine | `connection_type` | Options beyond `host`, `port`, `user`, `password` | User |
 |---|---|---|---|
-| MySQL | `MYSQL` | none | `lfc_user` |
-| PostgreSQL | `POSTGRESQL` | none | `lfc_user` |
+| MySQL | `MYSQL` | `"trustServerCertificate": "true"`: without it (or a CA in `userProvidedServerCertificate`) a CDC gateway fails with `INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE` | `lfc_user` |
+| PostgreSQL | `POSTGRESQL` | `"trustServerCertificate": "true"`: the container's certificate is self-signed | `lfc_user` |
 | SQL Server | `SQLSERVER` | `"trustServerCertificate": "true"`: the container's certificate is self-signed, and without it serverless fails with `FAILED_JDBC.CONNECTION` | `lfc_user` |
 | Oracle | `ORACLE` | `"service_name"`: the CDB's service (`FREE` for `gvenzl/oracle-free`), needed by CDC; pipelines name the PDB in `source_catalog`. For SQL on the PDB through a connection, a second connection with `service_name` `FREEPDB1` | the common user in **uppercase**, for example `C##LFC_USER` |
 

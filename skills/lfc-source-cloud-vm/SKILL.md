@@ -213,7 +213,7 @@ Use **lfc-source-firewall** ([GCP steps](../lfc-source-firewall/references/gcp.m
 umask 077
 cat > conn.json <<EOF
 {"name": "<firstname><lastname>-mysql-vm", "connection_type": "MYSQL",
- "options": {"host": "<VM_PUBLIC_IP>", "port": "<published-port>", "user": "lfc_user", "password": "$(cat lfc_user.pw)"}}
+ "options": {"host": "<VM_PUBLIC_IP>", "port": "<published-port>", "user": "lfc_user", "password": "$(cat lfc_user.pw)", "trustServerCertificate": "true"}}
 EOF
 ```
 
