@@ -68,7 +68,7 @@ C=lfc-$E
 ready() { local i; for i in $(seq $TMO); do echo "$OK" | sql $1 2>/dev/null | grep ok > /dev/null && return 0
           [ "$(podman inspect -f '{{.State.Running}}' $1 2>/dev/null)" = true ] || { echo "  container stopped:"; podman logs $1 2>&1 | tail -5 | sed 's/^/    /'; return 1; }; sleep 1; done
           echo "  not ready after $TMO s:"; podman logs $1 2>&1 | tail -5 | sed 's/^/    /'; return 1; }
-run() { podman rm -f $1 > /dev/null 2>&1; podman run -d --name $1 --hostname lfc-$E $EXTRA --env-file $ENVF -v $2:$MNT $IMG $CMD > /dev/null && ready $1; }
+run() { podman rm -f $1 > /dev/null 2>&1; podman run -d --name $1 --label lfc.engine=$E --label lfc.purpose=branch-test --hostname lfc-$E $EXTRA --env-file $ENVF -v $2:$MNT $IMG $CMD > /dev/null && ready $1; }
 stop() { [ $E = db2 ] && podman exec $1 su - db2inst1 -c "db2 force applications all; db2 terminate; db2stop force" > /dev/null 2>&1 && { podman stop -t 5 $1 > /dev/null 2>&1; return 0; }; [ $E = mssql ] && echo SHUTDOWN | sql $1 > /dev/null 2>&1; [ $E = crdb ] && podman exec $1 ./cockroach node drain --self --insecure --shutdown > /dev/null 2>&1; podman stop -t 120 $1 > /dev/null; }
 count() { local i got; for i in $(seq 120); do got=$(echo "$COUNT" | sql $1 2>/dev/null | tr -d ' \r' | grep '|') && { echo "$got"; return 0; }; sleep 1; done; return 1; }   # retries while the database recovers
 check() { local got; got=$(count $1); [ "$got" = "$2" ] && echo "  ok: $got" && return 0

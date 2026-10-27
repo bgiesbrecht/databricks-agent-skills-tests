@@ -8,6 +8,10 @@
 #   warehouse, TPC-H SF 0.1, TPC-B SF 1 (its smallest), TPC-DS, TPC-E, TPC-DI SF 0.01) on each, and check every table is at its
 #   target, TPC-H's spec rules, and the audit (0 bad rows). Schemas test_* are dropped first.
 #   The planner files must be readable by the client: with podman exec, copy them in and set DIR_PG / DIR_MY to that path.
+#   VM mode: the same checks on a live database on the cloud VM (LIVE_PSQL, LIVE_MYSQL, or LIVE_ENGINE with LIVE_PY, the
+#   connection options for fill.py: --host ... --port ... --user ... --password-file ... --database ...), e.g. a slot from
+#   `slot.sh up <engine> <name> --from <master>` on the VM. Db2 and Informix have no SQL planner: their rows come from fill.py,
+#   and the checks are the row counts (no spec rules or audit). Laptop default (PSQL/MYSQL) is unchanged.
 set -uo pipefail
 R=$(cd "$(dirname "$0")/.." && pwd); SK=$R/skills; SS=$SK/lfc-source-statschema/scripts; DG=$SK/lfc-source-datagen/scripts
 T=$(mktemp -d); fails=0
@@ -73,35 +77,63 @@ open(d + '/env.yaml', 'w').write('environment:\n  engine: sqlserver\n  product: 
 PY
   uv run -q '$DM/ddl-matrix.py' collect --events-json '$T/cm/events.json' --tables-json '$T/cm/tables.json' --env '$T/cm/env.yaml' --cases int-to-bigint,bigint-to-int --out '$T/cm/sqlserver-ct-none-2026-10-26.yaml' > '$T/cm/out.txt' && grep -q '^PASS ' '$T/cm/out.txt' && grep -q '^STOP ' '$T/cm/out.txt' && grep -q 'dp_build: dp-20261015-rc0' '$T/cm/sqlserver-ct-none-2026-10-26.yaml'"
 
-db() {                                         # db <pg|my> <client> <planner dir>: fill and check each workload at a small scale
-  local e=$1 cli=$2 dir=$3 dial; [ "$e" = pg ] && dial=postgres || dial=mysql
-  echo "== $dial"
-  for w in tpcb tpcc tpch tpcds tpce tpcdi; do local db=test_$w sf y
+seed_my() {   # seed_my <client>: lfc_seed.seed (1 .. 2^20, r a random permutation), by doubling, as tpc-master.sh builds it
+  { echo "CREATE DATABASE IF NOT EXISTS lfc_seed; CREATE TABLE IF NOT EXISTS lfc_seed.seed_i (i bigint PRIMARY KEY);"
+    echo "INSERT IGNORE INTO lfc_seed.seed_i (i) VALUES $(printf '(%s),' $(seq 1 1024) | sed 's/,$//');"
+    for k in $(seq 10); do echo "INSERT IGNORE INTO lfc_seed.seed_i (i) SELECT s.i + b.m FROM lfc_seed.seed_i s, (SELECT MAX(i) AS m FROM lfc_seed.seed_i) b;"; done
+    echo "DROP TABLE IF EXISTS lfc_seed.seed; CREATE TABLE lfc_seed.seed (i bigint PRIMARY KEY, r bigint NOT NULL);"
+    echo "INSERT INTO lfc_seed.seed SELECT i, ROW_NUMBER() OVER (ORDER BY RAND()) FROM lfc_seed.seed_i;"; echo "DROP TABLE lfc_seed.seed_i;"; } | $1
+}
+db() {   # db <pg|my|py> <dialect> <client> <planner dir>: fill and check each workload at a small scale in test_<w>
+  # pg: the Postgres planners through <client> (psql); my: the MySQL planners through <client> (mysql); py: fill.py for the
+  # engine named by <client> (db2, informix, cockroachdb, ...), its connection options from LIVE_PY, DDL through sq.py
+  local kind=$1 dial=$2 cli=$3 dir=$4 w db sf y out n short bad a S
+  echo "== $dial ($kind)"
+  [ "$kind" = my ] && { $cli -N -e "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = 'lfc_seed' AND table_name = 'seed' AND column_name = 'r'" 2>/dev/null | grep -qx 1 || seed_my "$cli"; }
+  for w in tpcb tpcc tpch tpcds tpce tpcdi; do db=test_$w
     case $w in tpcb|tpcc) sf=1 ;; tpch) sf=0.1 ;; *) sf=0.01 ;; esac
     y=$T/$w.live.yaml; bash "$DG/tpc/tpc-schema.sh" $w $sf | uv run -q "$SS/ddl-to-schema.py" --dialect mysql > "$y" 2>/dev/null
     uv run -q "$SS/ddl.py" "$y" --dialect $dial > "$T/$db.sql"
-    if [ "$e" = pg ]; then { echo "DROP SCHEMA IF EXISTS $db CASCADE; CREATE SCHEMA $db; SET search_path = $db;"; cat "$T/$db.sql"; } | $cli -q -v ON_ERROR_STOP=1 > /dev/null 2>&1
-      out=$(PSQL="$cli" DIR=$dir bash "$DG/fill.sh" pg $db 2>&1)
-    else { echo "DROP DATABASE IF EXISTS $db; CREATE DATABASE $db; USE $db;"; cat "$T/$db.sql"; } | $cli > /dev/null 2>&1
-      out=$(MYSQL="$cli" DIR=$dir bash "$DG/fill.sh" my $db 2>&1); fi
+    S=$(echo $db | tr a-z A-Z)
+    case $kind in
+    pg) { echo "DROP SCHEMA IF EXISTS $db CASCADE; CREATE SCHEMA $db; SET search_path = $db;"; cat "$T/$db.sql"; } | $cli -q -v ON_ERROR_STOP=1 > /dev/null 2>&1
+        out=$(PSQL="$cli" DIR=$dir bash "$DG/fill.sh" pg $db 2>&1) ;;
+    my) { echo "DROP DATABASE IF EXISTS $db; CREATE DATABASE $db; USE $db;"; cat "$T/$db.sql"; } | $cli > /dev/null 2>&1
+        out=$(MYSQL="$cli" DIR=$dir bash "$DG/fill.sh" my $db 2>&1) ;;
+    py)  # the engine's own DDL path: Db2 a schema per workload; Informix a database per workload; the rest a schema
+        case $cli in
+        db2)      { echo "CREATE SCHEMA $S;"; cat "$T/$db.sql"; } | $PY "$DG/python/sq.py" db2 --schema $S $LIVE_PY > "$T/ddl.out" 2>&1 ;;
+        informix) { echo "DROP DATABASE IF EXISTS $db; CREATE DATABASE $db IN ${LIVE_IFX_DBSPACE:-datadbs} WITH LOG;"; } | $PY "$DG/python/sq.py" ifx --database sysmaster $LIVE_PY > "$T/ddl.out" 2>&1
+                  $PY "$DG/python/sq.py" ifx --database $db $LIVE_PY < "$T/$db.sql" >> "$T/ddl.out" 2>&1 ;;
+        *)        { echo "DROP SCHEMA IF EXISTS $db CASCADE; CREATE SCHEMA $db; SET search_path = $db;"; cat "$T/$db.sql"; } | $PY "$DG/python/sq.py" $cli $LIVE_PY > "$T/ddl.out" 2>&1 ;;
+        esac
+        out=$($PY "$DG/python/fill.py" $cli $db $LIVE_PY --sessions ${LIVE_SESSIONS:-2} 2>&1) ;;
+    esac
     n=$(echo "$out" | awk -F'|' 'NF == 5' | wc -l); short=$(echo "$out" | awk -F'|' 'NF == 5 && $4 != $5' | wc -l)
-    [ "$n" -gt 0 ] && [ "$short" -eq 0 ] && ok "$db: $n tables at target" || { no "$db: $short of $n short"; echo "$out" | tail -3 | sed 's/^/        /'; }
-    if [ "$w" = tpch ]; then
-      if [ "$e" = pg ]; then bad=$({ echo "SET search_path = $db;"; sed -E 's/DATEDIFF\(([^,]+), ([^)]+)\)/(\1 - \2)/g' "$DG/tpc/tpch-verify.sql"; } | $cli -At | grep '^bad' | cut -d'|' -f2- | tr '|' '\n' | awk '$1 != 0' | wc -l)
+    [ "$n" -gt 0 ] && [ "$short" -eq 0 ] && ok "$dial $db: $n tables at target" || { no "$dial $db: $short of $n short"; echo "$out" | tail -3 | sed 's/^/        /'; }
+    if [ "$w" = tpch ] && [ "$kind" != py ]; then
+      if [ "$kind" = pg ]; then bad=$({ echo "SET search_path = $db;"; sed -E 's/DATEDIFF\(([^,]+), ([^)]+)\)/(\1 - \2)/g' "$DG/tpc/tpch-verify.sql"; } | $cli -At | grep '^bad' | cut -d'|' -f2- | tr '|' '\n' | awk '$1 != 0' | wc -l)
       else bad=$($cli -N $db < "$DG/tpc/tpch-verify.sql" | grep '^bad' | cut -f2- | tr '\t' '\n' | awk '$1 != 0' | wc -l); fi
-      [ "$bad" -eq 0 ] && ok "$db: TPC-H spec rules" || no "$db: $bad spec rules broken"
+      [ "$bad" -eq 0 ] && ok "$dial $db: TPC-H spec rules" || no "$dial $db: $bad spec rules broken"
     fi
-    if [ "$w" = tpcb ]; then                  # tpcb-verify.sql: one "bad: ... <count>" row per check (psql: |, mysql: tab)
-      if [ "$e" = pg ]; then bad=$({ echo "SET search_path = $db;"; cat "$DG/tpc/tpcb-verify.sql"; } | $cli -At | awk -F'|' '/^bad/ && $NF != 0' | wc -l)
+    if [ "$w" = tpcb ] && [ "$kind" != py ]; then                  # tpcb-verify.sql: one "bad: ... <count>" row per check (psql: |, mysql: tab)
+      if [ "$kind" = pg ]; then bad=$({ echo "SET search_path = $db;"; cat "$DG/tpc/tpcb-verify.sql"; } | $cli -At | awk -F'|' '/^bad/ && $NF != 0' | wc -l)
       else bad=$($cli -N $db < "$DG/tpc/tpcb-verify.sql" | awk -F'\t' '/^bad/ && $NF != 0' | wc -l); fi
-      [ "$bad" -eq 0 ] && ok "$db: TPC-B scaling and relationships" || no "$db: $bad TPC-B checks broken"
+      [ "$bad" -eq 0 ] && ok "$dial $db: TPC-B scaling and relationships" || no "$dial $db: $bad TPC-B checks broken"
     fi
-    if [ "$e" = pg ]; then a=$(cat "$DG/postgres/cast.sql" "$DG/postgres/plan-audit.sql" | $cli -At -q -v schema=$db -v plain_every=4 | $cli -At | awk -F'|' '{ b += $3 } END { print b + 0 }')
-    else a=$({ echo "SET @db='$db', @plain_every=4, @block=1000;"; cat "$DG/mysql/cast.sql" "$DG/mysql/plan-audit.sql"; } | $cli -N -B -r $db | $cli -N $db | awk -F'\t' '{ b += $3 } END { print b + 0 }'); fi
-    [ "$a" = 0 ] && ok "$db: audit 0 bad rows" || no "$db: audit $a bad rows"
+    if [ "$kind" = pg ]; then a=$(cat "$DG/postgres/cast.sql" "$DG/postgres/plan-audit.sql" | $cli -At -q -v schema=$db -v plain_every=4 | $cli -At | awk -F'|' '{ b += $3 } END { print b + 0 }')
+    elif [ "$kind" = my ]; then a=$({ echo "SET @db='$db', @plain_every=4, @block=1000;"; cat "$DG/mysql/cast.sql" "$DG/mysql/plan-audit.sql"; } | $cli -N -B -r $db | $cli -N $db | awk -F'\t' '{ b += $3 } END { print b + 0 }')
+    else a=0; fi                                    # no audit planner for the driver path (Db2, Informix, CockroachDB): see lfc-source-datagen
+    [ "$kind" = py ] || { [ "$a" = 0 ] && ok "$dial $db: audit 0 bad rows" || no "$dial $db: audit $a bad rows"; }
   done
 }
-[ -n "${PSQL:-}" ] && db pg "$PSQL" "${DIR_PG:-$DG/postgres}"
-[ -n "${MYSQL:-}" ] && db my "$MYSQL" "${DIR_MY:-$DG/mysql}"
+[ -n "${PSQL:-}" ] && db pg postgres "$PSQL" "${DIR_PG:-$DG/postgres}"
+[ -n "${MYSQL:-}" ] && db my mysql "$MYSQL" "${DIR_MY:-$DG/mysql}"
+# VM mode (run on the cloud VM, where the clients and the slot's database are; a database from slot.sh up): LIVE_PSQL (a psql
+# command line for Postgres-protocol servers: postgres, YugabyteDB with LIVE_DIALECT=postgres), LIVE_MYSQL (mysql or mariadb
+# with LIVE_DIALECT=mysql), or LIVE_PY=<connection options> with LIVE_ENGINE=<db2|informix|cockroachdb> (fill.py and sq.py)
+[ -n "${LIVE_PSQL:-}" ] && db pg "${LIVE_DIALECT:-postgres}" "$LIVE_PSQL" "${DIR_PG:-$DG/postgres}"
+[ -n "${LIVE_MYSQL:-}" ] && db my mysql "$LIVE_MYSQL" "${DIR_MY:-$DG/mysql}"
+[ -n "${LIVE_ENGINE:-}" ] && PY=${PY:-python3} && db py "${LIVE_DIALECT:-$LIVE_ENGINE}" "$LIVE_ENGINE" ""
 rm -rf "${T:?}"
 echo; [ $fails -eq 0 ] && echo "all passed" || echo "$fails failed"; exit $((fails > 0))

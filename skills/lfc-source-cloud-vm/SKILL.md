@@ -286,6 +286,8 @@ Builds, fills, uploads and benchmarks take minutes to hours. Run each as a syste
 
 6. **CDC/Change Tracking not capturing**: Verify replication mode enabled in database config and LFC user has required permissions. See parent skill `references/engine-*.md`.
 
+7. **Finding a database's containers by name matches the wrong one**: `podman ps --filter name=<x>` is an unanchored regex, so `name=db2` also matches `build-crdb25-tpc-sf1`. Find containers by label: every container these scripts start has `lfc.engine` and `lfc.purpose` (`slot`, `tpc-master`, `branch-test`), masters also `lfc.master`, slots `lfc-slot.owner` and `lfc-slot.name`: `podman ps -a --filter label=lfc.engine=db2`. By name, anchor it: `--filter 'name=^build-db2'`, or `--format '{{.Names}}' | grep -x '<name>'`. Before removing a container, read its labels (`podman inspect -f '{{.Config.Labels}}' <name>`).
+
 ## Additional resources
 
 - **Parent skill**: [lfc-source-setup](../lfc-source-setup/SKILL.md) — engine-specific configuration

@@ -89,9 +89,10 @@ class Engine:
         name = self.types[ty][5]
         if name in ("smallint", "integer", "bigint"): return col
         if name == "numeric": return f"{col}::bigint" if m < 0 or ((m - 4) & 65535) == 0 else None
-        if name == "character varying": return f"left({col}, 19)::bigint" if m == -1 or m - 4 >= 19 else None
-        if name == "character": return f"left({col}, 19)::bigint" if m - 4 >= 19 else None
-        if name == "text": return f"left({col}, 19)::bigint"
+        # zero-padded text: CockroachDB reads '0008'::bigint as octal and fails, so the leading zeros go first (0000 is 0)
+        if name == "character varying": return f"COALESCE(NULLIF(LTRIM(LEFT({col}, 19), '0'), '')::bigint, 0)" if m == -1 or m - 4 >= 19 else None
+        if name == "character": return f"COALESCE(NULLIF(LTRIM(LEFT({col}, 19), '0'), '')::bigint, 0)" if m - 4 >= 19 else None
+        if name == "text": return f"COALESCE(NULLIF(LTRIM(LEFT({col}, 19), '0'), '')::bigint, 0)"
         if name == "uuid": return f"('x' || right(replace({col}::text, '-', ''), 16))::bit(64)::bigint"
         return None
 

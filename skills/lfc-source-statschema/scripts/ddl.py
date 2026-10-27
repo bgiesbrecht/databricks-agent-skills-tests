@@ -24,6 +24,12 @@
 import argparse, re
 import sqlglot, yaml
 from sqlglot import exp
+from sqlglot.dialects.mysql import MySQL
+from sqlglot.tokens import TokenType
+# sqlglot reads MySQL's % at the level of + and -, so 1 + a * 7 % 25 parsed as (1 + a * 7) % 25 (the text came back the same, so
+# only a rewrite on the tree saw it: the Informix MOD). MySQL, like PostgreSQL, binds % with *: the factor level.
+MySQL.Parser.TERM = {k: v for k, v in MySQL.Parser.TERM.items() if k != TokenType.MOD}
+MySQL.Parser.FACTOR = {**MySQL.Parser.FACTOR, TokenType.MOD: exp.Mod}
 
 ap = argparse.ArgumentParser(); ap.add_argument("schema"); ap.add_argument("--dialect", required=True)
 ap.add_argument("--source-dialect", help="keep native_type when the target is the dialect the schema was collected from")

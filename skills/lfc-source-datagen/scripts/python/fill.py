@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # fill.py <engine> <schema> [fill | plan | status]: fill.sh in Python, through a driver instead of the database's CLI
-# (references/python-drivers.md). Engines: postgres, mysql, sqlserver, oracle, db2, informix (or pg, my, ms, ora, ifx).
+# (references/python-drivers.md). Engines: postgres, mysql, sqlserver, oracle, db2, informix (or pg, my, ms, ora, ifx);
+# cockroachdb (crdb) and yugabytedb (yb) use the postgres driver, mariadb (maria) the mysql one.
 #   fill (default): fill every table of the schema to its target (lfc:rows), one level at a time: a level starts only
 #     when every table of the level before is complete; at most --rows per statement and --sessions statements at once,
 #     each on its own connection; rounds repeat until every table of the level is at its target, and it stops if a

@@ -267,7 +267,7 @@ case $CMD in
       podman rm -f "$C" >/dev/null 2>&1 || true
       VOLS=(-v "$D:$MNT:$VOLOPT")
       [ "$E" = informix ] && VOLS+=(-v "$D/cfg:/opt/ibm/config:U,Z")
-      podman run -d -q --name "$C" --label lfc-slot.owner="$OWNER" --label lfc-slot.name="$N" "${RUNOPTS[@]}" \
+      podman run -d -q --name "$C" --label lfc-slot.owner="$OWNER" --label lfc-slot.name="$N" --label lfc.engine="$E" --label lfc.purpose=slot "${RUNOPTS[@]}" \
         --env-file "$STATE/$OWNER/$N.env" -p "$P:$CPORT" "${RUNIP[@]}" "${VOLS[@]}" "$IMAGE" "${ARGS[@]}" >/dev/null 9>&-   # the container must not inherit the lock
     fi
     # every up, started or already running: an up cut short (its ssh dropped during a first start) leaves a running

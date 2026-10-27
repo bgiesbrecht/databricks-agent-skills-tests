@@ -19,7 +19,7 @@ col AS (SELECT c.table_name, c.column_name, c.data_type, c.column_type, c.charac
                EXISTS (SELECT 1 FROM information_schema.key_column_usage u WHERE u.table_schema = @db AND u.table_name = c.table_name
                        AND u.column_name = c.column_name AND (u.referenced_table_name IS NOT NULL OR u.constraint_name = 'PRIMARY')) AS keyish,
                (SELECT COUNT(*) FROM information_schema.columns c2 WHERE c2.table_schema = @db AND c2.table_name = c.table_name) AS ncols
-        FROM information_schema.columns c JOIN tbl t ON t.table_name = c.table_name WHERE c.table_schema = @db AND c.generation_expression = ''),
+        FROM information_schema.columns c JOIN tbl t ON t.table_name = c.table_name WHERE c.table_schema = @db AND COALESCE(c.generation_expression, '') = ''),
 cand AS (   -- every (operation, candidate SQL) pair; one candidate per operation is drawn at random below
   SELECT op.i, op.op, CONCAT('ALTER TABLE `', @db, '`.`', t.table_name, '` ADD COLUMN `a', op.i, '_', DATE_FORMAT(NOW(), '%H%i%s'), '` ',
                              ELT(1 + FLOOR(RAND() * 12), 'int', 'bigint', 'decimal(18,2)', 'double', 'varchar(60)', 'varchar(200)', 'text', 'date', 'datetime', 'tinyint', 'varbinary(64)', 'json'), ' NULL COMMENT ''lfc:added'';') AS sql_text

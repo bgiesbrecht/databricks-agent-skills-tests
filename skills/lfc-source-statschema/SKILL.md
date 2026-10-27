@@ -141,6 +141,7 @@ A customer-shaped copy: TPC-H at SF 1 on Postgres as the "customer" (`values=ran
   - Db2 types: `CLOB` and `BLOB` for unbounded columns, `DECIMAL` capped at 31 digits.
   - Arithmetic: `MOD(CAST(a AS BIGINT), b)` for `%` on Informix (`INT8 * INT` is a DECIMAL there, and `MOD` of one returns INTEGER); `TRUNC` for `DIV` on Informix; `POWER` of a `DOUBLE PRECISION`; `ACOS(-1)` for `PI()`.
   - Precedence: parentheses around arithmetic inside `||`, which binds like `+` there.
+  - `%` in MySQL formulas: sqlglot's MySQL reader binds it at the level of `+` (`1 + a % 25` read as `(1 + a) % 25`), so `ddl.py` moves it to `*`'s level before any rewrite. Before this, the Informix `MOD` and the Oracle tags of TPC-B's `history.delta` and TPC-H's `nation.n_regionkey` (a foreign key that pointed at -1 … 3) were wrong; Postgres and MySQL output didn't change.
   - Casts: `DECIMAL(31, 0)` for a bare `DECIMAL` cast (Db2's is (5,0)); `ROUND` written as is (sqlglot's Postgres `ROUND` adds that bare cast).
   - Days and seconds since 1970: `DAYS()` and `MIDNIGHT_SECONDS` on Db2; `MDY()` and `TO_CHAR(x, '%H')` on Informix, kept out of sqlglot, which would rewrite the format.
   - The value list's nested `CASE` folded, as for T-SQL.

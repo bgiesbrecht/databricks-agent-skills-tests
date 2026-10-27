@@ -139,11 +139,13 @@ Limits per engine (columns, row size, rows per statement, identifiers, row gener
 | Engine | Reference | Status |
 |---|---|---|
 | PostgreSQL | [references/postgres.md](references/postgres.md) | Tested on 16: every type family, 10,000 tables, 50.5M-row dataset |
-| MySQL | [references/mysql.md](references/mysql.md) | Tested on 8.4: every type, 10,000 tables, interrupt and resume (MariaDB not yet) |
+| MySQL | [references/mysql.md](references/mysql.md) | Tested on 8.4: every type, 10,000 tables, interrupt and resume. MariaDB 11.4: the same planners, all six TPC masters at SF 1 (**lfc-source-cloud-vm** `references/engine-masters.md`) |
 | SQL Server | [references/sqlserver.md](references/sqlserver.md) | Fill planners tested on SQL Server 2022 (`GENERATE_SERIES`): TPC-H SF 1 in 179 s; delete, DDL, and audit planners not ported |
 | Oracle | [references/oracle.md](references/oracle.md) | Fill planners tested on 23ai Free (`CONNECT BY LEVEL`): TPC-H SF 1 in 585 s; delete, DDL, and audit planners not ported |
 | Db2 | [references/python-drivers.md](references/python-drivers.md) | Python fill only (`fill.py`, recursive CTE), tested on 11.5: all six TPC workloads at SF 0.1; needs a larger package cache and log (the reference) |
 | Informix | [references/python-drivers.md](references/python-drivers.md) | Python fill only (`fill.py`, `CONNECT BY LEVEL`), tested on 14.10: all six TPC workloads at SF 0.1; no random order or `data=random`, no MD5 filler |
+| CockroachDB | [references/python-drivers.md](references/python-drivers.md) | Python fill only (`fill.py postgres`: its planner functions can't live in `pg_temp`), tested on v25.4: TPC-B, C, H, DS at SF 1; TPC-E fails on a zero-padded text key (`CAST` reads octal) |
+| YugabyteDB | [references/postgres.md](references/postgres.md) | The Postgres planners through psql, `SRC=series`, tested on 2026.1 at SF 1 (TPC-B to TPC-DS; TPC-E in progress when this was written) |
 
 ## Gotchas
 
