@@ -16,6 +16,7 @@ Most questions have several answers. The one that gets built first is often the 
    - **operate:** what someone has to do while it runs (scans, monitoring, recovery steps, cost);
    - **breaks:** the events that can break it (a full refresh, a schema change, a restart, a gap, retention running out, a rerun) and the recovery for each.
 4. **Write `options.yaml`** next to the skill that answers the question (format: run `scripts/options.py` with no arguments) and render it: `uv run scripts/options.py render <skill>/options.yaml`.
+   **Draw the data paths:** one Mermaid `flowchart LR` in the topic's SKILL.md, from the source to each option's result, each path labeled with the option's number. A reader then sees how much each option adds. An option with a break and a recovery gets its own left-to-right diagram of the steps. Render each block before committing (`mmdc -i d.mmd -o d.png -b white -s 2`) and look at it: put the paths in number order top to bottom, and avoid edges that loop back.
 5. **Test from the top of the ranking**, each option through its break events, not only the happy path. Stop at the first one that passes; record the rest as `untested` with what testing them would take. If the simplest fails, write why in its row and test the next.
 6. **Answer with the pick first**, then the alternatives and their status, so the reader sees the simple way and what it gives up.
 7. **Update the file** when an option's status changes (a new test, a docs change, a new feature). `uv run scripts/options.py index` lists every topic's choices and pick across the repo, so the next question on the topic starts from it.
@@ -31,4 +32,4 @@ Ranking: usable status first (`tested`, `partly-tested`, `docs`, `untested`, `no
 
 ## Example
 
-**lfc-downstream-history** `options.yaml`: keeping a Lakeflow Connect table's history when the connector writes SCD type 1 only. Six options, from the connector's own setting to a hand-written MERGE. Each has its break events, and the two pipelines that were built have a harness that tests them through a full refresh.
+**lfc-downstream-history** `options.yaml`: keeping a Lakeflow Connect table's history when the connector writes SCD type 1 only. Six options, from the connector's own setting to a hand-written MERGE, drawn as one data-path diagram. Each has its break events, and the two pipelines that were built have a harness that tests them through a full refresh.
