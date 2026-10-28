@@ -64,6 +64,8 @@ Wait for explicit confirmation before calling cloud APIs.
 - **APIs enabled**: `gcloud services enable sqladmin.googleapis.com compute.googleapis.com`
 - **Databricks CLI** with profile: `databricks auth profiles`
 
+**Identities are per resource.** Each resource records the identity it was created with (the create's `IDENTITY` line: Azure tenant and subscription, AWS profile and account, GCP account and project), and every later call for it passes that identity explicitly. Never rely on the CLI's current default: one login can reach several tenants, accounts and projects. Keep the values in your private env file, not in the repo.
+
 ## Create the instance
 
 ### Step 1: Set variables

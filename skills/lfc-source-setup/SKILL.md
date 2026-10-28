@@ -70,6 +70,8 @@ On Linux, the same tools: `curl -LsSf https://astral.sh/uv/install.sh \| sh` for
 
 **Python: always `uv run --no-project --with <packages> python3 <script>.py`**, never `pip install` into a shared Python: uv makes a cached environment with exactly those packages (a Python too, if needed: `uv python install 3.12` to pin one). The skills' scripts say their packages in their first line.
 
+**Identities are per resource.** Each resource records the identity it was created with (the create's `IDENTITY` line: Azure tenant and subscription, AWS profile and account, GCP account and project), and every later call for it passes that identity explicitly. Never rely on the CLI's current default: one login can reach several tenants, accounts and projects. Keep the values in your private env file, not in the repo.
+
 ## Rules for every target
 
 1. **Ask before creating anything.** Cloud databases bill by the hour, and some (SQL Managed Instance, large VMs) cost a lot or take hours to create. Collect every input in one message, list every resource you'll create (server or instance, shared network pieces, firewall rules, parameter groups, the UC connection) with the expected cost class, and wait for one "yes".

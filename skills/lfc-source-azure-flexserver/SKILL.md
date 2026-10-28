@@ -35,6 +35,8 @@ Provision a managed MySQL or PostgreSQL Flexible Server instance on Azure and co
 
 Confirm with the user what will be created (Flexible Server, VNet, firewall/PE rules) and estimated monthly cost ($50–200 for dev/test). See [flexserver-create-details.md](references/flexserver-create-details.md) for full prerequisites and naming details.
 
+**Identities are per resource.** Each resource records the identity it was created with (the create's `IDENTITY` line: Azure tenant and subscription, AWS profile and account, GCP account and project), and every later call for it passes that identity explicitly. Never rely on the CLI's current default: one login can reach several tenants, accounts and projects. Keep the values in your private env file, not in the repo.
+
 ## Create the server
 
 ### Quick start (core steps)

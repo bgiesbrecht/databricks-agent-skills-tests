@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """server-fw.py sql|pg|mysql <server> --nsg <shared-nsg> [--profiles p1,p2] [--regions cloud:region,...] [--cidrs c1,c2] [--no-my-ip] [--no-drop] [--apply]:
 give an Azure SQL Database server or a Flexible Server the same sources as the shared NSG, scoped to fit its rule cap
-(SQL Database 128, MySQL 500, Postgres 500). Needs RG (resource group of both); optional SUBSCRIPTION.
+(SQL Database 128, MySQL 500, Postgres 500). Needs RG (resource group of both) and SUBSCRIPTION (the subscription_id from the server's IDENTITY line; az's default
+isn't used). Optional TENANT_ID: checked against the login.
 
 The list: every inbound Allow rule of the shared NSG except the all-region ones (names matching --skip, default
 ^Allow_(serverless|workspace)_): the VPN, office and known hosts; plus the serverless egress ranges of each
@@ -32,10 +33,14 @@ IPR = "https://www.databricks.com/networking/v1/ip-ranges.json"
 
 
 def az(*args: str) -> object:
-    sub = ["--subscription", os.environ["SUBSCRIPTION"]] if os.environ.get("SUBSCRIPTION") else []
-    out = subprocess.run(["az", *args, "-g", os.environ["RG"], *sub, "-o", "json"], capture_output=True, text=True)
+    sub = os.environ.get("SUBSCRIPTION", "")
+    if not sub:
+        sys.exit("SUBSCRIPTION is required: the subscription_id from the server's IDENTITY line (az's default isn't used)")
+    out = subprocess.run(["az", *args, "-g", os.environ["RG"], "--subscription", sub, "-o", "json"],
+                         capture_output=True, text=True)
     if out.returncode:
-        sys.exit(f"az {' '.join(args[:4])}: {out.stderr.strip()[:300]}")
+        fix = f"; az login --tenant {os.environ['TENANT_ID']}" if os.environ.get("TENANT_ID") else ""
+        sys.exit(f"az {' '.join(args[:4])}: {out.stderr.strip()[:300]}{fix}")
     return json.loads(out.stdout or "null")
 
 

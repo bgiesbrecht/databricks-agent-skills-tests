@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # flex.sh pg|mysql plan|create|status|stop|start|delete: an Azure Database for PostgreSQL or MySQL Flexible Server set
 #   up for Lakeflow Connect query-based and CDC.
-#   Needs RG, LOCATION, SERVER (globally unique), DB. Optional: SUBSCRIPTION (else az's default), SKU (Standard_B1ms),
+#   Needs RG, LOCATION, SERVER (globally unique), DB. Identity: SUBSCRIPTION, required for every command but plan/create
+#   (those take az's current one, pin it and print its IDENTITY line). Optional: TENANT_ID (checked), SKU (Standard_B1ms),
 #   TIER (Burstable), STORAGE_GB (32), VERSION (pg 16, mysql 8.0.21), OWNER ($USER).
 #   create also needs ADMIN_PW_FILE (a private file with the lfcadmin password).
 #   create: the server with public access and no firewall rules (closed until lfc-source-firewall's server-fw.py adds
@@ -16,7 +17,13 @@ E=${1:?pg|mysql}; CMD=${2:?plan|create|status|stop|start|delete}
 : "${RG:?}" "${SERVER:?}" "${DB:?}"
 # public access with no firewall rules: postgres calls that Enabled (its None turns public access off); mysql None
 case $E in pg) S=postgres; V=${VERSION:-16}; DBF=-n; PUBLIC=Enabled;; mysql) S=mysql; V=${VERSION:-8.0.21}; DBF=-d; PUBLIC=None;; *) echo "pg or mysql"; exit 2;; esac
-A=(--resource-group "$RG"); [ -n "${SUBSCRIPTION:-}" ] && A+=(--subscription "$SUBSCRIPTION")
+. "$(dirname "$0")/../../lfc-source-setup/scripts/cloud-identity.sh"
+case $CMD in   # plan/create take az's current subscription and pin it; the other commands need the one the server was made in
+plan|create) SUBSCRIPTION=${SUBSCRIPTION:-$(az account show --query id -o tsv)} ;;
+*) : "${SUBSCRIPTION:?the subscription_id from the create IDENTITY line (the az default is not used)}" ;;
+esac
+az_require "$SUBSCRIPTION" "${TENANT_ID:-}" || exit 1
+A=(--resource-group "$RG" --subscription "$SUBSCRIPTION")
 srv() { az $S flexible-server show "${A[@]}" -n "$SERVER" -o json 2>/dev/null; }
 param() { az $S flexible-server parameter show "${A[@]}" --server-name "$SERVER" -n "$1" --query value -o tsv; }
 setp() { # name value: set when different; prints the name if it needs a restart
@@ -45,6 +52,7 @@ plan|create)
     changed=$(setp binlog_row_image FULL; atleast binlog_expire_logs_seconds 604800; setp sql_generate_invisible_primary_key OFF)
   fi
   if [ -n "$changed" ]; then echo "set: $(echo $changed)"; az $S flexible-server restart "${A[@]}" -n "$SERVER" -o none; echo "restarted"; fi
+  az_record "$SUBSCRIPTION"
   echo "ready: $(srv | yq -p json '.fullyQualifiedDomainName') database $DB. Next: lfc-source-firewall scripts/server-fw.py $E $SERVER" ;;
 status) srv | yq -p json '{"state": .state, "fqdn": .fullyQualifiedDomainName, "version": .version, "sku": .sku.name}' ;;
 stop|start) az $S flexible-server "$CMD" "${A[@]}" -n "$SERVER" -o none && echo "$CMD: $SERVER" ;;

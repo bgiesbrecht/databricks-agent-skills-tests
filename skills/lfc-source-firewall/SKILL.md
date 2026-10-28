@@ -46,6 +46,8 @@ Counts are from `ip-ranges.json` at the time of writing; recount with the comman
 
 Shared resource groups can hit their quotas. If creation fails with a quota or limit error in the shared group, ask for another resource group rather than deleting someone else's resources.
 
+**Identities are per resource.** Each resource records the identity it was created with (the create's `IDENTITY` line: Azure tenant and subscription, AWS profile and account, GCP account and project), and every later call for it passes that identity explicitly. Never rely on the CLI's current default: one login can reach several tenants, accounts and projects. Keep the values in your private env file, not in the repo.
+
 ## Shell conventions
 
 These follow **shell-json-scripting**. The agent's shell doesn't keep variables between commands, so:
