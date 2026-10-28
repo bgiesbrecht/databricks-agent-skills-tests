@@ -94,7 +94,14 @@ if [ "$(q "SELECT MAX(version) FROM (DESCRIBE HISTORY $T.$TB)" 2>&1)" = "$V0" ];
     observe "during-refresh-$RUNS" "ingestion $st; destination $(dest); history $HSTATE ${HERRS}"
   done
   echo "refresh apply update $st after $RUNS history runs"
+  # not done (failed, cancelled, or still running after 30 history runs): let lib.sh's update finish it; it follows
+  # the pipeline's own retries, and joins an update that is still running
+  [ "$st" = COMPLETED ] || { echo "refresh apply not completed ($st): finishing it with update"; EARLY_STOP=0 update; }
 fi
+# the claims after this point only mean something if the refresh was applied: a DLT REFRESH after the gap's version
+NREF=$(q "SELECT COUNT(*) FROM (DESCRIBE HISTORY $T.$TB) WHERE operation = 'DLT REFRESH' AND version > $V0" 2>&1)
+[ "$NREF" -ge 1 ] 2>/dev/null && claim refresh-applied PASS "the destination was rebuilt (DLT REFRESH after version $V0)" \
+  || { claim refresh-applied FAIL "no DLT REFRESH after version $V0 (${NREF}): the checks after this aren't about a refresh"; }
 observe refresh "destination versions: $(hist); rows: $(dest)"
 # what a snapshot read at each version from the refresh to the reload would see (the empty window, if any)
 RV=$(q "SELECT MAX(version) FROM (DESCRIBE HISTORY $T.$TB) WHERE operation = 'DLT REFRESH'" 2>&1)
