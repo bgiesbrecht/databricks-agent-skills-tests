@@ -7,7 +7,7 @@
 #   connection with neither (INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE), and with both.
 #   password_file is a private file or keyring:<name> (lfc-source-setup scripts/pw.py).
 #   Prints one line per row: created | updated | FAILED <class>: <error>; after created/updated, keep-catalogs.sh's lines for the
-#   connection's foreign catalogs (RemoveAfter a month out). The password is read from its file into a
+#   connection and its foreign catalogs (RemoveAfter a month out). The password is read from its file into a
 #   private request body that's deleted right away; it never appears on a command line or in the output.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../../lfc-source-setup/scripts/pw.sh"   # pw/pw_check: a password file or keyring:<name>

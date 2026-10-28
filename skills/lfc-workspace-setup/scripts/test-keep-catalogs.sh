@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # test-keep-catalogs.sh: checks keep-catalogs.sh against a fake databricks CLI (no workspace): which catalogs a
-#   --connection picks, the never-earlier rule, set/update/fail, a failed catalogs list. One PASS/FAIL line per check; exit 1 on any FAIL.
+#   --connection picks (the connection and its foreign catalogs), the never-earlier rule, set/update/fail, a failed catalogs list. One PASS/FAIL line per check; exit 1 on any FAIL.
 set -uo pipefail
 S=$(cd "$(dirname "$0")" && pwd); T=$(mktemp -d); trap 'rm -rf "${T:?}"' EXIT; fail=0
 ok() { if eval "$2"; then echo "PASS $1"; else echo "FAIL $1"; fail=1; fi; }
@@ -22,7 +22,7 @@ echo '[{"name": "m", "catalog_type": "MANAGED_CATALOG"}, {"name": "a-fc", "catal
        {"name": "b-fc", "catalog_type": "FOREIGN_CATALOG", "connection_name": "b"}]' > "$T/list"
 
 run --connection a
-ok "connection: only its foreign catalog" '[ "$(cut -d" " -f2 "$T/calls")" = a-fc ] && [ $rc = 0 ]'
+ok "connection: itself and only its foreign catalog" '[ "$(cut -d" " -f2,4 "$T/calls" | paste -sd, -)" = "a connections,a-fc catalogs" ] && [[ "$out" == "set     connection a RemoveAfter=2026-12-01"* ]] && [ $rc = 0 ]'
 echo 2027-01-01 > "$T/tag.later"; echo 2026-12-01 > "$T/tag.same"; echo 2026-11-01 > "$T/tag.early"
 run later same
 ok "later or equal date: kept, no write" '[ ! -s "$T/calls" ] && [[ "$out" == *"kept    later RemoveAfter=2027-01-01"* ]] && [[ "$out" == *"kept    same"* ]]'
@@ -33,7 +33,7 @@ ok "no tag: set" '[[ "$out" == "set     fresh RemoveAfter=2026-12-01" ]] && grep
 run denied fresh
 ok "failed create: exit 1, the others still run" '[ $rc = 1 ] && [[ "$out" == *"failed  denied: Error: PERMISSION_DENIED"* ]] && [[ "$out" == *"set     fresh"* ]]'
 run --connection z
-ok "connection with no foreign catalog: none" '[ $rc = 0 ] && [ "$out" = "none    foreign catalogs of z" ]'
+ok "connection with no foreign catalog: none" '[ $rc = 0 ] && [[ "$out" == *"none    foreign catalogs of z"* ]] && [[ "$out" == *"set     connection z"* ]]'
 echo '{"not": "a list"}' > "$T/list"; run --connection a
 ok "listing not a JSON list: failed, exit 1" '[ $rc = 1 ] && [[ "$out" == "failed  foreign catalogs of a: "* ]]'
 touch "$T/list-fails"; run --connection a fresh
