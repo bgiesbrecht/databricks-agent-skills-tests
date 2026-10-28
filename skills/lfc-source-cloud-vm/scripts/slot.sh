@@ -132,11 +132,12 @@ probe() {   # the query that says the engine answers (Oracle: once its PDB is op
 }
 # db2_db <container>: LFCDB with 4 KB-aligned I/O. A data disk with 4096-byte logical sectors (Azure Premium SSD v2's
 # default) refuses Db2's 512-byte direct-I/O writes (pwrite EINVAL: SQL0293N on CREATE DATABASE), so the image doesn't
-# make the database (no DBNAME): this sets DB2_4K_DEVICE_SUPPORT=ON (kept in the instance home), restarts the instance
-# once and creates it. An existing LFCDB (a clone, or a slot made before) is left as it is.
+# make the database (no DBNAME). Every start: DB2_4K_DEVICE_SUPPORT=ON if it isn't (kept in the instance home; the
+# instance restarts once to read it), so a clone of a master built without it gets it too; then LFCDB if it's missing.
 db2_db() {
-  podman exec "$1" su - db2inst1 -c 'db2 list db directory 2>/dev/null | grep -q "= LFCDB$" && exit 0
-    db2set DB2_4K_DEVICE_SUPPORT=ON && { db2stop force; db2start; } >/dev/null 2>&1; db2 create database LFCDB >/dev/null' 9>&-
+  podman exec "$1" su - db2inst1 -c 'db2set -all 2>/dev/null | grep -q "DB2_4K_DEVICE_SUPPORT=ON" ||
+      { db2set DB2_4K_DEVICE_SUPPORT=ON && { db2stop force; db2start; } >/dev/null 2>&1; } || exit 1
+    db2 list db directory 2>/dev/null | grep -q "= LFCDB$" || db2 create database LFCDB >/dev/null' 9>&-
 }
 ready() {
   # grep -c reads all of the log: with pipefail, grep -q's early exit would make podman logs fail (SIGPIPE)
