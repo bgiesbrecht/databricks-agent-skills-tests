@@ -36,7 +36,7 @@ ddl_ok() { if grep -E "^(Msg [0-9]+, Level 1[1-9]|ORA-[0-9]+|SP2-[0-9]+)" $W/ddl
 t() { local s=$(date +%s); "$@"; local r=$?; echo "  [$(( $(date +%s) - s )) s] $*" | cut -c1-120; return $r; }
 [ -f "$SECRETS/$E.env" ] || { echo "missing $SECRETS/$E.env"; exit 2; }
 [ -e "$OUT/$NAME" ] && { echo "$OUT/$NAME exists: remove it first"; exit 2; }
-podman rm -f $C > /dev/null 2>&1; rm -rf "${M:?}"; mkdir -p $M
+podman rm -f --depend $C > /dev/null 2>&1; rm -rf "${M:?}"; mkdir -p $M   # --depend: an earlier run's psql sidecar (--network container:) blocks a plain rm -f
 case $E in
 postgres)
   podman run -d --name $C --label lfc.engine=$E --label lfc.purpose=tpc-master --label lfc.master=$NAME --shm-size 4g --env-file $SECRETS/$E.env -v $M:/var/lib/postgresql/data:Z docker.io/library/postgres:16 \
