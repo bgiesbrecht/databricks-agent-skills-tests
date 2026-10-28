@@ -135,3 +135,12 @@
   quote: Columns | Maximum per index (or clustered index) | 32
   ask: Any indexes with more than 32 columns?
   checked: 2026-10-22
+- product: Oracle Database Free
+  limit: user data on disk
+  value: 12 GB
+  kind: hard
+  note: 'also 2 CPUs for foreground processes and 2 GB of RAM; the test masters here are TPC at SF 0.1 for this reason (about 1.3 GB of segments)'
+  url: https://www.oracle.com/database/free/faq/
+  quote: 12GB of user data on disk (irrespective of compression factor)
+  ask: is the test database Oracle Free? more than 12 GB of tables and indexes needs another edition
+  checked: '2026-10-28'
