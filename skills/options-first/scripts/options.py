@@ -37,7 +37,12 @@ USABLE = {"tested", "docs"}
 
 
 def load(path: Path) -> tuple[dict, list[str]]:
-    d = yaml.safe_load(path.read_text()) or {}
+    try:
+        d = yaml.safe_load(path.read_text()) or {}
+    except yaml.YAMLError as e:
+        return {}, [
+            f"{path}: not valid YAML ({str(e).splitlines()[0]}); quote values with ': ' or ','"
+        ]
     bad = [
         f"{path}: missing {k}" for k in ("topic", "question", "options") if not d.get(k)
     ]
@@ -49,6 +54,11 @@ def load(path: Path) -> tuple[dict, list[str]]:
             if k not in o
         ]
         for k in ("setup", "operate"):
+            extra = set(o.get(k) or {}) - {"effort", "what"}
+            if extra:  # a comma inside {what: a, b} splits the text into a new key
+                bad.append(
+                    f"{where}: {k} has unexpected keys {sorted(extra)}: quote a 'what' that has commas"
+                )
             e = (o.get(k) or {}).get("effort")
             if not isinstance(e, int) or not 1 <= e <= 5:
                 bad.append(f"{where}: {k}.effort must be 1 to 5")
