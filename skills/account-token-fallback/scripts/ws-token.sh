@@ -11,7 +11,9 @@
 #     --host <accounts host> --account-id <id>). Checks the token against the workspace, writes a
 #     one-profile config FILE (mode 600; default $TMPDIR/ws-token-<profile>.cfg) and prints FILE. Use it as
 #       CFG=$(ws-token.sh <profile>) && [ -n "$CFG" ] && export DATABRICKS_CONFIG_FILE=$CFG
-#     so `--profile <profile>` keeps working. The token lasts about an hour: rerun when calls start failing.
+#     so `--profile <profile>` keeps working. The token lasts about an hour (some workspaces: 30 minutes): rerun when
+#     calls start failing, or every 20 minutes in a long run. The default FILE is shared by every shell on the machine:
+#     give a long run a FILE of its own with --cfg.
 #   - Exit 1 with the reason when neither works (then: databricks auth login --profile <profile>).
 #   --force mints even when the profile's login works (to test the fallback). The token is never printed.
 set -uo pipefail
@@ -32,11 +34,12 @@ if [ -n "$HOST_ARG" ] && [ "${HOST%/}" != "$HOST_ARG" ]; then HOST=$HOST_ARG; AI
 elif [ -z "$FORCE" ] && real timeout 60 databricks current-user me --profile "$P" -o json > /dev/null 2>&1; then
   say "$P: its own login works"; exit 0; fi
 [ -n "$HOST" ] || { say "$P: no such profile (databricks auth profiles); for a workspace without one, pass --host"; exit 1; }
-# write the one-profile config for token $1 and check it; prints the file and exits 0 when the workspace accepts it
-try() { ( umask 077; printf '[%s]\nhost  = %s\ntoken = %s\n' "$P" "$HOST" "$1" > "$CFG" )
-  if DATABRICKS_CONFIG_FILE=$CFG timeout 60 databricks current-user me --profile "$P" -o json > /dev/null 2> "$CFG.err"; then
-    rm -f "$CFG.err"; say "$P: using a token from $2 (about an hour)"; echo "$CFG"; exit 0; fi
-  ERR=$(head -c 400 "$CFG.err"); rm -f "$CFG" "$CFG.err"; return 1; }
+# write the one-profile config for token $1 to a temp file and check it; when the workspace accepts it, move it over FILE,
+# print FILE and exit 0. A failed try leaves FILE as it was: a long run (or another session) may still be using it.
+try() { local t="$CFG.$$.tmp"; ( umask 077; printf '[%s]\nhost  = %s\ntoken = %s\n' "$P" "$HOST" "$1" > "$t" )
+  if DATABRICKS_CONFIG_FILE=$t timeout 60 databricks current-user me --profile "$P" -o json > /dev/null 2> "$t.err"; then
+    mv -f "$t" "$CFG"; rm -f "$t.err"; say "$P: using a token from $2 (about an hour)"; echo "$CFG"; exit 0; fi
+  ERR=$(head -c 400 "$t.err"); rm -f "$t" "$t.err"; return 1; }
 # Azure: an Entra ID token from the Azure CLI for the Azure Databricks resource works for every workspace in its tenant,
 # no account profile needed. A workspace in another tenant names it in the error; retry there if az knows that tenant.
 case $HOST in *.azuredatabricks.net*)
