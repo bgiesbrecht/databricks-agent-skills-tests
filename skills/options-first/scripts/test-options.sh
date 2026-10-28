@@ -26,6 +26,14 @@ ok "render: pick is the simplest tested" '[[ "$out" == *"Pick: **Small pipeline*
 "${O[@]}" check "$T/a/options.yaml" 2>/dev/null; ok "check: valid file passes" '[ $? = 0 ]'
 err=$("${O[@]}" check "$T/b/options.yaml" 2>&1); rc=$?
 ok "check: bad file fails" '[ $rc = 1 ] && [[ "$err" == *"missing question"* && "$err" == *"effort must be 1 to 5"* && "$err" == *"status must be"* ]]'
+mkdir -p "$T/c" "$T/d"
+printf 'topic: t\nquestion: q\noptions:\n  - {name: x, setup: {effort: 1, what: one pipeline, two lines}, operate: {effort: 1}, status: tested}\n' > "$T/c/options.yaml"
+err=$("${O[@]}" check "$T/c/options.yaml" 2>&1); rc=$?
+ok "check: a comma in a flow 'what' is caught" '[ $rc = 1 ] && [[ "$err" == *"unexpected keys"* ]]'
+printf 'topic: t\nquestion: q\noptions:\n  - name: x\n    recovery: none: lost\n' > "$T/d/options.yaml"
+err=$("${O[@]}" check "$T/d/options.yaml" 2>&1); rc=$?
+ok "check: bad YAML is a problem line, not a traceback" '[ $rc = 1 ] && [[ "$err" == *"not valid YAML"* && "$err" != *Traceback* ]]'
+rm -rf "${T:?}/c" "${T:?}/d"
 idx=$("${O[@]}" index "$T" 2>/dev/null)
 ok "index: lists the valid topic and its pick" '[[ "$idx" == *"| Sample topic | 4 | Small pipeline | a/options.yaml |"* ]]'
 exit $fail
