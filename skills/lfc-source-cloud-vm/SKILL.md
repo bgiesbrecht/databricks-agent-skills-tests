@@ -67,6 +67,8 @@ Wait for explicit confirmation before calling cloud APIs.
 - **Quotas**: Check regional vCPU limits
 - **Network**: Ensure firewall rules can reach your Databricks workspace
 
+**Identities are per resource.** Each resource records the identity it was created with (the create's `IDENTITY` line: Azure tenant and subscription, AWS profile and account, GCP account and project), and every later call for it passes that identity explicitly. Never rely on the CLI's current default: one login can reach several tenants, accounts and projects. Keep the values in your private env file, not in the repo.
+
 ## Create the VM
 
 ### Azure
@@ -83,10 +85,10 @@ ZONE="1"                        # Premium SSD v2 attaches only to a VM in an ava
 VM_NAME="jane-doe-mysql-vm-eastus-$(date +%s)"
 VM_SIZE="Standard_D4s_v5"
 
-az account set --subscription "$SUBSCRIPTION"
-az group create --name "$RESOURCE_GROUP" --location "$LOCATION"
+# every az call names its subscription: no az account set (it changes the default for every later call)
+az group create --subscription "$SUBSCRIPTION" --name "$RESOURCE_GROUP" --location "$LOCATION"
 
-az vm create \
+az vm create --subscription "$SUBSCRIPTION" \
   --resource-group "$RESOURCE_GROUP" \
   --name "$VM_NAME" \
   --image Ubuntu2204 \
@@ -96,9 +98,9 @@ az vm create \
   --ssh-key-values ~/.ssh/lfc_test_rsa.pub
 
 # the data disk: Premium SSD v2, 3,000 IOPS and 125 MB/s included at any size (a 128 GiB Premium SSD v1 is a 500-IOPS P10)
-az disk create --resource-group "$RESOURCE_GROUP" --name "${VM_NAME}-data" --location "$LOCATION" --zone "$ZONE" \
+az disk create --subscription "$SUBSCRIPTION" --resource-group "$RESOURCE_GROUP" --name "${VM_NAME}-data" --location "$LOCATION" --zone "$ZONE" \
   --sku PremiumV2_LRS --size-gb 128 --disk-iops-read-write 3000 --disk-mbps-read-write 125
-az vm disk attach --resource-group "$RESOURCE_GROUP" --vm-name "$VM_NAME" --name "${VM_NAME}-data" \
+az vm disk attach --subscription "$SUBSCRIPTION" --resource-group "$RESOURCE_GROUP" --vm-name "$VM_NAME" --name "${VM_NAME}-data" \
   --lun 0 --caching None          # LUN 0: /dev/disk/azure/scsi1/lun0; v2 takes no host caching
 ```
 
@@ -133,10 +135,11 @@ gcloud compute instances create "$VM_NAME" \
 Every cloud resource created, or suggested for review, gets a clickable link, from the scripts and in replies. After the VM is up, and whenever someone asks what's running:
 
 ```bash
-bash skills/lfc-source-cloud-vm/scripts/cloud-links.sh <vm-public-ip> [--resource-id <storage account id>]
+SUBSCRIPTION=<subscription_id> AWS_PROFILE=<profile> AWS_REGION=<region> GCP_ACCOUNT=<account> GCP_PROJECT=<project> \
+  bash skills/lfc-source-cloud-vm/scripts/cloud-links.sh <vm-public-ip> [--resource-id <storage account id>]
 ```
 
-It finds the IP with whichever cloud CLI is logged in, and prints one `LINK <what>: <url>` line per resource:
+Give the identity the VM was created with, for each cloud it may be in (a cloud with none is skipped, and the line says which flag to give). It prints one `LINK <what>: <url>` line per resource, and one `IDENTITY` line where it finds the VM (the record to keep):
 
 | Cloud | Resources | Link form |
 |---|---|---|
@@ -144,7 +147,7 @@ It finds the IP with whichever cloud CLI is logged in, and prints one `LINK <wha
 | AWS | instance, security groups, EBS volumes (`AWS_REGION` or `--region`) | `https://<region>.console.aws.amazon.com/ec2/home?region=<region>#InstanceDetails:instanceId=<id>` (`#SecurityGroup:groupId=`, `#VolumeDetails:volumeId=`) |
 | GCP | instance, disks, VPC firewall rules | `https://console.cloud.google.com/compute/instancesDetail/zones/<zone>/instances/<name>?project=<project>` |
 
-On Azure it searches `--subscription`, `AZURE_SUBSCRIPTION_ID`, the subscriptions of any `--resource-id`, then the CLI's current one. It ignores a default resource group set in `az config`. The test VM was in another subscription than the CLI's current one, and a default group (`az config set defaults.group=...`) scoped every list to that group: both hid the VM until the script searched by subscription with the default cleared. Tested on Azure (2026-10-21); the AWS and GCP parts haven't run against a VM yet.
+On Azure it searches `SUBSCRIPTION` (or `--subscription`), then, with none given, every enabled subscription by id; it never uses the CLI's current one, and it ignores a default resource group set in `az config` (that scoped every list to one group and hid the VM). Tested on Azure (2026-10-21, and read-only 2026-10-28 with the CLI's default in another tenant); the AWS and GCP parts haven't run against a VM yet.
 
 ## Install the database
 

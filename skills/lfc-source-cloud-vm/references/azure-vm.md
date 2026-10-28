@@ -17,13 +17,13 @@ DATA_DISK_GB="128"
 ## Create VM
 
 ```bash
-az account set --subscription "$SUBSCRIPTION"
+# every az call names its subscription: no az account set (it changes the default for every later call)
 
 # Create resource group
-az group create --name "$RESOURCE_GROUP" --location "$LOCATION"
+az group create --subscription "$SUBSCRIPTION" --name "$RESOURCE_GROUP" --location "$LOCATION"
 
 # Create VM with OS disk + data disk
-az vm create \
+az vm create --subscription "$SUBSCRIPTION" \
   --resource-group "$RESOURCE_GROUP" \
   --name "$VM_NAME" \
   --image Ubuntu2204 \
@@ -37,7 +37,7 @@ az vm create \
   --output table
 
 # Data disk: Premium SSD v2 (3,000 IOPS and 125 MB/s included, set apart from size), in the VM's zone
-az disk create \
+az disk create --subscription "$SUBSCRIPTION" \
   --resource-group "$RESOURCE_GROUP" \
   --name "${VM_NAME}-data" \
   --location "$LOCATION" \
@@ -46,7 +46,7 @@ az disk create \
   --size-gb "$DATA_DISK_GB" \
   --disk-iops-read-write 3000 \
   --disk-mbps-read-write 125
-az vm disk attach \
+az vm disk attach --subscription "$SUBSCRIPTION" \
   --resource-group "$RESOURCE_GROUP" \
   --vm-name "$VM_NAME" \
   --name "${VM_NAME}-data" \

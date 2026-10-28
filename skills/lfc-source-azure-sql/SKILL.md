@@ -45,12 +45,13 @@ Wait for a **yes** before proceeding.
 # Confirm cloud login
 az account show --query "{Name: name, SubscriptionId: id, State: state}" -o table
 
-# Set the subscription if needed
-az account set --subscription <subscription_id>
+# Name the subscription on every az call (--subscription <subscription_id>); az account set would change the default for all of them
 
 # Resource group: the user's own, or the team's shared test group. Check it exists; create one only if the user asks
 az group exists --name <resource_group>
 ```
+
+**Identities are per resource.** Each resource records the identity it was created with (the create's `IDENTITY` line: Azure tenant and subscription, AWS profile and account, GCP account and project), and every later call for it passes that identity explicitly. Never rely on the CLI's current default: one login can reach several tenants, accounts and projects. Keep the values in your private env file, not in the repo.
 
 ## Create: SQL Database vs. SQL Managed Instance
 

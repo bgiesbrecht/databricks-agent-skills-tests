@@ -35,6 +35,8 @@ Aurora uses a **cluster + writer instance** structure with auto-scaling storage 
 - **Databricks CLI**: `databricks auth profiles` shows available profile
 - **IAM permissions**: `rds:CreateDBCluster`, `rds:CreateDBInstance`, `ec2:CreateSecurityGroup`, `rds:CreateDBSubnetGroup`
 
+**Identities are per resource.** Each resource records the identity it was created with (the create's `IDENTITY` line: Azure tenant and subscription, AWS profile and account, GCP account and project), and every later call for it passes that identity explicitly. Never rely on the CLI's current default: one login can reach several tenants, accounts and projects. Keep the values in your private env file, not in the repo.
+
 ## Naming pattern
 
 Resources use: `{arm}-{service}-{location}-{epoch}`

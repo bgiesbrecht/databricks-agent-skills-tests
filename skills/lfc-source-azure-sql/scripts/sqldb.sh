@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # sqldb.sh plan|create|status|wake|delete: an Azure SQL Database (serverless, auto-pause) on its own logical server.
-#   Needs RG, LOCATION, SERVER (globally unique), DB. Optional: SUBSCRIPTION (else az's default), VCORES (1),
+#   Needs RG, LOCATION, SERVER (globally unique), DB. Identity: SUBSCRIPTION, required for every command but plan/create.
+#   plan/create take az's current subscription, pin it, and print its IDENTITY line: keep it with SUBSCRIPTION in your
+#   env file. Optional: TENANT_ID (checked against the login), VCORES (1),
 #   MIN_CAPACITY (0.5), AUTO_PAUSE (60 minutes idle, then paused; -1 never), FREE (1: the free offer, up to 10 databases
 #   per subscription; when its monthly vCore seconds run out the database pauses until next month), OWNER ($USER).
 #   create also needs ADMIN_PW_FILE (a private file with the sqladmin password).
@@ -12,7 +14,13 @@
 set -euo pipefail
 CMD=${1:?plan|create|status|wake|delete}
 : "${RG:?}" "${SERVER:?}" "${DB:?}"
-A=(--resource-group "$RG"); [ -n "${SUBSCRIPTION:-}" ] && A+=(--subscription "$SUBSCRIPTION")
+. "$(dirname "$0")/../../lfc-source-setup/scripts/cloud-identity.sh"
+case $CMD in
+plan|create) SUBSCRIPTION=${SUBSCRIPTION:-$(az account show --query id -o tsv)} ;;
+*) : "${SUBSCRIPTION:?the subscription_id from the create IDENTITY line (the az default is not used)}" ;;
+esac
+az_require "$SUBSCRIPTION" "${TENANT_ID:-}" || exit 1
+A=(--resource-group "$RG" --subscription "$SUBSCRIPTION")
 HOST=$SERVER.database.windows.net
 srv() { az sql server show "${A[@]}" -n "$SERVER" -o json 2>/dev/null; }
 db() { az sql db show "${A[@]}" -s "$SERVER" -n "$DB" -o json 2>/dev/null; }
@@ -22,6 +30,7 @@ plan|create)
   : "${LOCATION:?}"
   echo "server   $SERVER ($LOCATION) public access, no firewall rules $(srv >/dev/null && echo '(exists)' || echo '(new)')"
   echo "database $DB serverless GP Gen5 ${VCORES:-1} vCore, min ${MIN_CAPACITY:-0.5}, auto-pause ${AUTO_PAUSE:-60} min$([ "${FREE:-}" = 1 ] && echo ', free offer') $(db >/dev/null && echo '(exists)' || echo '(new)')"
+  az_record "$SUBSCRIPTION"
   [ "$CMD" = plan ] && exit 0
   : "${ADMIN_PW_FILE:?}"; [ -r "$ADMIN_PW_FILE" ] || { echo "can't read $ADMIN_PW_FILE"; exit 2; }
   TAGS=(owner="${OWNER:-$USER}" purpose=lfc-test created="$(date -u +%Y-%m-%d)")
@@ -35,6 +44,7 @@ plan|create)
       --capacity "${VCORES:-1}" --min-capacity "${MIN_CAPACITY:-0.5}" --auto-pause-delay "${AUTO_PAUSE:-60}" \
       --backup-storage-redundancy Local "${F[@]}" --tags "${TAGS[@]}" -o none
   fi
+  az_record "$SUBSCRIPTION"
   echo "ready: $HOST,1433 database $DB. Next: lfc-source-firewall scripts/server-fw.py sql $SERVER" ;;
 status) db | yq -p json '{"status": .status, "autoPauseDelay": .autoPauseDelay, "minCapacity": .minCapacity, "useFreeLimit": .useFreeLimit, "freeLimitExhaustionBehavior": .freeLimitExhaustionBehavior}' ;;
 wake)

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # nsg-copy.sh <from-nsg> <to-nsg> <port> [--apply]: give another NSG the same sources as the region's shared NSG, for one port.
-#   Needs RG (both NSGs' resource group). Optional: SUBSCRIPTION (else az's default).
+#   Needs RG (both NSGs' resource group) and SUBSCRIPTION: the subscription_id from the IDENTITY line the NSG's create
+#   printed (az's default isn't used). Optional: TENANT_ID (checked against the login).
 #   Every inbound Allow rule of <from-nsg> with a source list (serverless, VPN, workspace egress, known hosts) becomes a
 #   rule of the same name and priority in <to-nsg>, allowing TCP <port> only (no SSH). Use it for an NSG that can't be the
 #   shared one, such as a SQL Managed Instance subnet's (port 3342). Prints the plan; changes nothing without --apply.
@@ -8,7 +9,9 @@
 #   are set from the highest priority down, so a resync that moved every rule up by one slot applies without a clash.
 set -euo pipefail
 FROM=${1:?from-nsg}; TO=${2:?to-nsg}; PORT=${3:?port}; APPLY=${4:-}
-: "${RG:?}"; A=(--resource-group "$RG"); [ -n "${SUBSCRIPTION:-}" ] && A+=(--subscription "$SUBSCRIPTION")
+: "${RG:?}" "${SUBSCRIPTION:?the subscription_id from the NSG IDENTITY line (the az default is not used)}"
+. "$(dirname "$0")/../../lfc-source-setup/scripts/cloud-identity.sh"; az_require "$SUBSCRIPTION" "${TENANT_ID:-}" || exit 1
+A=(--resource-group "$RG" --subscription "$SUBSCRIPTION")
 T=$(mktemp -d); trap 'rm -rf "${T:?}"' EXIT
 az network nsg rule list "${A[@]}" --nsg-name "$FROM" -o json > "$T/from.json"
 az network nsg rule list "${A[@]}" --nsg-name "$TO" -o json > "$T/to.json"

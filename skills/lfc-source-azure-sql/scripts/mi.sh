@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # mi.sh plan|create|wait|status|endpoint|stop|start|delete: an Azure SQL Managed Instance behind its own NSG.
-#   Needs RG (resource group), VNET (an existing VNet in RG), MI_NAME. Optional: SUBSCRIPTION (else az's default),
+#   Needs RG (resource group), VNET (an existing VNet in RG), MI_NAME. Identity: SUBSCRIPTION, required for every command
+#   but plan/create (those take az's current one, pin it and print its IDENTITY line; see lfc-source-setup cloud-identity.sh).
+#   Optional: TENANT_ID (checked against the login),
 #   LOCATION (the VNet's), SUBNET (<VNET>-mi-subnet), SUBNET_CIDR (10.10.200.0/27; /27 or larger, unused in the VNet),
 #   VCORES (4), STORAGE_GB (32), PRICING (Freemium: the free offer, one per subscription; else Regular), OWNER ($USER).
 #   create also needs ADMIN_PW_FILE (a private file with the sqladmin password).
@@ -15,7 +17,13 @@ set -euo pipefail
 CMD=${1:?plan|create|wait|status|endpoint|stop|start|delete}
 : "${RG:?}" "${VNET:?}" "${MI_NAME:?}"
 SUBNET=${SUBNET:-$VNET-mi-subnet}; SUBNET_CIDR=${SUBNET_CIDR:-10.10.200.0/27}
-A=(--resource-group "$RG"); [ -n "${SUBSCRIPTION:-}" ] && A+=(--subscription "$SUBSCRIPTION")
+. "$(dirname "$0")/../../lfc-source-setup/scripts/cloud-identity.sh"
+case $CMD in   # plan/create take az's current subscription and pin it; the other commands need the one the instance was made in
+plan|create) SUBSCRIPTION=${SUBSCRIPTION:-$(az account show --query id -o tsv)} ;;
+*) : "${SUBSCRIPTION:?the subscription_id from the create IDENTITY line (the az default is not used)}" ;;
+esac
+az_require "$SUBSCRIPTION" "${TENANT_ID:-}" || exit 1
+A=(--resource-group "$RG" --subscription "$SUBSCRIPTION")
 NSG=$SUBNET-nsg; RT=$SUBNET-rt
 mi() { az sql mi show "${A[@]}" -n "$MI_NAME" -o json 2>/dev/null; }
 
@@ -59,6 +67,7 @@ plan|create)
     --edition GeneralPurpose --family Gen5 --capacity "${VCORES:-4}" --storage "${STORAGE_GB:-32}GB" --license-type LicenseIncluded \
     --public-data-endpoint-enabled true --minimal-tls-version 1.2 --backup-storage-redundancy Local \
     ${PRICING:+--pricing-model "$PRICING"} --tags "${TAGS[@]}" --no-wait -o none
+  az_record "$SUBSCRIPTION"
   echo "creating $MI_NAME (first instance in a subnet: 4-6 hours). Next: mi.sh wait, in the background"
   echo "then: lfc-source-firewall scripts/nsg-copy.sh <shared-nsg> $NSG 3342 --apply" ;;
 wait)

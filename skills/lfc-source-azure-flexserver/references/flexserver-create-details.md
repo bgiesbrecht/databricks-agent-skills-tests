@@ -14,11 +14,7 @@ az login
 az account show --query "{id:id, name:name}"
 ```
 
-Save the subscription ID. If you have multiple subscriptions, select the target:
-
-```bash
-az account set --subscription {subscription_id}
-```
+Save the subscription ID. Name it on every az call with `--subscription {subscription_id}` (and the tenant it's in, `az login --tenant <tenant_id>` if the login doesn't reach it). `az account set` would change the default for every later call, so don't use it.
 
 ### 2. Resource provider registration (one-time per subscription)
 
