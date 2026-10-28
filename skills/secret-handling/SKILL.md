@@ -40,7 +40,7 @@ Run any script with no arguments for its usage.
   "command": "python3 /path/to/skills/secret-handling/scripts/block-secret-prints.py"}]}]}}
 ```
 
-Patterns: the defaults (`*.pw`, `*credentials*.json`, `*credentials*.yaml`, `*.pem`, `*.key`, `*_rsa`, `*_ed25519`, `.databrickscfg`, `.pgpass`, `.my.cnf`, `*.env`, `.netrc`), replaced by `~/.config/secret-handling/paths` (one glob per line; a glob with `/` matches the whole path, `~` expanded) or `SECRET_PATHS` (colon-separated). Add the directories your own tools keep credentials in. It is a guard against accidents, not against a determined reader: `X=$(cat f); echo "$X"` still prints.
+Patterns: the defaults (`*.pw`, `*credentials*.json*`, `*credentials*.y*ml*` (backups included), `*.pem`, `*.key`, `*_rsa`, `*_ed25519`, `.databrickscfg`, `.pgpass`, `.my.cnf`, `*.env`, `.netrc`), replaced by `~/.config/secret-handling/paths` (one glob per line; a glob with `/` matches the whole path, `~` expanded) or `SECRET_PATHS` (colon-separated). Add the directories your own tools keep credentials in. It is a guard against accidents, not against a determined reader: `X=$(cat f); echo "$X"` still prints.
 
 ## After a leak
 

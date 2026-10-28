@@ -25,8 +25,8 @@ from pathlib import Path
 
 DEFAULTS = [
     "*.pw",
-    "*credentials*.json",
-    "*credentials*.y*ml",
+    "*credentials*.json*",
+    "*credentials*.y*ml*",
     "*.pem",
     "*.key",
     "*_rsa",
