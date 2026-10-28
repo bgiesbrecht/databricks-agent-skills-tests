@@ -46,7 +46,7 @@ sudo systemd-run --unit=lfc-master-pg --collect -E SECRETS=/root/lfc-src/masters
 | SQL Server 2022 | `GENERATE_SERIES` (compatibility level 160) | `SIMPLE` recovery, `WITH (TABLOCK)` |
 | Oracle 23ai Free | `CONNECT BY LEVEL` | `/*+ APPEND */` (direct path), autocommit per statement |
 | MariaDB 11.4 | the MySQL planners (`--skip-log-bin`; `innodb_log_file_size` instead of the redo-log capacity) | as MySQL |
-| CockroachDB 25.4 | `fill.py` (the Postgres planners need `pg_temp` functions, which CockroachDB can't create), 50,000 rows per statement | `--insecure`, published on 127.0.0.1 for the driver |
+| CockroachDB 25.4 | `fill.py` over `generate_series`, 50,000 rows per statement (its planner is Python: the psql planners' `pg_temp` functions are refused) | `--insecure`, published on 127.0.0.1 for the driver |
 | YugabyteDB 2026.1 | the Postgres planners through a `psql` sidecar on the server's network (`--network container:`), `SRC=series` | `yugabyted` with `advertise_address=127.0.0.1` and `pgsql_proxy_bind_address=0.0.0.0:5433` (see above); `chown 10001:100` |
 | Db2 11.5 | `fill.py` (two sessions), DDL through `sq.py`; `PCKCACHESZ 16384`, `LOGSECOND 200` | `--privileged`, published on 127.0.0.1 |
 | Informix 14.10 | `fill.py` (one session), one database per workload in a `datadbs` dbspace | the chunk file must exist, owner `informix`, mode 660; the developer image caps the dbspace (see below) |
@@ -56,13 +56,13 @@ sudo systemd-run --unit=lfc-master-pg --collect -E SECRETS=/root/lfc-src/masters
 | Engine | Master | Built | Rows at target | Build time | Master size | Failure, exact error |
 |---|---|---|---|---|---|---|
 | MariaDB 11.4 | `mariadb114-tpc-sf1` | yes | 109,712,237 in 95 tables; all six workloads | 2,360 s | 19.43 GiB | none |
-| CockroachDB 25.4 | `crdb25-tpc-sf1` | no | TPC-B, C, H, DS at target; TPC-E fails | 631 s to the failure | not copied | TPC-E round 2: `UniqueViolation: duplicate key value violates unique constraint "taxrate_pkey"`. The probe reads `CAST(tx_id AS BIGINT)` of `'0320'` as octal (208); the tag `lfc:n={CAST("tx_id" AS BIGINT)}` comes from statschema's `ddl.py` CockroachDB output |
+| CockroachDB 25.4 | `crdb25-tpc-sf1` | yes (2026-10-28) | 109,712,237 in 95 tables; all six workloads (each table counted on a slot from the master) | 1,477 s (TPC-E 911 s) | 5.66 GiB | none. An earlier build failed at TPC-E (`taxrate_pkey` duplicate key: `CAST('0320' AS BIGINT)` read as octal), fixed in `ddl.py` |
 | YugabyteDB 2026.1 | `yb2026-tpc-sf1` | yes (rebuilt 2026-10-28 with the start flags above) | 109,712,237 in 95 tables; all six workloads (each table counted on a slot from the master) | 8,693 s (TPC-E 7,040 s) | 11.40 GiB | none. The first build (advertise address 10.88.200.x) started as a clone only at that address: a slot timed out after 5 minutes; a slot from the rebuild answers in 26 s |
 | Db2 11.5 | none | no | | | | `SQL0293N Error accessing a table space container.` on `CREATE DATABASE LFCDB`, on a bind-mounted XFS volume and inside the container (the instance user can write there; direct I/O and `fallocate` work) |
 | Informix 14.10 | `informix1410-tpc-sf0.1` | yes, SF 0.1 | all six workloads: 95 tables, 13,035,445 rows at target (TPC-B 4, TPC-C 9, TPC-H 8, TPC-DS 24, TPC-E 32, TPC-DI 18; each table checked on a slot from the master) | 2 min to load TPC-H, 5 min TPC-E (one session) | 1.70 GiB | `onspaces ... -s 31457280` (30 GB): `The limits of the Informix Dynamic Server Demo Version have been exceeded`; 1 GB (`-s 1000000`, the default) holds all six at SF 0.1. At SF 1 (about 110M rows) it doesn't fit. Before the `%` precedence fix in `ddl.py`, TPC-H's `nation` foreign key pointed at -1 … 3 (`Informix error -691`, missing key) |
-| Oracle 23ai Free | none | no | | | | no SF 1 master on the VM; not built in this pass |
+| Oracle 23ai Free | `oracle23-tpc-sf0.1` | yes, SF 0.1 | all six workloads: 95 tables, 13,035,445 rows at target (each table counted on a slot from the master) | 532 s (TPC-E 295 s) | 6.22 GiB (1,332 MB of segments) | none. Oracle Free holds at most 12 GB of user data (limits table); scaled from SF 0.1, SF 1 comes to about 11 GB, so SF 0.1 is the master |
 
-CockroachDB's TPC-H `lineitem` (6M rows) loaded at about 100,000 rows a minute at 50,000 rows per statement. A single 600,000-row statement ran 12 minutes without committing a row.
+CockroachDB loads at about 2.0M rows a minute on the shared VM (2026-10-28): TPC-H at SF 1 (8,660,030 rows) in 258 s at 50,000 rows per statement and 4 sessions; at SF 0.1, 10,000 rows per statement and 8 sessions gave the same rate. The 100,000 rows a minute recorded for an earlier build didn't reproduce. A single 600,000-row statement (earlier build) ran 12 minutes without committing a row.
 
 The lfc tags stay in each master, so a clone can be topped up or appended to with the same planners. Results: below, and in `results/runs/` (`recall.py --test other --grep tpc-master`).
 

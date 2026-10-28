@@ -88,6 +88,7 @@ Generated from `limits/*.yaml` by `scripts/limits-check.py --markdown`, which pr
 | Oracle Database | Columns per table | 1,000 | hard | Any tables with more than 1,000 columns? | [docs](https://docs.oracle.com/en/database/oracle/oracle-database/21/refrn/logical-database-limits.html) |
 | Oracle Database | Partitions per table or index | 1,048,575 | hard | Any tables or indexes with more than 1 million partitions? | [docs](https://docs.oracle.com/en/database/oracle/oracle-database/21/refrn/logical-database-limits.html) |
 | Oracle Database | Columns per index | 32 | hard | Any indexes with more than 32 columns? | [docs](https://docs.oracle.com/en/database/oracle/oracle-database/21/refrn/logical-database-limits.html) |
+| Oracle Database Free | user data on disk | 12 GB | hard | is the test database Oracle Free? more than 12 GB of tables and indexes needs another edition | [docs](https://www.oracle.com/database/free/faq/) |
 
 ## Managed services (RDS, Aurora, Azure SQL, Azure flexible server, Cloud SQL)
 

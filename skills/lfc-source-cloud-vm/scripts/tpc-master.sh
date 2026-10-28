@@ -7,8 +7,10 @@
 #   $DDL/<workload>-<dialect>.sql, written by lfc-source-statschema's shape.py and ddl.py (dialects postgres, mysql, tsql, oracle,
 #   cockroachdb, db2, informix; MariaDB and YugabyteDB take mysql and postgres). Rows come from INSERT ... SELECT over the
 #   engine's own generator: generate_series (Postgres, CockroachDB, YugabyteDB: SRC=series), a seed table filled by doubling
-#   (MySQL, MariaDB), GENERATE_SERIES (SQL Server 2022), CONNECT BY LEVEL (Oracle). Db2 and Informix have no SQL planner
-#   here: their rows come from fill.py (a driver, PY: python with ibm-db and informix-driver; references/python-drivers.md).
+#   (MySQL, MariaDB), GENERATE_SERIES (SQL Server 2022), CONNECT BY LEVEL (Oracle). Db2, Informix and CockroachDB fill
+#   through fill.py (its planner is Python; PY: a python with ibm-db, informix-driver, psycopg2; references/python-drivers.md),
+#   whose INSERT ... SELECT also makes every row in the database: a recursive common table expression (Db2), CONNECT BY
+#   LEVEL (Informix), generate_series (CockroachDB).
 #   The build runs on local disk ($DATA/build-<master>), tuned for loading (no fsync, no binary log, SIMPLE recovery);
 #   the settings are the image defaults again when a clone starts. The lfc tags (lfc_seed.tags, lfc_tags) stay, so a
 #   clone can be topped up or appended to with the same planners.
@@ -68,7 +70,7 @@ cockroachdb|yugabytedb)   # PostgreSQL-protocol servers: the Postgres planners t
   PGCMD="podman run --rm -i --network container:$C docker.io/library/postgres:16 psql -X -q -h 127.0.0.1 -p $P -U $U"
   $PGCMD -d $ADMIN -v ON_ERROR_STOP=1 -c "CREATE DATABASE lfc" > /dev/null || exit 1   # the database slot.sh uses (a fresh server)
   PG="$PGCMD -d lfc -v ON_ERROR_STOP=1"
-  if [ $E = cockroachdb ]; then   # the Postgres planners need pg_temp functions, which CockroachDB can't create: fill.py instead (a statement per 50,000 rows: one
+  if [ $E = cockroachdb ]; then   # the psql planners need pg_temp functions, which CockroachDB refuses: fill.py builds the same generate_series INSERTs (a statement per 50,000 rows: one
   # 600,000-row INSERT with its foreign-key checks ran for 12 minutes without committing a row)
     load() { { echo "CREATE SCHEMA $1; SET search_path = $1;"; cat $DDL/$1-$DDLD.sql; } | $PG > /dev/null &&
              $PY $DG/python/fill.py pg $1 --database lfc --host 127.0.0.1 --port $CP --user root --password-file $W/empty --sessions $SESSIONS --rows ${CRDB_ROWS:-50000}; }

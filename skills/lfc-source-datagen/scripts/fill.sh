@@ -13,7 +13,8 @@
 # Engine names: pg (also postgres or yugabytedb or yb: the Postgres planners through psql, SRC=series for YugabyteDB, PSQL="psql -h ... -p ... -U ..."), my (also mysql, mariadb or
 # maria: the MySQL planners through mysql), ms (SQL Server), ora (Oracle). Db2 (db2) and Informix (informix or ifx) have no
 # SQL planner: they fill through scripts/python/fill.py (--database, the connection options, one schema per workload).
-# CockroachDB (cockroachdb, crdb) too: its planner functions live in pg_temp, which it doesn't allow: fill.py postgres.
+# CockroachDB (cockroachdb, crdb) too: this planner's functions live in pg_temp, which it refuses: fill.py postgres. fill.py's
+# statements still make every row in the database (generate_series, a recursive CTE on Db2, CONNECT BY LEVEL on Informix).
 E=$1; D=$2; DIR=${DIR:-.}; SESSIONS=${SESSIONS:-4}
 ORDER=${ORDER:-random}; DATA=${DATA:-scramble}; PLAIN_EVERY=${PLAIN_EVERY:-4}; BLOCK=${BLOCK:-1000}; LOB_LEN=${LOB_LEN:-100}
 GO=; HEAD=                                           # a line after every statement (SQL Server batches); a line before each file

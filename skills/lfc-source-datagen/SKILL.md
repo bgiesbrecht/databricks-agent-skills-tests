@@ -144,7 +144,7 @@ Limits per engine (columns, row size, rows per statement, identifiers, row gener
 | Oracle | [references/oracle.md](references/oracle.md) | Fill planners tested on 23ai Free (`CONNECT BY LEVEL`): TPC-H SF 1 in 585 s; delete, DDL, and audit planners not ported |
 | Db2 | [references/python-drivers.md](references/python-drivers.md) | Python fill only (`fill.py`, recursive CTE), tested on 11.5: all six TPC workloads at SF 0.1; needs a larger package cache and log (the reference) |
 | Informix | [references/python-drivers.md](references/python-drivers.md) | Python fill only (`fill.py`, `CONNECT BY LEVEL`), tested on 14.10: all six TPC workloads at SF 0.1; no random order or `data=random`, no MD5 filler |
-| CockroachDB | [references/python-drivers.md](references/python-drivers.md) | Python fill only (`fill.py postgres`: its planner functions can't live in `pg_temp`), tested on v25.4: TPC-B, C, H, DS at SF 1; TPC-E fails on a zero-padded text key (`CAST` reads octal) |
+| CockroachDB | [references/python-drivers.md](references/python-drivers.md) | `fill.py postgres` (the rows from `generate_series`; the psql planner's `pg_temp` functions are refused), tested on v25.4: all six TPC workloads at SF 1 |
 | YugabyteDB | [references/postgres.md](references/postgres.md) | The Postgres planners through psql, `SRC=series`, tested on 2026.1 at SF 1 (TPC-B to TPC-DS; TPC-E in progress when this was written) |
 
 ## Gotchas
