@@ -337,12 +337,14 @@ podman run -d \
   -p 127.0.0.1:30010:5433 \
   -v $PWD/yb-data:/yb \
   docker.io/yugabytedb/yugabyte:latest \
-  bin/yugabyted start --base_dir=/yb --advertise_address=127.0.0.1 --background=false
+  bin/yugabyted start --base_dir=/yb --advertise_address=127.0.0.1 \
+    --tserver_flags=pgsql_proxy_bind_address=0.0.0.0:5433 --background=false
 podman exec -i jane-doe-yb-2025-dockerhub-host-local-812 bin/ysqlsh -h 127.0.0.1 -U yugabyte -c "SELECT 1"
 ```
 
 - `--background=false` keeps yugabyted in the foreground; without it the container exits.
 - `--advertise_address=127.0.0.1` is stored in the data directory. Pin it, so a copy of the directory still starts in another container with a different IP.
+- With loopback advertised, YSQL listens on `127.0.0.1` only, so the published port is refused: `pgsql_proxy_bind_address=0.0.0.0:5433` binds it to every interface (lfc-source-cloud-vm `references/engine-masters.md`, "YugabyteDB's start flags").
 - The data directory holds **symlinks** (`data/pg_data`, the log directories); anything that copies it must keep them.
 
 **Readiness:** about 15 s first start, about 6 s restart.
