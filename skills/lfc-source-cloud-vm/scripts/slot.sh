@@ -69,7 +69,7 @@ pw() { echo "Lfc1$(openssl rand -hex 12)"; }
 # service lfc_user connects to; DBNAME: the database a test uses (in the JSON); WAIT: seconds to answer after start;
 # VOLOPT: the data mount's options
 engine() {
-  SERVICE="" DBNAME="" WAIT=180 VOLOPT=Z RUNIP=()
+  SERVICE="" DBNAME="" WAIT=180 VOLOPT=Z
   case $1 in
     postgres) IMAGE=docker.io/library/postgres:16 MNT=/var/lib/postgresql/data CPORT=5432
               ARGS=(-c wal_level=logical -c max_replication_slots=10 -c max_wal_senders=10) RUNOPTS=(--shm-size 1g) ;;
@@ -95,11 +95,12 @@ engine() {
     # CockroachDB: one insecure node (no passwords: the stored one isn't checked); cache and SQL memory 2 GiB each
     cockroachdb) IMAGE=docker.io/cockroachdb/cockroach:v25.4.13 MNT=/cockroach/cockroach-data CPORT=26257 DBNAME=lfc
               ARGS=(start-single-node --insecure --cache=2GiB --max-sql-memory=2GiB) RUNOPTS=() ;;
-    # YugabyteDB: insecure yugabyted in the foreground; its data dir belongs to uid 10001 (set in up). YSQL binds its
-    # advertise address and nothing else, so up gives the container a static IP (10.88.200.<port - PORT_MIN + 10>) to
-    # advertise: the published port reaches that address; 127.0.0.1 is unreachable from outside
+    # YugabyteDB: insecure yugabyted in the foreground; its data dir belongs to uid 10001 (set in up). The advertise
+    # address is stored in the data (yb-master's current_masters), so every start of a copy must use the one the master
+    # was built with: 127.0.0.1, in every container. YSQL follows the advertise address to loopback only, so the
+    # published port (and ysqlsh on the container IP) needs pgsql_proxy_bind_address on all interfaces
     yugabytedb) IMAGE=docker.io/yugabytedb/yugabyte:2026.1.2.0-b137 MNT=/yb CPORT=5433 DBNAME=lfc WAIT=300
-              ARGS=(bin/yugabyted start --base_dir=/yb --advertise_address=127.0.0.1 --background=false) RUNOPTS=() ;;
+              ARGS=(bin/yugabyted start --base_dir=/yb --advertise_address=127.0.0.1 --tserver_flags=pgsql_proxy_bind_address=0.0.0.0:5433 --background=false) RUNOPTS=() ;;
     *) die "engine is postgres, mysql, sqlserver, oracle, mariadb, db2, informix, cockroachdb or yugabytedb: $1" ;;
   esac
 }
@@ -285,15 +286,11 @@ case $CMD in
         umask 022
       fi
       P=$(field "$M" port)
-      if [ "$E" = yugabytedb ]; then
-        YBIP=10.88.200.$((P - PORT_MIN + 10))
-        ARGS=(bin/yugabyted start --base_dir=/yb --advertise_address="$YBIP" --background=false) RUNIP=(--ip "$YBIP")
-      fi
       podman rm -f "$C" >/dev/null 2>&1 || true
       VOLS=(-v "$D:$MNT:$VOLOPT")
       [ "$E" = informix ] && VOLS+=(-v "$D/cfg:/opt/ibm/config:U,Z")
       podman run -d -q --name "$C" --label lfc-slot.owner="$OWNER" --label lfc-slot.name="$N" --label lfc.engine="$E" --label lfc.purpose=slot "${RUNOPTS[@]}" \
-        --env-file "$STATE/$OWNER/$N.env" -p "$P:$CPORT" "${RUNIP[@]}" "${VOLS[@]}" "$IMAGE" "${ARGS[@]}" >/dev/null 9>&-   # the container must not inherit the lock
+        --env-file "$STATE/$OWNER/$N.env" -p "$P:$CPORT" "${VOLS[@]}" "$IMAGE" "${ARGS[@]}" >/dev/null 9>&-   # the container must not inherit the lock
     fi
     # every up, started or already running: an up cut short (its ssh dropped during a first start) leaves a running
     # container without lfc_user, so the login runs again here (it's idempotent)
