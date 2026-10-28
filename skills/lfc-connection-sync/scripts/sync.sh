@@ -6,7 +6,8 @@
 #   give userProvidedServerCertificate (a CA PEM, verified): a pipeline created after TLS enforcement fails a MySQL
 #   connection with neither (INGESTION_GATEWAY_CONNECTION_ERROR.TLS_VALIDATION_FAILURE), and with both.
 #   password_file is a private file or keyring:<name> (lfc-source-setup scripts/pw.py).
-#   Prints one line per row: created | updated | FAILED <class>: <error>. The password is read from its file into a
+#   Prints one line per row: created | updated | FAILED <class>: <error>; after created/updated, keep-catalogs.sh's lines for the
+#   connection's foreign catalogs (RemoveAfter a month out). The password is read from its file into a
 #   private request body that's deleted right away; it never appears on a command line or in the output.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../../lfc-source-setup/scripts/pw.sh"   # pw/pw_check: a password file or keyring:<name>
@@ -31,5 +32,5 @@ while IFS= read -r line; do IFS=$'\x1f' read -r profile name type host port user
     databricks connections create --json @"$T/body.json" --profile "$profile" -o json > "$T/out" 2>&1
   fi
   rc=$?; rm -f "$T/body.json"
-  if [ $rc -eq 0 ]; then echo "$profile $name: $op"; else err=$(grep -m1 -i "error" "$T/out" | cut -c1-200); echo "$profile $name: FAILED $(class "$err"): $err"; fi
+  if [ $rc -eq 0 ]; then echo "$profile $name: $op"; bash "$(dirname "${BASH_SOURCE[0]}")/../../lfc-workspace-setup/scripts/keep-catalogs.sh" "$profile" --connection "$name" | sed 's/^/  /'; else err=$(grep -m1 -i "error" "$T/out" | cut -c1-200); echo "$profile $name: FAILED $(class "$err"): $err"; fi
 done < "$1"

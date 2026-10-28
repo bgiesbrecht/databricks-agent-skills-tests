@@ -51,6 +51,12 @@ databricks external-locations get __databricks_managed_storage_location --profil
 
 The workspace's default catalog (`databricks settings default-namespace get --profile $P -o json`, `.namespace.value`) can be a candidate, but check it: on one test workspace it was `system`, which pipelines can't write to (nor to `hive_metastore`). Otherwise create one with its own managed location, or use one the workspace's provisioning made for you (check `catalogs list` for catalogs where you have `ALL_PRIVILEGES`).
 
+Some workspaces delete a catalog on the date in its `RemoveAfter` tag, and give an untagged catalog a date a couple of weeks out. [`keep-catalogs.sh`](scripts/keep-catalogs.sh) sets the tag a month out (never earlier than it is) on the catalogs named and on the foreign catalogs of each `--connection`; `bin/run_batch.sh` runs it on `$LFC_CATALOG` and the env's connections, and `lfc-connection-sync` after each connection:
+
+```bash
+bash scripts/keep-catalogs.sh $P <catalog> --connection <connection>   # KEEP_UNTIL=YYYY-MM-DD for another date
+```
+
 ## 3. Access for everyone testing in the workspace
 
 Three separate grants, in this order: logging in (an assignment plus entitlements), seeing the catalog, using it.
