@@ -11,7 +11,7 @@ cat > "$T/bin/databricks" <<'EOF'
 case "$1 $2" in
   "catalogs list") [ -e "$FT/list-fails" ] && { echo "Error: invalid access token" >&2; exit 1; }; cat "$FT/list";;
   "entity-tag-assignments get") [ -e "$FT/tag.$4" ] || { echo "Error: not found" >&2; exit 1; }; printf '{"tag_value": "%s"}\n' "$(cat "$FT/tag.$4")";;
-  "entity-tag-assignments create") echo "create $3" >> "$FT/calls"; [ "$3" = denied ] && { echo "Error: PERMISSION_DENIED" >&2; exit 1; }; echo '{}';;
+  "entity-tag-assignments create") echo "create $3 ${*:4}" >> "$FT/calls"; [ "$3" = denied ] && { echo "Error: PERMISSION_DENIED" >&2; exit 1; }; echo '{}';;
   "entity-tag-assignments update") echo "update $4 $*" >> "$FT/calls"; echo '{}';;
   *) echo "unexpected: $*" >&2; exit 1;;
 esac
@@ -22,18 +22,20 @@ echo '[{"name": "m", "catalog_type": "MANAGED_CATALOG"}, {"name": "a-fc", "catal
        {"name": "b-fc", "catalog_type": "FOREIGN_CATALOG", "connection_name": "b"}]' > "$T/list"
 
 run --connection a
-ok "connection: only its foreign catalog" '[ "$(cat "$T/calls")" = "create a-fc" ] && [ $rc = 0 ]'
+ok "connection: only its foreign catalog" '[ "$(cut -d" " -f2 "$T/calls")" = a-fc ] && [ $rc = 0 ]'
 echo 2027-01-01 > "$T/tag.later"; echo 2026-12-01 > "$T/tag.same"; echo 2026-11-01 > "$T/tag.early"
 run later same
 ok "later or equal date: kept, no write" '[ ! -s "$T/calls" ] && [[ "$out" == *"kept    later RemoveAfter=2027-01-01"* ]] && [[ "$out" == *"kept    same"* ]]'
 run early
 ok "earlier date: updated" '[[ "$out" == "updated early RemoveAfter=2026-12-01 (was 2026-11-01)" ]] && grep -q "^update early .*2026-12-01" "$T/calls"'
 run fresh
-ok "no tag: set" '[[ "$out" == "set     fresh RemoveAfter=2026-12-01" ]] && [ "$(cat "$T/calls")" = "create fresh" ]'
+ok "no tag: set" '[[ "$out" == "set     fresh RemoveAfter=2026-12-01" ]] && grep -qx "create fresh RemoveAfter catalogs --tag-value 2026-12-01 --profile p -o json" "$T/calls"'
 run denied fresh
 ok "failed create: exit 1, the others still run" '[ $rc = 1 ] && [[ "$out" == *"failed  denied: Error: PERMISSION_DENIED"* ]] && [[ "$out" == *"set     fresh"* ]]'
 run --connection z
 ok "connection with no foreign catalog: none" '[ $rc = 0 ] && [ "$out" = "none    foreign catalogs of z" ]'
+echo '{"not": "a list"}' > "$T/list"; run --connection a
+ok "listing not a JSON list: failed, exit 1" '[ $rc = 1 ] && [[ "$out" == "failed  foreign catalogs of a: "* ]]'
 touch "$T/list-fails"; run --connection a fresh
 ok "failed catalogs list: exit 1, named catalogs still tagged" '[ $rc = 1 ] && [[ "$out" == *"failed  catalogs list: Error: invalid access token"* ]] && [[ "$out" == *"set     fresh"* ]]'
 exit $fail

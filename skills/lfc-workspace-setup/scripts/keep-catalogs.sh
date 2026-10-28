@@ -14,10 +14,12 @@ while [ $# -gt 0 ]; do case $1 in --connection) CONNS+=("${2:?--connection needs
 UNTIL=${KEEP_UNTIL:-$(date -v+1m +%Y-%m-%d 2>/dev/null || date -u -d '+1 month' +%Y-%m-%d)}
 bad=0
 if [ ${#CONNS[@]} -gt 0 ]; then
-  if ! all=$(databricks catalogs list --profile "$P" -o json 2>&1); then
-    echo "failed  catalogs list: $(echo "$all" | head -c 200 | tr '\n' ' ')"; bad=1; all='[]'; fi
+  E=$(mktemp); trap 'rm -f "${E:?}"' EXIT
+  if ! all=$(databricks catalogs list --profile "$P" -o json 2> "$E"); then
+    echo "failed  catalogs list: $(head -c 200 "$E" | tr '\n' ' ')"; bad=1; all='[]'; fi
   for c in "${CONNS[@]}"; do
-    found=$(echo "$all" | jq -r --arg c "$c" '.[] | select(.catalog_type == "FOREIGN_CATALOG" and .connection_name == $c) | .name')
+    if ! found=$(echo "$all" | jq -r --arg c "$c" '.[] | select(.catalog_type == "FOREIGN_CATALOG" and .connection_name == $c) | .name' 2> "$E"); then
+      echo "failed  foreign catalogs of $c: catalogs list isn't a JSON list ($(head -c 120 "$E" | tr '\n' ' '))"; bad=1; continue; fi
     [ -n "$found" ] || { [ $bad = 0 ] && echo "none    foreign catalogs of $c"; }
     while IFS= read -r n; do [ -n "$n" ] && CATS+=("$n"); done <<< "$found"
   done
