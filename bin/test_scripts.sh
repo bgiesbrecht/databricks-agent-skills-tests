@@ -48,6 +48,7 @@ check "python fill planner compiles" python3 -m py_compile "$DG/python/fill.py" 
 check "results/runs/*.jsonl valid, nothing internal" python3 "$SK/lfc-test-results/scripts/record.py" --check
 check "results/*.md: nothing internal" python3 -c "import sys, glob, re; sys.path.insert(0, '$SK/lfc-test-results/scripts'); import record; bad = [(f, w) for f in glob.glob('$R/results/*.md') for w in record.leaks({'text': open(f).read()})]; print(bad); sys.exit(bool(bad))"   # the same check as record.py's, version masking included
 check "recall.py runs" sh -c "python3 '$SK/lfc-test-results/scripts/recall.py' > /dev/null"
+check "secret-handling scripts on a fake secret" sh -c "'$SK/secret-handling/scripts/test-secret-scripts.sh' > /dev/null"
 export WANT="10.0.0.0/24 10.9.0.0/24" HAVE="10.0.0.0/16"
 check "q.sh missing.sql" sh -c "'$SK/shell-json-scripting/scripts/q.sh' '$SK/lfc-source-firewall/scripts/missing.sql' | grep -qE \"^MISSING='?10.9.0.0/24'?$\""
 check "q.py missing.sql" sh -c "uv run -q '$SK/shell-json-scripting/scripts/q.py' '$SK/lfc-source-firewall/scripts/missing.sql' | grep -qE \"^MISSING='?10.9.0.0/24'?$\""
