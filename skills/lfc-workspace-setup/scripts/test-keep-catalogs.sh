@@ -27,7 +27,10 @@ echo 2027-01-01 > "$T/tag.later"; echo 2026-12-01 > "$T/tag.same"; echo 2026-11-
 run later same
 ok "later or equal date: kept, no write" '[ ! -s "$T/calls" ] && [[ "$out" == *"kept    later RemoveAfter=2027-01-01"* ]] && [[ "$out" == *"kept    same"* ]]'
 run early
-ok "earlier date: updated" '[[ "$out" == "updated early RemoveAfter=2026-12-01 (was 2026-11-01)" ]] && grep -q "^update early .*2026-12-01" "$T/calls"'
+ok "earlier date: updated" '[[ "$out" == "updated early RemoveAfter=2026-12-01 (was 2026-11-01)" ]] && grep -q "^update early .*entity-tag-assignments update catalogs early RemoveAfter .*2026-12-01" "$T/calls"'
+echo 2026-11-01 > "$T/tag.a"; run --connection a
+ok "connection with an earlier date: updated" '[[ "$out" == *"updated connection a RemoveAfter=2026-12-01 (was 2026-11-01)"* ]] && grep -q "^update a .*entity-tag-assignments update connections a RemoveAfter" "$T/calls"'
+rm "$T/tag.a"
 run fresh
 ok "no tag: set" '[[ "$out" == "set     fresh RemoveAfter=2026-12-01" ]] && grep -qx "create fresh RemoveAfter catalogs --tag-value 2026-12-01 --profile p -o json" "$T/calls"'
 run denied fresh
