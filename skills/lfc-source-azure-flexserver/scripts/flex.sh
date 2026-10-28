@@ -3,7 +3,7 @@
 #   up for Lakeflow Connect query-based and CDC.
 #   Needs RG, LOCATION, SERVER (globally unique), DB. Optional: SUBSCRIPTION (else az's default), SKU (Standard_B1ms),
 #   TIER (Burstable), STORAGE_GB (32), VERSION (pg 16, mysql 8.0.21), OWNER ($USER).
-#   create also needs ADMIN_PW_FILE (a private file with the lfcadmin password).
+#   create also needs ADMIN_PW_FILE (a private file, or keyring:<name>, with the lfcadmin password).
 #   create: the server with public access and no firewall rules (closed until lfc-source-firewall's server-fw.py adds
 #   the same list as every other source), the database, and the parameters CDC needs, then a restart if one changed:
 #     pg     wal_level=logical, max_replication_slots>=10, max_wal_senders>=10
@@ -12,6 +12,7 @@
 #   TLS stays required (require_secure_transport); the UC connection uses TLS.
 #   stop/start: a stopped server costs storage only; Azure starts it again by itself after 7 days.
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/../../lfc-source-setup/scripts/pw.sh"   # pw/pw_check: a password file or keyring:<name>
 E=${1:?pg|mysql}; CMD=${2:?plan|create|status|stop|start|delete}
 : "${RG:?}" "${SERVER:?}" "${DB:?}"
 # public access with no firewall rules: postgres calls that Enabled (its None turns public access off); mysql None
@@ -30,10 +31,10 @@ plan|create)
   echo "server   $SERVER $S $V ${TIER:-Burstable} ${SKU:-Standard_B1ms} ${STORAGE_GB:-32} GB ($LOCATION), public access, no firewall rules $(srv >/dev/null && echo '(exists)' || echo '(new)')"
   echo "database $DB"
   [ "$CMD" = plan ] && exit 0
-  : "${ADMIN_PW_FILE:?}"; [ -r "$ADMIN_PW_FILE" ] || { echo "can't read $ADMIN_PW_FILE"; exit 2; }
+  : "${ADMIN_PW_FILE:?}"; pw_check "$ADMIN_PW_FILE" || exit 2
   if ! srv >/dev/null; then
     # az takes the password only as a flag: it's in this machine's process list while the command runs
-    az $S flexible-server create "${A[@]}" -n "$SERVER" -l "$LOCATION" --admin-user lfcadmin --admin-password "$(cat "$ADMIN_PW_FILE")" \
+    az $S flexible-server create "${A[@]}" -n "$SERVER" -l "$LOCATION" --admin-user lfcadmin --admin-password "$(pw "$ADMIN_PW_FILE")" \
       --tier "${TIER:-Burstable}" --sku-name "${SKU:-Standard_B1ms}" --storage-size "${STORAGE_GB:-32}" --version "$V" \
       --public-access "$PUBLIC" --tags owner="${OWNER:-$USER}" purpose=lfc-test created="$(date -u +%Y-%m-%d)" --yes -o none
   fi

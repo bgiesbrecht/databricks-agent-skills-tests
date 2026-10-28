@@ -117,6 +117,7 @@ line of its usage. Run a script with no arguments for its full usage instead of 
 ## lfc-source-setup
 
 - `skills/lfc-source-setup/scripts/check-tools.sh` [all|base|local|aws|azure|gcp|clients]: which of the lfc-source-* skills' tools are installed, their versions, and th...
+- `skills/lfc-source-setup/scripts/pw.py` test-database passwords in the OS keyring (macOS Keychain, Windows Credential Manager, Linux Secret Service) instead ...
 
 ## lfc-source-sizing
 
