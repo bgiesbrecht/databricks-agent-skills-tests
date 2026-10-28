@@ -20,6 +20,7 @@ ws-azure	janedoe-pg-azvm	POSTGRESQL	203.0.113.10	30002	lfc_user	~/.lfc-test/src/
 ws-aws	janedoe-pg-azvm	POSTGRESQL	203.0.113.10	30002	lfc_user	~/.lfc-test/src/pg.lfc.pw
 ws-aws	janedoe-mssql-azvm	SQLSERVER	203.0.113.10	30003	lfc_user	~/.lfc-test/src/mssql.lfc.pw	{"trustServerCertificate": "true"}
 ws-aws	janedoe-ora-azvm	ORACLE	203.0.113.10	30004	C##LFC_USER	~/.lfc-test/src/ora.lfc.pw	{"service_name": "FREE"}
+ws-aws	janedoe-my-azvm	MYSQL	203.0.113.10	30005	lfc_user	keyring:my-lfc
 ```
 
 Use the default names (`<firstname><lastname>-<engine>-<target>`, **lfc-source-setup** "Names") so a connection's name says which source it reaches, whatever the workspace.

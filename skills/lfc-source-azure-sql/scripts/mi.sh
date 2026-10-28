@@ -5,7 +5,7 @@
 #   Optional: TENANT_ID (checked against the login),
 #   LOCATION (the VNet's), SUBNET (<VNET>-mi-subnet), SUBNET_CIDR (10.10.200.0/27; /27 or larger, unused in the VNet),
 #   VCORES (4), STORAGE_GB (32), PRICING (Freemium: the free offer, one per subscription; else Regular), OWNER ($USER).
-#   create also needs ADMIN_PW_FILE (a private file with the sqladmin password).
+#   create also needs ADMIN_PW_FILE (a private file, or keyring:<name>, with the sqladmin password).
 #   plan: read-only, says what create would make. create: the subnet's NSG (<SUBNET>-nsg) and route table
 #   (<SUBNET>-rt, 0.0.0.0/0 to Internet), the subnet delegated to Microsoft.Sql/managedInstances, then the instance with
 #   the public data endpoint (port 3342) on; returns at once. The NSG starts with no rule for 3342, so nothing outside
@@ -14,6 +14,7 @@
 #   endpoint: prints <name>.public.<dns zone>.database.windows.net,3342. stop/start: pause and resume compute (General
 #   Purpose). delete: the instance only (the subnet stays until Azure removes its virtual cluster, which takes hours).
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/../../lfc-source-setup/scripts/pw.sh"   # pw/pw_check: a password file or keyring:<name>
 CMD=${1:?plan|create|wait|status|endpoint|stop|start|delete}
 : "${RG:?}" "${VNET:?}" "${MI_NAME:?}"
 SUBNET=${SUBNET:-$VNET-mi-subnet}; SUBNET_CIDR=${SUBNET_CIDR:-10.10.200.0/27}
@@ -47,7 +48,7 @@ plan|create)
   echo "route      $RT 0.0.0.0/0 -> Internet $(az network route-table show "${A[@]}" -n "$RT" -o none 2>/dev/null && echo '(exists)' || echo '(new)')"
   echo "instance   $MI_NAME GP_Gen5 ${VCORES:-4} vCores, ${STORAGE_GB:-32} GB, pricing ${PRICING:-Regular}, public data endpoint 3342 $(mi >/dev/null && echo '(exists)' || echo '(new)')"
   [ "$CMD" = plan ] && exit 0
-  : "${ADMIN_PW_FILE:?}"; [ -r "$ADMIN_PW_FILE" ] || { echo "can't read $ADMIN_PW_FILE"; exit 2; }
+  : "${ADMIN_PW_FILE:?}"; pw_check "$ADMIN_PW_FILE" || exit 2
   TAGS=(owner="${OWNER:-$USER}" purpose=lfc-test created="$(date -u +%Y-%m-%d)")
   az network nsg show "${A[@]}" -n "$NSG" -o none 2>/dev/null || az network nsg create "${A[@]}" -n "$NSG" -l "$LOCATION" --tags "${TAGS[@]}" -o none
   if ! az network route-table show "${A[@]}" -n "$RT" -o none 2>/dev/null; then
@@ -63,7 +64,7 @@ plan|create)
   if mi >/dev/null; then echo "instance $MI_NAME exists: mi.sh wait"; exit 0; fi
   SID=$(az network vnet subnet show "${A[@]}" --vnet-name "$VNET" -n "$SUBNET" --query id -o tsv)
   # az takes the password only as a flag: it's in this machine's process list while the command runs
-  az sql mi create "${A[@]}" -n "$MI_NAME" -l "$LOCATION" --subnet "$SID" --admin-user sqladmin --admin-password "$(cat "$ADMIN_PW_FILE")" \
+  az sql mi create "${A[@]}" -n "$MI_NAME" -l "$LOCATION" --subnet "$SID" --admin-user sqladmin --admin-password "$(pw "$ADMIN_PW_FILE")" \
     --edition GeneralPurpose --family Gen5 --capacity "${VCORES:-4}" --storage "${STORAGE_GB:-32}GB" --license-type LicenseIncluded \
     --public-data-endpoint-enabled true --minimal-tls-version 1.2 --backup-storage-redundancy Local \
     ${PRICING:+--pricing-model "$PRICING"} --tags "${TAGS[@]}" --no-wait -o none

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # lfc-setup.sh pg|mysql: the test user and seed tables on an Azure Database for PostgreSQL or MySQL Flexible Server
 #   (after flex.sh create set the CDC parameters).
-#   Needs HOST (the server's FQDN), DB, ADMIN_PW_FILE (lfcadmin's password), LOGIN_PW_FILE (a private file with the test
+#   Needs HOST (the server's FQDN), DB, ADMIN_PW_FILE (lfcadmin's password), LOGIN_PW_FILE (a private file, or keyring:<name>, with the test
 #   user's password). Optional: LOGIN (lfc_user), SCHEMA (pg: public). Needs psql / mysql; passwords go through
 #   PGPASSWORD / MYSQL_PWD, never the command line. TLS is required by the server, and used; psql checks the server's
 #   certificate and name against PG_CA (default /etc/ssl/cert.pem, the OS bundle: a ~/.postgresql/root.crt kept for
@@ -12,17 +12,18 @@
 #          the same two tables with dt ON UPDATE CURRENT_TIMESTAMP; 10 rows each
 #   Idempotent: rerun after a fix. Ends by reading the row counts as the test user.
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/../../lfc-source-setup/scripts/pw.sh"   # pw/pw_check: a password file or keyring:<name>
 E=${1:?pg|mysql}
 : "${HOST:?}" "${DB:?}" "${ADMIN_PW_FILE:?}" "${LOGIN_PW_FILE:?}"
 LOGIN=${LOGIN:-lfc_user}
-for f in "$ADMIN_PW_FILE" "$LOGIN_PW_FILE"; do [ -r "$f" ] || { echo "can't read $f"; exit 2; }; done
+for f in "$ADMIN_PW_FILE" "$LOGIN_PW_FILE"; do pw_check "$f" || exit 2; done
 T=$(mktemp -d); trap 'rm -rf "${T:?}"' EXIT; umask 077
-LPW=$(sed "s/'/''/g" "$LOGIN_PW_FILE")
+LPW=$(pw "$LOGIN_PW_FILE" | sed "s/'/''/g")
 case $E in
 pg)
   SC=${SCHEMA:-public}
   TLS="sslmode=verify-full sslrootcert=${PG_CA:-/etc/ssl/cert.pem}"
-  ad() { PGPASSWORD="$(cat "$ADMIN_PW_FILE")" psql "host=$HOST port=5432 dbname=$DB user=lfcadmin $TLS" -v ON_ERROR_STOP=1 -qAt "$@"; }
+  ad() { PGPASSWORD="$(pw "$ADMIN_PW_FILE")" psql "host=$HOST port=5432 dbname=$DB user=lfcadmin $TLS" -v ON_ERROR_STOP=1 -qAt "$@"; }
   cat > "$T/s.sql" <<EOF
 DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$LOGIN') THEN CREATE ROLE $LOGIN LOGIN; END IF; END \$\$;
 ALTER ROLE $LOGIN WITH LOGIN REPLICATION PASSWORD '$LPW';
@@ -45,10 +46,10 @@ ALTER TABLE $SC.intpk OWNER TO $LOGIN; ALTER TABLE $SC.dtix OWNER TO $LOGIN; ALT
 EOF
   ad -f "$T/s.sql" > "$T/out" || { tail -5 "$T/out"; exit 2; }
   ad -c "SHOW wal_level" | sed 's/^/wal_level /'
-  PGPASSWORD="$(cat "$LOGIN_PW_FILE")" psql "host=$HOST port=5432 dbname=$DB user=$LOGIN $TLS" -qAt \
+  PGPASSWORD="$(pw "$LOGIN_PW_FILE")" psql "host=$HOST port=5432 dbname=$DB user=$LOGIN $TLS" -qAt \
     -c "SELECT '$LOGIN reads ' || (SELECT count(*) FROM $SC.intpk) || ' + ' || (SELECT count(*) FROM $SC.dtix) || ' rows; replication ' || rolreplication FROM pg_roles WHERE rolname = current_user" ;;
 mysql)
-  ad() { MYSQL_PWD="$(cat "$ADMIN_PW_FILE")" mysql -h "$HOST" -u lfcadmin --ssl-mode=REQUIRED -N "$@"; }
+  ad() { MYSQL_PWD="$(pw "$ADMIN_PW_FILE")" mysql -h "$HOST" -u lfcadmin --ssl-mode=REQUIRED -N "$@"; }
   cat > "$T/s.sql" <<EOF
 CREATE DATABASE IF NOT EXISTS \`$DB\`;
 CREATE USER IF NOT EXISTS '$LOGIN'@'%' IDENTIFIED WITH caching_sha2_password BY '$LPW';
@@ -64,7 +65,7 @@ INSERT INTO dtix (pk) SELECT ROW_NUMBER() OVER () FROM (SELECT 1 FROM informatio
 EOF
   ad < "$T/s.sql" > "$T/out" 2>&1 || { tail -5 "$T/out"; exit 2; }
   ad -e "SELECT CONCAT('binlog_row_image ', @@binlog_row_image, ', expire ', @@binlog_expire_logs_seconds, ' s, invisible pk ', @@sql_generate_invisible_primary_key)"
-  MYSQL_PWD="$(cat "$LOGIN_PW_FILE")" mysql -h "$HOST" -u "$LOGIN" --ssl-mode=REQUIRED -N "$DB" \
+  MYSQL_PWD="$(pw "$LOGIN_PW_FILE")" mysql -h "$HOST" -u "$LOGIN" --ssl-mode=REQUIRED -N "$DB" \
     -e "SELECT CONCAT('$LOGIN reads ', (SELECT COUNT(*) FROM intpk), ' + ', (SELECT COUNT(*) FROM dtix), ' rows')" ;;
 *) echo "pg or mysql"; exit 2 ;;
 esac

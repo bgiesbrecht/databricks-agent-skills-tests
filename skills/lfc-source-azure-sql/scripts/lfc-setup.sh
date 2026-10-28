@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # lfc-setup.sh: the test login, seed tables, and change tracking + CDC on an Azure SQL Database or Managed Instance.
 #   Needs HOST (SQL Database: <server>.database.windows.net; MI: mi.sh endpoint's host), DB, ADMIN_PW_FILE (sqladmin's
-#   password), LOGIN_PW_FILE (a private file with the test login's password). Optional: PORT (1433; MI 3342), LOGIN
+#   password), LOGIN_PW_FILE (a private file, or keyring:<name>, with the test login's password). Optional: PORT (1433; MI 3342), LOGIN
 #   (lfc_user), SCHEMA (dbo). Needs sqlcmd (go-sqlcmd); passwords go through SQLCMDPASSWORD, never the command line.
 #   go-sqlcmd doesn't read a batch from standard input: each batch is a private file passed with -i.
 #   Steps: the login and a user for it in master (the utility's server-scoped grants need one); the database (MI only:
@@ -9,13 +9,14 @@
 #   (no key) with 10 rows each; the Lakeflow utility objects from the docs; change tracking on intpk, CDC on dtix,
 #   lakeflowFixPermissions; then db_owner is dropped again. Idempotent: rerun after a fix.
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/../../lfc-source-setup/scripts/pw.sh"   # pw/pw_check: a password file or keyring:<name>
 : "${HOST:?}" "${DB:?}" "${ADMIN_PW_FILE:?}" "${LOGIN_PW_FILE:?}"
 PORT=${PORT:-1433}; LOGIN=${LOGIN:-lfc_user}; SC=${SCHEMA:-dbo}
-for f in "$ADMIN_PW_FILE" "$LOGIN_PW_FILE"; do [ -r "$f" ] || { echo "can't read $f"; exit 2; }; done
+for f in "$ADMIN_PW_FILE" "$LOGIN_PW_FILE"; do pw_check "$f" || exit 2; done
 T=$(mktemp -d); trap 'rm -rf "${T:?}"' EXIT; umask 077
-sq() { SQLCMDPASSWORD="$(cat "$ADMIN_PW_FILE")" sqlcmd -S "$HOST,$PORT" -U sqladmin -d "$1" -C -l 60 -b -h -1 -W "${@:2}"; }
+sq() { SQLCMDPASSWORD="$(pw "$ADMIN_PW_FILE")" sqlcmd -S "$HOST,$PORT" -U sqladmin -d "$1" -C -l 60 -b -h -1 -W "${@:2}"; }
 # the login's password goes into a private batch file, not onto the command line
-LPW=$(sed "s/'/''/g" "$LOGIN_PW_FILE")
+LPW=$(pw "$LOGIN_PW_FILE" | sed "s/'/''/g")
 cat > "$T/master.sql" <<EOF
 IF NOT EXISTS (SELECT 1 FROM sys.sql_logins WHERE name = N'$LOGIN') CREATE LOGIN [$LOGIN] WITH PASSWORD = N'$LPW';
 ELSE ALTER LOGIN [$LOGIN] WITH PASSWORD = N'$LPW';
@@ -60,5 +61,5 @@ EOF
 sq "$DB" -i "$T/setup.sql" > "$T/setup.out" || { tail -8 "$T/setup.out"; exit 2; }
 grep -E '⚠|Error|Msg [0-9]' "$T/setup.out" | head -5 || true
 sq "$DB" -Q "SET NOCOUNT ON; SELECT 'ct ' + STRING_AGG(OBJECT_NAME(object_id), ',') FROM sys.change_tracking_tables; SELECT 'cdc ' + STRING_AGG(name, ',') FROM sys.tables WHERE is_tracked_by_cdc = 1"
-SQLCMDPASSWORD="$(cat "$LOGIN_PW_FILE")" sqlcmd -S "$HOST,$PORT" -U "$LOGIN" -d "$DB" -C -l 60 -b -h -1 -W \
+SQLCMDPASSWORD="$(pw "$LOGIN_PW_FILE")" sqlcmd -S "$HOST,$PORT" -U "$LOGIN" -d "$DB" -C -l 60 -b -h -1 -W \
   -Q "SET NOCOUNT ON; SELECT '$LOGIN reads ' + CAST((SELECT COUNT(*) FROM [$SC].intpk) AS varchar) + ' + ' + CAST((SELECT COUNT(*) FROM [$SC].dtix) AS varchar) + ' rows'"
