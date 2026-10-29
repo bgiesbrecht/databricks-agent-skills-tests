@@ -63,6 +63,9 @@ def main():
                 while r.status.state in (StatementState.PENDING, StatementState.RUNNING):
                     time.sleep(0.1)
                     r = w.statement_execution.get_statement(r.statement_id)
+                if r.status.state != StatementState.SUCCEEDED:                # a bad --path or a stopped warehouse: say so
+                    err = r.status.error.message if r.status.error else r.status.state.value
+                    raise RuntimeError(f"statement {r.status.state.value}: {err}")
                 v = r.result.data_array[0][0] if r.result and r.result.data_array else None
                 ms = float(v) if v is not None else None
             except Exception as e:

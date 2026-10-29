@@ -1,10 +1,10 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["databricks-zerobus-ingest-sdk>=1.10.0"]
+# dependencies = ["databricks-zerobus-ingest-sdk>=1.10.0", "confluent-kafka>=2.5"]
 # ///
 """producer.py --endpoint <host> --workspace-url <url> --table <catalog.schema.table> --client-id <id> (--secret-file F | --secret-env VAR) [options]:
-write simulated tag observations to a Delta table through Zerobus Ingest (Python SDK, JSON records), at a steady rate with an optional burst.
+write simulated tag observations to a Delta table through Zerobus Ingest (Python SDK, JSON records), and optionally the same events to a Kafka topic, at a steady rate with an optional burst.
 
   --endpoint        the Zerobus endpoint: <workspace-id>.zerobus.<region>.<cloud domain>
   --workspace-url   https://<workspace host>
@@ -19,6 +19,14 @@ write simulated tag observations to a Delta table through Zerobus Ingest (Python
                     multiply the rate by --burst-x from minute M for --burst-minutes (no --burst-at: no burst)
   --dup-rate 0.001  share of events sent twice with the same event_id (at-least-once delivery upstream)
   --out run.json    sent counts, errors, and the run and burst windows (epoch seconds) for report.py
+
+  Kafka fan-out (optional): the same events, at the same moments, to a Kafka topic as JSON keyed by asset_id
+  --kafka-bootstrap host:port   e.g. <namespace>.servicebus.windows.net:9093 for Event Hubs; SASL_SSL, PLAIN
+  --kafka-topic T               the topic (an event hub)
+  --kafka-user U                the SASL user; for Event Hubs the literal $ConnectionString
+  --kafka-password-file F       a 0600 file with the SASL password (Event Hubs: the connection string); or
+                                --kafka-password-env VAR
+  --no-zerobus                  Kafka only; the Zerobus options aren't needed then
 
 Every event carries producer_time, the moment it was handed to the SDK, in epoch microseconds (Zerobus JSON takes
 TIMESTAMP columns as microseconds). freshness_probe.py and report.py measure from that column.
@@ -89,6 +97,7 @@ class Stats(AckCallback):
     def __init__(self):
         super().__init__()
         self.lock, self.sent, self.acks, self.errors, self.reconnects, self.last_send = threading.Lock(), 0, 0, 0, 0, None
+        self.kafka_sent, self.kafka_errors = 0, 0
 
     def on_ack(self, offset):
         with self.lock:
@@ -108,7 +117,13 @@ def quality(r):
 def main():
     p = argparse.ArgumentParser(usage=__doc__.split("\n")[0])
     for a in ("--endpoint", "--workspace-url", "--table", "--client-id"):
-        p.add_argument(a, required=True)
+        p.add_argument(a)
+    p.add_argument("--no-zerobus", action="store_true")
+    p.add_argument("--kafka-bootstrap")
+    p.add_argument("--kafka-topic")
+    p.add_argument("--kafka-user")
+    p.add_argument("--kafka-password-file")
+    p.add_argument("--kafka-password-env")
     p.add_argument("--secret-file")
     p.add_argument("--secret-env")
     p.add_argument("--assets", type=int, default=200)
@@ -126,18 +141,41 @@ def main():
         print(__doc__)
         return
     a = p.parse_args()
-    if a.secret_file:
-        secret = Path(a.secret_file).read_text().strip()
-    elif a.secret_env:
-        secret = os.environ.get(a.secret_env, "")
-    else:
-        sys.exit("--secret-file or --secret-env is required")
-    if not secret:
-        sys.exit("the OAuth secret is empty")
+    use_zb, use_kafka = not a.no_zerobus, bool(a.kafka_bootstrap)
+    if not (use_zb or use_kafka):
+        sys.exit("--no-zerobus needs --kafka-bootstrap")
+    if use_zb:
+        missing = [o for o in ("endpoint", "workspace_url", "table", "client_id") if not getattr(a, o)]
+        if missing:
+            sys.exit("missing " + ", ".join("--" + m.replace("_", "-") for m in missing))
+        secret = (Path(a.secret_file).read_text().strip() if a.secret_file
+                  else os.environ.get(a.secret_env, "") if a.secret_env else sys.exit("--secret-file or --secret-env is required"))
+        if not secret:
+            sys.exit("the OAuth secret is empty")
+    if use_kafka:
+        if not (a.kafka_topic and a.kafka_user):
+            sys.exit("--kafka-bootstrap needs --kafka-topic and --kafka-user")
+        kpw = (Path(a.kafka_password_file).read_text().strip() if a.kafka_password_file
+               else os.environ.get(a.kafka_password_env, "") if a.kafka_password_env else "")
+        if not kpw:
+            sys.exit("--kafka-password-file or --kafka-password-env is required, and not empty")
 
-    sdk, stats, stop = ZerobusSdk(a.endpoint, a.workspace_url), Stats(), threading.Event()
-    opts = StreamConfigurationOptions(record_type=RecordType.JSON, ack_callback=stats)
-    open_stream = lambda: sdk.create_stream(a.client_id, secret, TableProperties(a.table), opts)
+    stats, stop = Stats(), threading.Event()
+    if use_zb:
+        sdk = ZerobusSdk(a.endpoint, a.workspace_url)
+        opts = StreamConfigurationOptions(record_type=RecordType.JSON, ack_callback=stats)
+        open_stream = lambda: sdk.create_stream(a.client_id, secret, TableProperties(a.table), opts)
+
+    def open_kafka():
+        from confluent_kafka import Producer                          # only needed with --kafka-bootstrap
+        return Producer({"bootstrap.servers": a.kafka_bootstrap, "security.protocol": "SASL_SSL", "sasl.mechanism": "PLAIN",
+                         "sasl.username": a.kafka_user, "sasl.password": kpw, "linger.ms": 5, "batch.size": 262144,
+                         "acks": "1", "client.id": a.producer_id})
+
+    def on_delivery(err, _msg):
+        if err:
+            with stats.lock:
+                stats.kafka_errors += 1
     tags = tag_defs(a.tags)
     rng = random.Random(42)
     assets = [Asset(i, tags, random.Random(rng.random())) for i in range(a.assets)]
@@ -149,7 +187,9 @@ def main():
         return a.burst_x if burst and burst[0] <= now < burst[1] else 1.0
 
     def worker(idx, group):
-        stream, r, slices = open_stream(), random.Random(idx), [group[i::10] for i in range(min(10, len(group)))]
+        stream = open_stream() if use_zb else None
+        kafka = open_kafka() if use_kafka else None
+        r, slices = random.Random(idx), [group[i::10] for i in range(min(10, len(group)))]
         next_t = time.monotonic()
         try:
             while not stop.is_set() and time.time() < deadline:
@@ -166,21 +206,33 @@ def main():
                                           "system": system, "measurement": meas, "unit": unit, "eng_low": lo,
                                           "eng_high": hi, "producer_id": f"{a.producer_id}-{idx}"})
                     batch.extend([e for e in batch if r.random() < a.dup_rate])
-                    try:
-                        stream.ingest_records_nowait(batch)
-                    except NonRetriableException:
-                        raise
-                    except Exception as e:                                    # the SDK has retried; reopen, replay unacked
-                        print(f"stream {idx} failed ({e}); reopening", file=sys.stderr, flush=True)
-                        pending = list(stream.get_unacked_records())
+                    if stream is not None:
                         try:
-                            stream.close()
-                        except Exception:
-                            pass
-                        stream = open_stream()
+                            stream.ingest_records_nowait(batch)
+                        except NonRetriableException:
+                            raise
+                        except Exception as e:                                # the SDK has retried; reopen, replay unacked
+                            print(f"stream {idx} failed ({e}); reopening", file=sys.stderr, flush=True)
+                            pending = list(stream.get_unacked_records())
+                            try:
+                                stream.close()
+                            except Exception:
+                                pass
+                            stream = open_stream()
+                            with stats.lock:
+                                stats.reconnects += 1
+                            stream.ingest_records_nowait(pending + batch)
+                    if kafka is not None:
+                        for e in batch:
+                            while True:
+                                try:
+                                    kafka.produce(a.kafka_topic, key=e["asset_id"], value=json.dumps(e), on_delivery=on_delivery)
+                                    break
+                                except BufferError:                           # the local queue is full: let it drain
+                                    kafka.poll(0.05)
+                        kafka.poll(0)
                         with stats.lock:
-                            stats.reconnects += 1
-                        stream.ingest_records_nowait(pending + batch)
+                            stats.kafka_sent += len(batch)
                     with stats.lock:
                         stats.sent += len(batch)
                         stats.last_send = time.time()
@@ -191,8 +243,15 @@ def main():
                     elif delay < -5 * period:
                         next_t = time.monotonic()                             # far behind: don't try to catch up
         finally:
-            stream.flush()
-            stream.close()
+            if kafka is not None:
+                left = kafka.flush(60)                                        # still queued: never delivered
+                if left:
+                    print(f"stream {idx}: {left} Kafka messages not delivered", file=sys.stderr, flush=True)
+                    with stats.lock:
+                        stats.kafka_errors += left
+            if stream is not None:
+                stream.flush()
+                stream.close()
 
     groups = [assets[i::a.streams] for i in range(a.streams)]
     threads = [threading.Thread(target=worker, args=(i, g), daemon=True) for i, g in enumerate(groups) if g]
@@ -205,22 +264,26 @@ def main():
         while any(t.is_alive() for t in threads):
             time.sleep(10)
             with stats.lock:
-                s, e, rc = stats.sent, stats.errors, stats.reconnects
+                s, e, rc, ke = stats.sent, stats.errors, stats.reconnects, stats.kafka_errors
             now = time.time()
-            print(f"[{now - t0:5.0f}s] sent={s:,} rate={(s - last) / (now - last_t):,.0f}/s errors={e} reconnects={rc}", flush=True)
+            print(f"[{now - t0:5.0f}s] sent={s:,} rate={(s - last) / (now - last_t):,.0f}/s errors={e} reconnects={rc}"
+                  + (f" kafka_errors={ke}" if use_kafka else ""), flush=True)
             last, last_t = s, now
     finally:
         stop.set()
         for t in threads:
             t.join(timeout=120)
     t1 = stats.last_send or time.time()                                    # the last send, not when the threads exited
-    out = {"table": a.table, "start": t0, "end": t1, "burst": burst, "sent": stats.sent, "errors": stats.errors,
+    out = {"table": a.table if use_zb else None, "kafka_topic": a.kafka_topic if use_kafka else None,
+           "start": t0, "end": t1, "burst": burst, "sent": stats.sent, "errors": stats.errors,
+           "kafka_sent": stats.kafka_sent if use_kafka else None, "kafka_errors": stats.kafka_errors if use_kafka else None,
            "reconnects": stats.reconnects, "streams": a.streams, "assets": a.assets, "tags": a.tags, "hz": a.hz,
            "burst_x": a.burst_x if burst else None, "dup_rate": a.dup_rate}
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out).write_text(json.dumps(out, indent=1))
-    print(f"done: sent={stats.sent:,} in {t1 - t0:,.0f} s, errors={stats.errors}, reconnects={stats.reconnects}; wrote {a.out}")
-    if stats.errors:                                   # no sys.exit(0): a Databricks Python task counts any SystemExit as a failure
+    print(f"done: sent={stats.sent:,} in {t1 - t0:,.0f} s, errors={stats.errors}, reconnects={stats.reconnects}"
+          + (f", kafka_errors={stats.kafka_errors}" if use_kafka else "") + f"; wrote {a.out}")
+    if stats.errors or stats.kafka_errors:                                   # no sys.exit(0): a Databricks Python task counts any SystemExit as a failure
         sys.exit(1)
 
 

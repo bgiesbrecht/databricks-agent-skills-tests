@@ -28,3 +28,10 @@ Volume. 200 assets x 15 tags x 1 Hz over 2 streams for 2 minutes, no probe.
 | 1 | 360,629 | 25, 5 s apart | failed: the script ended with `sys.exit(0)`, which a Python task counts as a failure |
 | 2, after the fix | 357,623 | 24, 5 s apart | SUCCESS |
 
+
+## Kafka fan-out
+
+`producer.py --no-zerobus --kafka-bootstrap ...` against a bootstrap address with nothing listening, 5 assets for 12 s:
+901 events queued, none delivered. The first version counted them as sent with 0 errors, because the 60 s flush timed
+out silently; now the messages still queued after the flush count as Kafka errors (901) and the run exits 1. A
+Zerobus-only run after the change: 8,707 sent = landed. Not yet run against a live broker.

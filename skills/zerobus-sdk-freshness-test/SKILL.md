@@ -13,7 +13,7 @@ and the question of how soon each one can be queried in Delta.
 | Script | Does |
 |---|---|
 | [`scripts/table.sql`](scripts/table.sql) | The target table: a managed Delta table with the producer's columns |
-| [`scripts/producer.py`](scripts/producer.py) | Sends `assets x tags x hz` events/s through N Zerobus streams for M minutes, with an optional burst (`--burst-at`, `--burst-minutes`, `--burst-x`) and duplicates (`--dup-rate`). Writes `run.json`: rows sent, errors, run and burst windows |
+| [`scripts/producer.py`](scripts/producer.py) | Sends `assets x tags x hz` events/s through N Zerobus streams for M minutes, with an optional burst (`--burst-at`, `--burst-minutes`, `--burst-x`) and duplicates (`--dup-rate`). With `--kafka-*`, the same events at the same moments to a Kafka topic too (`--no-zerobus`: Kafka only), for comparing a Kafka path on identical events. Writes `run.json`: rows sent, errors, run and burst windows |
 | [`scripts/freshness_probe.py`](scripts/freshness_probe.py) | Every `--interval` s on each `--path` (warehouse + table + time column), in parallel: `current_timestamp()` minus the newest event time from the last 2 minutes, in ms. Writes `probe.json` |
 | [`scripts/report.py`](scripts/report.py) | For one run: sent vs landed, per-second rate (median, peak, burst mean) from the data, the commits in `DESCRIBE HISTORY` (operations, write interval), and freshness per path for the run and before, during and after the burst. `--json` gives the metrics for a record |
 
@@ -99,6 +99,7 @@ One record per producer run (`test: load`):
 |---|---|---|
 | Error 4024 or a permission error when the stream opens | The grants are inherited, not on the table | `zerobus-workspace-setup` `grant.sh --apply` |
 | The producer's rate is below the target during a burst | The host's CPU, or the SDK waiting on in-flight records | A larger host, more processes or streams, or a lower `--burst-x`; record the rate reached |
+| `Kafka messages not delivered` and exit 1 | The broker refused or never answered: bootstrap, port 9093, SASL user or password | Check them; messages still queued after the 60 s flush count as errors |
 | Every probe sample is null | No event in the last 2 minutes: the producer hasn't started, has stopped, or writes another table | Check `--path`'s table and column |
 
 ## Tested
@@ -106,4 +107,4 @@ One record per producer run (`test: load`):
 Runs and their write-ups: `recall.py --test load --all`, and `results/2026-10-13-zerobus-sdk-steady.md`,
 `results/2026-10-22-zerobus-sdk-burst.md` and `results/2026-10-29-zerobus-sdk-burst.md`. Those runs used earlier
 versions of these scripts (a notebook producer with the same event shape, and a commit monitor). The scripts as
-committed here: `results/2026-10-29-zerobus-sdk-scripts.md` (a 2-minute laptop run with a burst, and the job path).
+committed here: `results/2026-10-29-zerobus-sdk-scripts.md` (a 2-minute laptop run with a burst, and the job path; the Kafka fan-out only against a broker that doesn't exist).
