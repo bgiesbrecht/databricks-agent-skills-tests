@@ -13,7 +13,7 @@ Prints FAIL and WARN lines and exits 1 on any FAIL:
         text cut off or in the generator's "Use $<skill> for ..." form (hand-write it); a skill script with no test
         in the repo's tests/ that names the skill
 
-  python3 skills/public-skill-conventions/scripts/conventions-check.py ../databricks-agent-skills/skills databricks-lakeflow-connect --base upstream/main
+  python3 .claude/skills/public-skill-conventions/scripts/conventions-check.py ../databricks-agent-skills/skills databricks-lakeflow-connect --base upstream/main
 """
 from __future__ import annotations
 

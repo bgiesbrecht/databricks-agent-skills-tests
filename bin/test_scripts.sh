@@ -27,8 +27,10 @@ if [ -n "$B32" ]; then
   for f in $(find "$SK" "$R/bin" -name '*.sh'); do check "bash 3.2 -n ${f#$R/}" "$B32" -n "$f"; done
 fi
 check "links in every skill" python3 "$R/bin/check_links.py" "$SK"
+check "links in the contributor skills" python3 "$R/bin/check_links.py" "$R/.claude/skills"
 check "script rules: headers, SKILL.md size, rm guards, first-argument flags, jq for one value" python3 "$R/bin/lint_scripts.py"
 check "lint rule bash32 on fixed bad and good lines" python3 -m unittest -q "$R/bin/test_lint_bash32.py"
+check "results dir: checkout, LFC_TESTS_RESULTS, an installed plugin copy" python3 -m unittest -q "$R/bin/test_results_dir.py"
 check "SCRIPTS.md is current" python3 "$R/bin/scripts_index.py" --check
 for w in tpcb tpcc tpch tpcdi tpcds tpce; do
   check "shape.py $w" sh -c "uv run -q '$SS/shape.py' '$SK/lfc-source-statschema/schemas/$w.yaml' --sf 0.1 --expected '$T/$w.exp.json' > '$T/$w.yaml'"
@@ -57,7 +59,7 @@ check "recall.py runs" sh -c "python3 '$SK/lfc-test-results/scripts/recall.py' >
 check "secret-handling scripts on a fake secret" sh -c "'$SK/secret-handling/scripts/test-secret-scripts.sh' > /dev/null"
 check "keep-catalogs.sh on a fake CLI" sh -c "'$SK/lfc-workspace-setup/scripts/test-keep-catalogs.sh' > /dev/null"
 check "slot.sh limits and --park on a fake podman" sh -c "'$SK/lfc-source-cloud-vm/scripts/test-slot-limits.sh' > /dev/null"
-check "moved-lines.py on a throwaway repo" sh -c "'$SK/public-skill-conventions/scripts/test-moved-lines.sh' > /dev/null"
+check "moved-lines.py on a throwaway repo" sh -c "'$R/.claude/skills/public-skill-conventions/scripts/test-moved-lines.sh' > /dev/null"
 check "ws-token.sh: TO (perl alarm timeout)" sh -c "'$SK/account-token-fallback/scripts/test-ws-token.sh' > /dev/null"
 export WANT="10.0.0.0/24 10.9.0.0/24" HAVE="10.0.0.0/16"
 check "q.sh missing.sql" sh -c "'$SK/shell-json-scripting/scripts/q.sh' '$SK/lfc-source-firewall/scripts/missing.sql' | grep -qE \"^MISSING='?10.9.0.0/24'?$\""

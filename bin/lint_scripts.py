@@ -115,7 +115,7 @@ def words(text: str) -> list[str]:
 def first_arg_flags() -> dict[str, set[str]]:
     """{script name: flags it reads only as $1}: the script tests "${1:-}" (or "$1") against --flag."""
     out: dict[str, set[str]] = {}
-    for f in files("skills/*.sh", "bin/*.sh"):
+    for f in files("skills/*.sh", ".claude/skills/*.sh", "bin/*.sh"):
         flags = set(re.findall(r'\[\s*"\$\{?1(?::-)?\}?"\s*=\s*(--[\w-]+)\s*\]', f.read_text()))
         if flags and not re.search(r'case\s+"?\$\{?1', f.read_text()):
             out[f.name] = flags
@@ -146,7 +146,7 @@ def bash32(f: Path, rel) -> list[str]:
 def main() -> int:
     problems: list[str] = []
     rel = lambda p: str(p.relative_to(R)) if p.is_relative_to(R) else str(p)   # noqa: E731
-    for f in files("skills/*/SKILL.md"):
+    for f in files("skills/*/SKILL.md", ".claude/skills/*/SKILL.md"):
         t = f.read_text()
         if len(t) > MAX_CHARS or t.count("\n") > MAX_LINES:
             problems.append(f"{rel(f)}:1 size: {len(t):,} chars, {t.count(chr(10))} lines (max {MAX_CHARS:,}, {MAX_LINES}): "
@@ -154,19 +154,19 @@ def main() -> int:
     if "--sizes-only" in sys.argv:
         print("\n".join(problems))
         return 1 if problems else 0
-    for f in files("skills/*.sh", "bin/*.sh", "skills/*.py", "bin/*.py"):
+    for f in files("skills/*.sh", ".claude/skills/*.sh", "bin/*.sh", "skills/*.py", ".claude/skills/*.py", "bin/*.py"):
         head = f.read_text(errors="replace").splitlines()[:15]
         if head and head[0].startswith("#!") and not any(f.name in h for h in head):
             problems.append(f"{rel(f)}:1 header: no usage line naming {f.name} in the first 15 lines")
-    for f in files("skills/*.sh", "bin/*.sh"):
+    for f in files("skills/*.sh", ".claude/skills/*.sh", "bin/*.sh"):
         problems += bash32(f, rel)
     with tempfile.TemporaryDirectory() as tmp:
         where: dict[Path, tuple[Path, int]] = {}
-        for k, md in enumerate(files("skills/*.md", "skills/**/*.md", "*.md")):
+        for k, md in enumerate(files("skills/*.md", "skills/**/*.md", ".claude/skills/**/*.md", "*.md")):
             d = Path(tmp) / str(k)
             d.mkdir()
             where.update(md_blocks(md, d))
-        cmds = commands(files("skills/*.sh", "bin/*.sh") + list(where), where)
+        cmds = commands(files("skills/*.sh", ".claude/skills/*.sh", "bin/*.sh") + list(where), where)
     first = first_arg_flags()
     for src, line, text in cmds:
         w = words(text)

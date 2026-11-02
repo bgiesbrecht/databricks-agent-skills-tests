@@ -13,10 +13,9 @@ both repos' current commits when it's missing. Refuses the whole batch if any re
 like it holds something internal (the repo is public).
 """
 import json, re, subprocess, sys
-from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[3]                 # skills/lfc-test-results/scripts/record.py
-RUNS = REPO / "results" / "runs"                         # one <run>.jsonl per run
+from results_dir import REPO, read_dirs, show, write_dir, plugin_version
+RUNS = write_dir("runs")                                 # one <run>.jsonl per run (results_dir.py: checkout or plugin)
 SKILLS_REPO = REPO.parent / "databricks-agent-skills"
 
 REQUIRED = {"date", "run", "test", "subject", "outcome", "result"}
@@ -100,7 +99,7 @@ def head(path):
     except Exception: return None
 
 def load_all():
-    files = sorted(RUNS.glob("*.jsonl")) if RUNS.exists() else []
+    files = [f for d in read_dirs("runs") if d.exists() for f in sorted(d.glob("*.jsonl"))]
     return [(f, r) for f in files for r in load(f.read_text())]
 
 def load(text):
@@ -115,7 +114,7 @@ def main():
         if wrong: print(f"records in the wrong file (file name must be the run): {sorted(set(wrong))}", file=sys.stderr); sys.exit(1)
     else:
         recs = load(sys.stdin.read())
-        auto = {k: v for k, v in {"databricks-agent-skills": head(SKILLS_REPO), "databricks-agent-skills-tests": head(REPO)}.items() if v}
+        auto = {k: v for k, v in {"databricks-agent-skills": head(SKILLS_REPO), "databricks-agent-skills-tests": head(REPO) or (plugin_version() and f"plugin {plugin_version()}")}.items() if v}
         for r in recs:
             if isinstance(r, dict) and "skills" not in r and auto: r["skills"] = auto
     bad = [(i, p) for i, r in enumerate(recs) for p in problems(r)]
@@ -133,7 +132,7 @@ def main():
         with path.open("a") as f:
             for r in recs:
                 if r["run"] == run: f.write(json.dumps(r, separators=(",", ":")) + "\n")
-        print(f"appended {sum(r['run'] == run for r in recs)} records to {path.relative_to(REPO)}")
+        print(f"appended {sum(r['run'] == run for r in recs)} records to {show(path)}")
 
 if __name__ == "__main__":
     main()

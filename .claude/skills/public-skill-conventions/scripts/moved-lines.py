@@ -12,7 +12,7 @@ purpose. Exits 1 if any term is gone.
   --links  also the lines in other skills that name <skill>: after a split, check each still points to the skill
            that now owns its topic.
 
-  python3 skills/public-skill-conventions/scripts/moved-lines.py ../databricks-agent-skills/skills databricks-lakeflow-connect --base upstream/main
+  python3 .claude/skills/public-skill-conventions/scripts/moved-lines.py ../databricks-agent-skills/skills databricks-lakeflow-connect --base upstream/main
 """
 from __future__ import annotations
 
