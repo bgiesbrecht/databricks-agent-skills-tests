@@ -149,7 +149,7 @@ LFC requires:
 - Replication settings (binlog/WAL/CT/CDC) per engine
 - Optional audit tables
 
-**See the Lakeflow Connect reference guide (2-database-connectors.md) for engine-specific configuration details.** The guides cover binlog setup (MySQL/MariaDB), logical replication (PostgreSQL), change tracking (SQL Server), and read-only user setup for query-based connectors (Oracle, Db2, Informix, MongoDB).
+**See `references/2-database-connectors.md` in the public `databricks-lakeflow-connect` skill (the databricks plugin) for engine-specific configuration details.** The guides cover binlog setup (MySQL/MariaDB), logical replication (PostgreSQL), change tracking (SQL Server), and read-only user setup for query-based connectors (Oracle, Db2, Informix, MongoDB).
 
 **Podman-specific notes:**
 
