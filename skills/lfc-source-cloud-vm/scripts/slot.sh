@@ -13,6 +13,8 @@
 #                                             Prints one JSON line: name, engine, host, port, user, password, container,
 #                                             state, and service (oracle: the PDB lfc_user lives in) and database (the
 #                                             database a test uses, where the engine has one)
+#                                             A database cloned from a master gets a new admin password at its first start
+#                                             (its env file and the database's admin account; cockroachdb, yugabytedb: insecure, none)
 #   park <name>                               stop it; the data stays on JuiceFS
 #   clone <name> <new name>                   copy your database <name> to a new parked database <new name> (up starts
 #                                             it, with its own port and lfc_user password). JuiceFS: juicefs clone;
@@ -167,17 +169,110 @@ ready() {
   fi
   probe "$2" | PROBE_TIMEOUT=30 sql "$1" "$2" >/dev/null 2>&1
 }
+# informix_os <container> <env file>: the Informix admin's OS password (user informix) from its env file
+informix_os() { sed -n 's/^INFORMIX_PASSWORD=//p' "$2" | sed 's/^/informix:/' | podman exec -i -u root "$1" chpasswd; }
 # prep <engine> <container> <password> <env file>: what a start needs before lfc_user's login: OS users (Db2, Informix),
 # the Informix admin's OS password from its env file, the Informix test database. Every start runs it again (idempotent)
 prep() {
   case $1 in
     db2) printf 'lfc_user:%s\n' "$3" | podman exec -i -u root "$2" sh -c 'read l; id -u lfc_user >/dev/null 2>&1 || useradd -m lfc_user; echo "$l" | chpasswd' ;;
     informix)   # the container's default user is informix: the OS accounts need root
-      sed -n 's/^INFORMIX_PASSWORD=//p' "$4" | sed 's/^/informix:/' | podman exec -i -u root "$2" chpasswd || return 1
+      informix_os "$2" "$4" || return 1
       printf 'lfc_user:%s\n' "$3" | podman exec -i -u root "$2" sh -c 'read l; id -u lfc_user >/dev/null 2>&1 || useradd -m lfc_user; echo "$l" | chpasswd' || return 1
       [ "$(echo "SELECT name FROM sysmaster:sysdatabases WHERE name = 'lfcdb';" | sql "$2" "$1" 2>/dev/null | grep -c lfcdb)" -gt 0 ] \
         || echo "CREATE DATABASE lfcdb WITH LOG;" | sql "$2" "$1" >/dev/null 2>&1 ;;   # dbaccess's messages stay off the JSON line
   esac
+}
+# admin_key <engine>: the env file's key for the admin password (empty: insecure, no password)
+admin_key() {
+  case $1 in
+    postgres) echo POSTGRES_PASSWORD ;; mysql) echo MYSQL_ROOT_PASSWORD ;; mariadb) echo MARIADB_ROOT_PASSWORD ;;
+    sqlserver) echo MSSQL_SA_PASSWORD ;; oracle) echo ORACLE_PASSWORD ;; db2) echo DB2INST1_PASSWORD ;; informix) echo INFORMIX_PASSWORD ;;
+    *) echo "" ;;
+  esac
+}
+# rotate_change <engine> <container> <old> <new>: the admin's password changed inside the database. The old one logs in first,
+# from stdin (never on a command line): Postgres and MySQL over TCP, SQL Server with SQLCMDPASSWORD, Oracle as SYS, Db2 as the
+# instance owner's connect, Informix's OS password checked by unix_chkpwd (the image must have it)
+rotate_change() {
+  local e=$1 c=$2 old=$3 new=$4 cli h hosts out sep
+  case $e in
+    postgres) { printf '%s\n' "$old"; printf "ALTER USER postgres WITH PASSWORD '%s';\n" "$new"; } \
+      | podman exec -i "$c" sh -c 'read -r p; PGPASSWORD=$p exec psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -q' >/dev/null || return 1 ;;
+    mysql|mariadb) cli=mysql; [ "$e" = mariadb ] && cli=mariadb
+      # every root account gets the password (the image makes root@% and root@localhost, or only one of them), in one
+      # statement, so a failure leaves no account with the new one
+      hosts=$({ printf '%s\n' "$old"; echo "SELECT host FROM mysql.user WHERE user = 'root';"; } \
+        | podman exec -i "$c" sh -c "read -r p; MYSQL_PWD=\$p exec $cli -h127.0.0.1 -uroot -N -B") || return 1
+      [ -n "$hosts" ] || return 1
+      { printf '%s\n' "$old"; printf 'ALTER USER'; sep=' '; for h in $hosts; do printf "%s'root'@'%s' IDENTIFIED BY '%s'" "$sep" "$h" "$new"; sep=', '; done; echo ';'; } \
+        | podman exec -i "$c" sh -c "read -r p; MYSQL_PWD=\$p exec $cli -h127.0.0.1 -uroot" >/dev/null || return 1 ;;
+    sqlserver) { printf '%s\n' "$old"; printf "ALTER LOGIN sa WITH PASSWORD = N'%s';\n" "$new"; } \
+      | podman exec -i "$c" sh -c 'read -r p; f=$(mktemp); cat > $f; SQLCMDPASSWORD=$p /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -b -i $f; r=$?; rm -f $f; exit $r' >/dev/null || return 1 ;;
+    oracle) out=$({ printf 'whenever sqlerror exit failure\nCONNECT sys/"%s"@//localhost:1521/FREE AS SYSDBA\n' "$old"
+              printf 'ALTER USER sys IDENTIFIED BY "%s";\nALTER USER system IDENTIFIED BY "%s";\nexit\n' "$new" "$new"; } \
+      | podman exec -i "$c" sqlplus -s -L /nolog 2>&1) || return 1
+            # whenever sqlerror misses a failed CONNECT (an SQL*Plus command) and the "not connected" errors after it
+            case $out in *ORA-*|*SP2-*) return 1 ;; esac ;;
+    db2) printf '%s\n' "$old" | podman exec -i "$c" bash -c 'read -r p; f=$(mktemp); printf "connect to LFCDB user db2inst1 using %s;\n" "$p" > $f; chown db2inst1 $f; su - db2inst1 -c "db2 -x -t -s -f $f" >/dev/null 2>&1; r=$?; rm -f $f; exit $r' || return 1
+         printf 'db2inst1:%s\n' "$new" | podman exec -i -u root "$c" sh -c 'read -r l; echo "$l" | chpasswd' >/dev/null || return 1 ;;
+    # prep() re-applies INFORMIX_PASSWORD from the database's own env file at every start (up applies it before this check too), so a re-created container gets the new value back
+    informix) printf '%s\0' "$old" | podman exec -i -u root "$c" unix_chkpwd informix nullok >/dev/null || return 1
+              printf 'informix:%s\n' "$new" | podman exec -i -u root "$c" chpasswd >/dev/null || return 1 ;;
+    *) return 1 ;;
+  esac
+}
+# rotate_admin <engine> <container> <env file>: the clone's admin password becomes a new one. The new value is prepared in a
+# file beside the env file first; the env file is replaced only after the change succeeded. Returns 1 when the change failed:
+# the marker stays, so the next up tries again. The tried value is kept as <env file>.pending and is never replaced by another:
+# Oracle changes sys and then system, so a failure after the first leaves sys with it. A retry tries that same value again,
+# logging in with the old password or, when the database already has the pending one, with that.
+rotate_admin() {
+  local e=$1 c=$2 f=$3 k old new t pend=$3.pending
+  k=$(admin_key "$e"); [ -n "$k" ] || return 0
+  old=$(sed -n "s/^$k=//p" "$f" | head -1); [ -n "$old" ] || return 1
+  new=$(sed -n "s/^$k=//p" "$pend" 2>/dev/null | head -1); [ -n "$new" ] || new=$(pw)
+  t=$(mktemp "$f.XXXXXX") || return 1
+  if ! sed "s|^$k=.*|$k=$new|" "$f" > "$t" || ! chmod 600 "$t"; then rm -f "$t"; return 1; fi
+  if ! rotate_change "$e" "$c" "$old" "$new" && ! { [ -e "$pend" ] && rotate_change "$e" "$c" "$new" "$new"; }; then
+    if [ -e "$pend" ]; then rm -f "$t"; else mv -f "$t" "$pend" 2>/dev/null || rm -f "$t"; fi
+    [ ! -e "$pend" ] || echo "slot: if part of the change went through, the tried admin password is in $pend" >&2
+    return 1
+  fi
+  mv -f "$t" "$f" || { echo "slot: the new admin password is in $t: move it over $f" >&2; return 1; }
+  rm -f "$pend"
+  return 0
+}
+# the container from the record and the env file: every start, so the env file's current values apply (P: the port)
+start_db() {
+  podman rm -f "$C" >/dev/null 2>&1 || true
+  VOLS=(-v "$D:$MNT:$VOLOPT")
+  [ "$E" = informix ] && VOLS+=(-v "$D/cfg:/opt/ibm/config:U,Z")
+  podman run -d -q --name "$C" --label lfc-slot.owner="$OWNER" --label lfc-slot.name="$N" --label lfc.engine="$E" --label lfc.purpose=slot "${RUNOPTS[@]}" \
+    --env-file "$STATE/$OWNER/$N.env" -p "$P:$CPORT" "${VOLS[@]}" "$IMAGE" "${ARGS[@]}" >/dev/null 9>&-   # the container must not inherit the lock
+}
+# wait until the engine answers (WAIT seconds); it stopped, or didn't answer in time: say so and stop
+await_db() {
+  local deadline=$((SECONDS + WAIT))   # wall time: a probe that hangs counts against the wait (each probe gives up after 30 s)
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    ready "$C" "$E" && return 0
+    [ "$(podman inspect -f '{{.State.Running}}' "$C" 2>/dev/null)" = true ] || die "$E in $C stopped: podman logs $C"
+    sleep 2
+  done
+  ready "$C" "$E" || die "$E in $C didn't answer in $((WAIT / 60)) minutes: podman logs $C"
+}
+# the first start of a database cloned from a master (or a clone of one): its admin password changes once, here. The engines
+# whose admin helpers read the container's env (MYSQL_ROOT_PASSWORD, MARIADB_ROOT_PASSWORD, MSSQL_SA_PASSWORD) and Db2 (its
+# image reads DB2INST1_PASSWORD at start) get the container started again from the new env file, as every later start does.
+rotate_now() {
+  local mk=$STATE/$OWNER/$N.rotate
+  if [ -z "$(admin_key "$E")" ]; then rm -f "$mk"; echo "slot: $E is insecure: no admin password to change" >&2; return 0; fi
+  if rotate_admin "$E" "$C" "$STATE/$OWNER/$N.env"; then
+    rm -f "$mk"; echo "slot: $N: its admin password is a new one (the master's is no longer valid for it)" >&2
+    case $E in mysql|mariadb|sqlserver|db2) start_db; await_db ;; esac
+  else
+    echo "slot: $N: its admin password is still the master's (the change failed): up again to retry" >&2
+  fi
 }
 login_sql() {   # engine, password: the Lakeflow Connect login with replication rights; databases and CDC are per test
   local p=${2//\'/\'\'}
@@ -293,6 +388,7 @@ case $CMD in
           [ -f "$SECRETS/$E.env" ] || die "no admin env $SECRETS/$E.env for the $E masters"
           fs_clone "$ROOT/masters/$FROM" "$D"
           cp "$SECRETS/$E.env" "$STATE/$OWNER/$N.env"
+          : > "$STATE/$OWNER/$N.rotate"   # the admin password is the master's: rotate_now changes it at the first start
         else
           install -d "$D"
           [ "$E" = sqlserver ] && chown 10001:0 "$D"   # SQL Server runs as mssql (uid 10001)
@@ -317,21 +413,16 @@ case $CMD in
         umask 022
       fi
       P=$(field "$M" port)
-      podman rm -f "$C" >/dev/null 2>&1 || true
-      VOLS=(-v "$D:$MNT:$VOLOPT")
-      [ "$E" = informix ] && VOLS+=(-v "$D/cfg:/opt/ibm/config:U,Z")
-      podman run -d -q --name "$C" --label lfc-slot.owner="$OWNER" --label lfc-slot.name="$N" --label lfc.engine="$E" --label lfc.purpose=slot "${RUNOPTS[@]}" \
-        --env-file "$STATE/$OWNER/$N.env" -p "$P:$CPORT" "${VOLS[@]}" "$IMAGE" "${ARGS[@]}" >/dev/null 9>&-   # the container must not inherit the lock
+      start_db
     fi
     # every up, started or already running: an up cut short (its ssh dropped during a first start) leaves a running
     # container without lfc_user, so the login runs again here (it's idempotent)
-    deadline=$((SECONDS + WAIT))   # wall time: a probe that hangs counts against the wait (each probe gives up after 30 s)
-    while [ "$SECONDS" -lt "$deadline" ]; do
-      ready "$C" "$E" && break
-      [ "$(podman inspect -f '{{.State.Running}}' "$C" 2>/dev/null)" = true ] || die "$E in $C stopped: podman logs $C"
-      sleep 2
-    done
-    ready "$C" "$E" || die "$E in $C didn't answer in $((WAIT / 60)) minutes: podman logs $C"
+    P=$(field "$M" port)
+    await_db
+    if [ -f "$STATE/$OWNER/$N.rotate" ]; then   # the change's check reads the OS password the env file gives (Informix: prep sets it after)
+      [ "$E" != informix ] || informix_os "$C" "$STATE/$OWNER/$N.env" || { podman rm -f "$C" >/dev/null 2>&1; die "the Informix admin's OS password in $C failed; run up again"; }
+      rotate_now
+    fi
     prep "$E" "$C" "$(cat "$STATE/$OWNER/$N.login")" "$STATE/$OWNER/$N.env" || { podman rm -f "$C" >/dev/null 2>&1; die "preparing $E in $C failed; run up again"; }
     # a failed login stops the container, so the next up tries again instead of resuming without lfc_user
     login_sql "$E" "$(cat "$STATE/$OWNER/$N.login")" | sql "$C" "$E" >/dev/null || { podman rm -f "$C" >/dev/null 2>&1; die "creating lfc_user in $C failed; run up again"; }
@@ -358,6 +449,7 @@ case $CMD in
     umask 077
     fs_clone "$D" "$DT"
     cp "$STATE/$OWNER/$N.env" "$STATE/$OWNER/$T.env"   # the admin password is inside the copied data
+    : > "$STATE/$OWNER/$T.rotate"                      # ... and the clone gets a new one at its first start (rotate_now)
     pw > "$STATE/$OWNER/$T.login"                      # up sets lfc_user's password to it
     PT=$(free_port)
     jq --arg p "$PT" --arg c "$(now)" --arg f "clone:$N" '.port = ($p | tonumber) | .created = $c | .from = $f' "$M" > "$MT"
@@ -375,7 +467,7 @@ case $CMD in
     running "$OWNER" "$N" && park_one "$OWNER" "$N"
     D=$ROOT/dbs/$OWNER/$N
     if [ -d "$D" ]; then juicefs rmr "$D" >/dev/null 2>&1 || rm -rf "${D:?}"; fi
-    rm -f "$M" "$STATE/$OWNER/$N.env" "$STATE/$OWNER/$N.login"
+    rm -f "$M" "$STATE/$OWNER/$N.env" "$STATE/$OWNER/$N.env.pending" "$STATE/$OWNER/$N.login" "$STATE/$OWNER/$N.rotate"
     log "$N" rm; echo "removed $N" ;;
 
   limits)
