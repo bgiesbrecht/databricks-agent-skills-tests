@@ -61,6 +61,8 @@ check "keep-catalogs.sh on a fake CLI" sh -c "'$SK/lfc-workspace-setup/scripts/t
 check "slot.sh limits and --park on a fake podman" sh -c "'$SK/lfc-source-cloud-vm/scripts/test-slot-limits.sh' > /dev/null"
 check "moved-lines.py on a throwaway repo" sh -c "'$R/.claude/skills/public-skill-conventions/scripts/test-moved-lines.sh' > /dev/null"
 check "ws-token.sh: TO (perl alarm timeout)" sh -c "'$SK/account-token-fallback/scripts/test-ws-token.sh' > /dev/null"
+check "options-first: ranking, pick, check, index" sh -c "'$SK/options-first/scripts/test-options.sh' > /dev/null"
+check "options-first: every options.yaml in the skills is valid" sh -c "files=\$(find '$SK' -name options.yaml); [ -z \"\$files\" ] || uv run -q '$SK/options-first/scripts/options.py' check \$files"
 export WANT="10.0.0.0/24 10.9.0.0/24" HAVE="10.0.0.0/16"
 check "q.sh missing.sql" sh -c "'$SK/shell-json-scripting/scripts/q.sh' '$SK/lfc-source-firewall/scripts/missing.sql' | grep -qE \"^MISSING='?10.9.0.0/24'?$\""
 check "q.py missing.sql" sh -c "uv run -q '$SK/shell-json-scripting/scripts/q.py' '$SK/lfc-source-firewall/scripts/missing.sql' | grep -qE \"^MISSING='?10.9.0.0/24'?$\""
