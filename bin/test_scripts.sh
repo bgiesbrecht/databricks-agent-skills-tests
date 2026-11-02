@@ -30,6 +30,7 @@ check "links in every skill" python3 "$R/bin/check_links.py" "$SK"
 check "links in the contributor skills" python3 "$R/bin/check_links.py" "$R/.claude/skills"
 check "script rules: headers, SKILL.md size, rm guards, first-argument flags, jq for one value" python3 "$R/bin/lint_scripts.py"
 check "lint rule bash32 on fixed bad and good lines" python3 -m unittest -q "$R/bin/test_lint_bash32.py"
+check "results dir: checkout, LFC_TESTS_RESULTS, an installed plugin copy" python3 -m unittest -q "$R/bin/test_results_dir.py"
 check "SCRIPTS.md is current" python3 "$R/bin/scripts_index.py" --check
 for w in tpcb tpcc tpch tpcdi tpcds tpce; do
   check "shape.py $w" sh -c "uv run -q '$SS/shape.py' '$SK/lfc-source-statschema/schemas/$w.yaml' --sf 0.1 --expected '$T/$w.exp.json' > '$T/$w.yaml'"
