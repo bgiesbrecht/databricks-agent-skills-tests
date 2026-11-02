@@ -224,21 +224,23 @@ rotate_change() {
 }
 # rotate_admin <engine> <container> <env file>: the clone's admin password becomes a new one. The new value is prepared in a
 # file beside the env file first; the env file is replaced only after the change succeeded. Returns 1 when the change failed:
-# the marker stays, so the next up tries again. The tried value is kept as <env file>.pending, never deleted: Oracle changes
-# sys and then system, so a failure after the first leaves one of them with it.
+# the marker stays, so the next up tries again. The tried value is kept as <env file>.pending and is never replaced by another:
+# Oracle changes sys and then system, so a failure after the first leaves sys with it. A retry tries that same value again,
+# logging in with the old password or, when the database already has the pending one, with that.
 rotate_admin() {
-  local e=$1 c=$2 f=$3 k old new t
+  local e=$1 c=$2 f=$3 k old new t pend=$3.pending
   k=$(admin_key "$e"); [ -n "$k" ] || return 0
   old=$(sed -n "s/^$k=//p" "$f" | head -1); [ -n "$old" ] || return 1
-  new=$(pw); t=$(mktemp "$f.XXXXXX") || return 1
+  new=$(sed -n "s/^$k=//p" "$pend" 2>/dev/null | head -1); [ -n "$new" ] || new=$(pw)
+  t=$(mktemp "$f.XXXXXX") || return 1
   if ! sed "s|^$k=.*|$k=$new|" "$f" > "$t" || ! chmod 600 "$t"; then rm -f "$t"; return 1; fi
-  if ! rotate_change "$e" "$c" "$old" "$new"; then
-    mv -f "$t" "$f.pending" 2>/dev/null || rm -f "$t"
-    [ ! -e "$f.pending" ] || echo "slot: if part of the change went through, the tried admin password is in $f.pending" >&2
+  if ! rotate_change "$e" "$c" "$old" "$new" && ! { [ -e "$pend" ] && rotate_change "$e" "$c" "$new" "$new"; }; then
+    if [ -e "$pend" ]; then rm -f "$t"; else mv -f "$t" "$pend" 2>/dev/null || rm -f "$t"; fi
+    [ ! -e "$pend" ] || echo "slot: if part of the change went through, the tried admin password is in $pend" >&2
     return 1
   fi
   mv -f "$t" "$f" || { echo "slot: the new admin password is in $t: move it over $f" >&2; return 1; }
-  rm -f "$f.pending"
+  rm -f "$pend"
   return 0
 }
 # the container from the record and the env file: every start, so the env file's current values apply (P: the port)

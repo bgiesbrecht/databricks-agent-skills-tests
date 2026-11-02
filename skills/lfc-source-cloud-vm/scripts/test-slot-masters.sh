@@ -200,7 +200,8 @@ ok "a full setup with a SAS file others can read: stops before the first step, r
 # start). Each engine's change is checked the way slot.sh's rotate_change sends it: the old password from the stdin the
 # command reads (Oracle's CONNECT, Informix's NUL-terminated unix_chkpwd input, Db2's connect file, MYSQL_PWD for the client
 # the engine names); the new one is recorded from the ALTER or chpasswd that carries it. The admin helpers that read the
-# container's env check it. FT_FAIL=1 fails every ALTER; FT_ORA_NOCONNECT=1 makes Oracle's CONNECT fail with exit 0. Logins are logged as auth-ok in $FT/calls, with every call.
+# container's env check it. FT_FAIL=1 fails every ALTER; FT_ORA_NOCONNECT=1 makes Oracle's CONNECT fail with exit 0;
+# FT_ORA_PARTIAL=1 changes sys and then fails system's ALTER. Logins are logged as auth-ok in $FT/calls, with every call.
 cat > "$T/fp/bin/podman" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >> "$FT/calls"
@@ -264,6 +265,8 @@ case $1 in
             new=$(sed -n 's/^ALTER USER sys IDENTIFIED BY "\([^"]*\)";$/\1/p' "$in")
             [ -n "$new" ] && [ "$new" = "$(sed -n 's/^ALTER USER system IDENTIFIED BY "\([^"]*\)";$/\1/p' "$in")" ] \
               || bad "sys and system: no new password, or two different ones"
+            # FT_ORA_PARTIAL=1: sys gets the new password, then system's ALTER fails
+            [ -z "${FT_ORA_PARTIAL:-}" ] || { echo "$new" > "$FT/db/$n"; bad "ORA-28003: system's ALTER failed (test)"; }
             setpw "$new" ;;
           # Informix: unix_chkpwd reads the old OS password of informix, NUL-terminated; chpasswd sets the new one
           'unix_chkpwd informix nullok') [ "$(tail -c1 "$in" | od -An -tx1 | tr -d ' \n')" = 00 ] || bad "unix_chkpwd input isn't NUL-terminated"
@@ -392,6 +395,15 @@ ok "oracle: a failed CONNECT with exit 0 is a failed change: the env stays the m
 : > "$T/fp/calls"; slot up oracle ora2 > /dev/null 2>&1; rc=$?
 ok "oracle: the next up changes it, and the .pending file goes" \
   '[ $rc = 0 ] && [ ! -e "$ST/ora2.rotate" ] && [ ! -e "$ST/ora2.env.pending" ] && [ "$(env_of "$ST/ora2.env" ORACLE_PASSWORD)" = "$(cat "$T/fp/db/lfc-slot-alice-ora2")" ]'
+
+# Oracle: sys changed, then system's ALTER failed: the database has the tried value; the retry must use it, not a new one
+: > "$T/fp/calls"; FT_ORA_PARTIAL=1 slot up oracle ora3 --from orm > /dev/null 2>"$T/ora3.err"; rc=$?
+p3=$(env_of "$ST/ora3.env.pending" ORACLE_PASSWORD)
+ok "oracle partial change: the tried value is kept as .pending, and it's the one sys has now" \
+  '[ $rc = 0 ] && [ -n "$p3" ] && [ "$p3" = "$(cat "$T/fp/db/lfc-slot-alice-ora3")" ] && [ -e "$ST/ora3.rotate" ]'
+: > "$T/fp/calls"; slot up oracle ora3 > /dev/null 2>"$T/ora3b.err"; rc=$?
+ok "oracle partial change: the next up logs in with the pending value, finishes it, and the env file gets it" \
+  '[ $rc = 0 ] && [ ! -e "$ST/ora3.rotate" ] && [ ! -e "$ST/ora3.env.pending" ] && [ "$(env_of "$ST/ora3.env" ORACLE_PASSWORD)" = "$p3" ] && [ "$(cat "$T/fp/db/lfc-slot-alice-ora3")" = "$p3" ]'
 
 # the change worked but the env file can't be replaced: the new password must not be lost
 mkdir -p "$T/mvfail/bin"
