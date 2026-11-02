@@ -10,6 +10,15 @@ Open Claude Code (or another coding agent) in this repo, with a Databricks CLI l
 
 The skills ask before creating anything, and clean up after themselves. To run the tests as scripts instead, see [docs/running-tests.md](docs/running-tests.md).
 
+Or install the skills as a Claude Code plugin and ask from any folder, with no clone:
+
+```bash
+claude plugin marketplace add https://github.com/rsleedbx/databricks-agent-skills-tests.git
+claude plugin install lfc-tests@lfc-tests
+```
+
+`claude plugin update lfc-tests@lfc-tests` gets the latest. Results you record from the plugin go to `~/.lfc/tests/results/` (or `$LFC_TESTS_RESULTS`), next to the ones shipped with it; to add yours to this repo, open a pull request from a clone.
+
 ## What's tested, by route
 
 | Route | What each page shows |

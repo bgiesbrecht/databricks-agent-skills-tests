@@ -13,6 +13,8 @@ Every test run leaves two things in this repo's `results/`, so the next person (
 | `results/runs/<run>.jsonl` | One JSON record per test cell (engine × mode × host × setup), one file per run, append-only | `recall.py`, `jq`, DuckDB, agents |
 | `results/<date>-<topic>.md` | The write-up of one run: setup, a results table, what broke, which skill fixes came out of it | people |
 
+Installed as a plugin (`lfc-tests`), the copy is replaced on every update, so new records and findings go to `~/.lfc/tests/results/` (or `$LFC_TESTS_RESULTS`) instead, and `recall.py`, `finding.py` and `ddl-matrix.py render` read the shipped results plus those ([scripts/results_dir.py](scripts/results_dir.py)).
+
 The repo is **public**: records and write-ups hold outcomes, counts, versions and error text, never IPs, hostnames, IDs, emails, catalog or workspace names, or credentials. `record.py` refuses a record that looks like it holds any of these.
 
 ## Before testing: recall
