@@ -200,7 +200,7 @@ ok "a full setup with a SAS file others can read: stops before the first step, r
 # start). Each engine's change is checked the way slot.sh's rotate_change sends it: the old password from the stdin the
 # command reads (Oracle's CONNECT, Informix's NUL-terminated unix_chkpwd input, Db2's connect file, MYSQL_PWD for the client
 # the engine names); the new one is recorded from the ALTER or chpasswd that carries it. The admin helpers that read the
-# container's env check it. FT_FAIL=1 fails every ALTER. Logins are logged as auth-ok in $FT/calls, with every call.
+# container's env check it. FT_FAIL=1 fails every ALTER; FT_ORA_NOCONNECT=1 makes Oracle's CONNECT fail with exit 0. Logins are logged as auth-ok in $FT/calls, with every call.
 cat > "$T/fp/bin/podman" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >> "$FT/calls"
@@ -223,9 +223,10 @@ case $1 in
        [ -f "$FT/db/$n" ] || { if [ "$eng" = informix ]; then echo image-default > "$FT/db/$n"; else grep -m1 'PASSWORD=' "$ef" | cut -d= -f2 > "$FT/db/$n" || : > "$FT/db/$n"; fi; }
        ;;
   exec) shift
-        while [[ ${1:-} == -* ]]; do case $1 in -u|-e) shift ;; esac; shift; done
+        si=0; while [[ ${1:-} == -* ]]; do case $1 in -u|-e) shift ;; -i) si=1 ;; esac; shift; done
         n=$1; shift; [ -f "$FT/run/$n" ] || { echo "no container $n" >&2; exit 1; }
-        cmd="$*"; eng=$(cat "$FT/eng/$n" 2>/dev/null || true); in=$(mktemp "$FT/in.XXXXXX"); cat > "$in"
+        # stdin only with -i, as podman: an exec without it must not wait on the caller's stdin
+        cmd="$*"; eng=$(cat "$FT/eng/$n" 2>/dev/null || true); in=$(mktemp "$FT/in.XXXXXX"); if [ $si = 1 ]; then cat > "$in"; else : > "$in"; fi
         first=$(head -1 "$in"); db=$(cat "$FT/db/$n")
         bad() { echo "$1" >&2; rm -f "$in"; exit 1; }
         login() { [ "$1" = "$db" ] || bad "auth failed for $n"; echo "auth-ok $n" >> "$FT/calls"; }
@@ -240,7 +241,10 @@ case $1 in
             login "$first"
             grep -q 'SELECT host' "$in" && printf '%%\nlocalhost\n'
             if grep -q ALTER "$in"; then
-              pws=$(sed -n "s/^ALTER USER 'root'@'[^']*' IDENTIFIED BY '\([^']*\)';\$/\1/p" "$in" | sort -u)
+              # one statement for every root account (all or none get the new password)
+              [ "$(grep -c '^ALTER USER' "$in")" = 1 ] || bad "root accounts: not one ALTER USER statement"
+              [ "$(grep '^ALTER USER' "$in" | grep -o "'root'@'[^']*'" | sort -u | tr '\n' ' ')" = "'root'@'%' 'root'@'localhost' " ] || bad "root accounts: not both hosts"
+              pws=$(grep '^ALTER USER' "$in" | grep -o "IDENTIFIED BY '[^']*'" | sed "s/^IDENTIFIED BY '//; s/'\$//" | sort -u)
               [ "$(printf '%s\n' "$pws" | wc -l | tr -d ' ')" = 1 ] || bad "root accounts got different passwords"
               setpw "$pws"
             fi ;;
@@ -254,7 +258,9 @@ case $1 in
           *'SQLCMDPASSWORD=$p'*) login "$first"
             setpw "$(sed -n "s/^ALTER LOGIN sa WITH PASSWORD = N'\([^']*\)';\$/\1/p" "$in")" ;;
           # Oracle: the sqlplus script's CONNECT carries the old sys password in double quotes; sys and system get the new one
-          *'sqlplus -s -L /nolog'*) login "$(sed -n 's/^CONNECT sys\/"\([^"]*\)"@.*AS SYSDBA$/\1/p' "$in")"
+          # FT_ORA_NOCONNECT=1: the CONNECT fails, and sqlplus still exits 0 (whenever sqlerror misses it)
+          *'sqlplus -s -L /nolog'*) [ -z "${FT_ORA_NOCONNECT:-}" ] || { echo "ORA-01017: invalid credential or not authorized"; echo "SP2-0640: Not connected"; rm -f "$in"; exit 0; }
+            login "$(sed -n 's/^CONNECT sys\/"\([^"]*\)"@.*AS SYSDBA$/\1/p' "$in")"
             new=$(sed -n 's/^ALTER USER sys IDENTIFIED BY "\([^"]*\)";$/\1/p' "$in")
             [ -n "$new" ] && [ "$new" = "$(sed -n 's/^ALTER USER system IDENTIFIED BY "\([^"]*\)";$/\1/p' "$in")" ] \
               || bad "sys and system: no new password, or two different ones"
@@ -372,10 +378,35 @@ ok "a failed change: up still answers (rc 0) and says the password is still the 
   '[ $rc = 0 ] && [[ $(cat "$T/pg4.err") == *"still the master"* ]] && [ "$(jq -r .user "$T/pg4.out")" = lfc_user ]'
 ok "a failed change keeps the working password (the env file is the master's) and the marker for the next up" \
   '[ "$(env_of "$ST/pg4.env" POSTGRES_PASSWORD)" = "$(env_of "$T/fp/secrets/postgres.env" POSTGRES_PASSWORD)" ] && [ -e "$ST/pg4.rotate" ] && [ -z "$(ls -A "$ST" | grep "\.XXXXXX")" ]'
+ok "a failed change keeps the tried value as pg4.env.pending and says where it is" \
+  '[ -e "$ST/pg4.env.pending" ] && [[ $(cat "$T/pg4.err") == *"pg4.env.pending"* ]]'
 : > "$T/fp/calls"; slot up postgres pg4 > /dev/null 2>"$T/pg4b.err"; rc=$?
 ok "the next up changes it (the database still runs on its password: the change is tried again)" \
-  '[ $rc = 0 ] && [ ! -e "$ST/pg4.rotate" ] && [ "$(env_of "$ST/pg4.env" POSTGRES_PASSWORD)" = "$(cat "$T/fp/db/lfc-slot-alice-pg4")" ] && [ "$(env_of "$ST/pg4.env" POSTGRES_PASSWORD)" != "$(env_of "$T/fp/secrets/postgres.env" POSTGRES_PASSWORD)" ]'
-slot rm pg4 >/dev/null 2>&1; ok "rm: the marker goes with the database" '[ ! -e "$ST/pg4.rotate" ] && [ ! -e "$ST/pg4.env" ]'
+  '[ ! -e "$ST/pg4.env.pending" ] && [ $rc = 0 ] && [ ! -e "$ST/pg4.rotate" ] && [ "$(env_of "$ST/pg4.env" POSTGRES_PASSWORD)" = "$(cat "$T/fp/db/lfc-slot-alice-pg4")" ] && [ "$(env_of "$ST/pg4.env" POSTGRES_PASSWORD)" != "$(env_of "$T/fp/secrets/postgres.env" POSTGRES_PASSWORD)" ]'
+slot rm pg4 >/dev/null 2>&1; ok "rm: the marker goes with the database" '[ ! -e "$ST/pg4.rotate" ] && [ ! -e "$ST/pg4.env" ] && [ ! -e "$ST/pg4.env.pending" ]'
+
+# Oracle: the CONNECT fails but sqlplus exits 0: the change counts as failed, the env file stays the master's
+: > "$T/fp/calls"; FT_ORA_NOCONNECT=1 slot up oracle ora2 --from orm > /dev/null 2>"$T/ora2.err"; rc=$?
+ok "oracle: a failed CONNECT with exit 0 is a failed change: the env stays the master's, the marker stays" \
+  '[ $rc = 0 ] && [[ $(cat "$T/ora2.err") == *"still the master"* ]] && [ "$(env_of "$ST/ora2.env" ORACLE_PASSWORD)" = "$(env_of "$T/fp/secrets/oracle.env" ORACLE_PASSWORD)" ] && [ -e "$ST/ora2.rotate" ]'
+: > "$T/fp/calls"; slot up oracle ora2 > /dev/null 2>&1; rc=$?
+ok "oracle: the next up changes it, and the .pending file goes" \
+  '[ $rc = 0 ] && [ ! -e "$ST/ora2.rotate" ] && [ ! -e "$ST/ora2.env.pending" ] && [ "$(env_of "$ST/ora2.env" ORACLE_PASSWORD)" = "$(cat "$T/fp/db/lfc-slot-alice-ora2")" ]'
+
+# the change worked but the env file can't be replaced: the new password must not be lost
+mkdir -p "$T/mvfail/bin"
+cat > "$T/mvfail/bin/mv" <<'MV'
+#!/bin/sh
+for last; do :; done
+case $last in *.env) exit 1 ;; esac
+exec /bin/mv "$@"
+MV
+chmod +x "$T/mvfail/bin/mv"
+: > "$T/fp/calls"; PATH="$T/mvfail/bin:$PATH" slot up postgres pg5 --from pgm > /dev/null 2>"$T/pg5.err"; rc=$?
+tmp5=$(ls "$ST" | grep '^pg5\.env\.' | grep -v pending | head -1)
+ok "a change whose env file can't be replaced: says where the new password is, keeps it (it's the database's), keeps the marker" \
+  '[[ $(cat "$T/pg5.err") == *"the new admin password is in"* ]] && [ -n "$tmp5" ] && [ "$(env_of "$ST/$tmp5" POSTGRES_PASSWORD)" = "$(cat "$T/fp/db/lfc-slot-alice-pg5")" ] && [ -e "$ST/pg5.rotate" ]'
+slot rm pg5 >/dev/null 2>&1; rm -f "$ST/$tmp5"
 
 : > "$T/fp/calls"; slot clone pg1 pg1c > /dev/null 2>"$T/clone.err"; rc=$?
 ok "clone: the copy gets a marker of its own (a clone of a rotated database changes too)" \

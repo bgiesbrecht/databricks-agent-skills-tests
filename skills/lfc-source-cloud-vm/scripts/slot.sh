@@ -195,22 +195,25 @@ admin_key() {
 # from stdin (never on a command line): Postgres and MySQL over TCP, SQL Server with SQLCMDPASSWORD, Oracle as SYS, Db2 as the
 # instance owner's connect, Informix's OS password checked by unix_chkpwd (the image must have it)
 rotate_change() {
-  local e=$1 c=$2 old=$3 new=$4 cli h hosts
+  local e=$1 c=$2 old=$3 new=$4 cli h hosts out sep
   case $e in
     postgres) { printf '%s\n' "$old"; printf "ALTER USER postgres WITH PASSWORD '%s';\n" "$new"; } \
       | podman exec -i "$c" sh -c 'read -r p; PGPASSWORD=$p exec psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -q' >/dev/null || return 1 ;;
     mysql|mariadb) cli=mysql; [ "$e" = mariadb ] && cli=mariadb
-      # every root account gets the password (the image makes root@% and root@localhost, or only one of them)
+      # every root account gets the password (the image makes root@% and root@localhost, or only one of them), in one
+      # statement, so a failure leaves no account with the new one
       hosts=$({ printf '%s\n' "$old"; echo "SELECT host FROM mysql.user WHERE user = 'root';"; } \
         | podman exec -i "$c" sh -c "read -r p; MYSQL_PWD=\$p exec $cli -h127.0.0.1 -uroot -N -B") || return 1
       [ -n "$hosts" ] || return 1
-      { printf '%s\n' "$old"; for h in $hosts; do printf "ALTER USER 'root'@'%s' IDENTIFIED BY '%s';\n" "$h" "$new"; done; } \
+      { printf '%s\n' "$old"; printf 'ALTER USER'; sep=' '; for h in $hosts; do printf "%s'root'@'%s' IDENTIFIED BY '%s'" "$sep" "$h" "$new"; sep=', '; done; echo ';'; } \
         | podman exec -i "$c" sh -c "read -r p; MYSQL_PWD=\$p exec $cli -h127.0.0.1 -uroot" >/dev/null || return 1 ;;
     sqlserver) { printf '%s\n' "$old"; printf "ALTER LOGIN sa WITH PASSWORD = N'%s';\n" "$new"; } \
       | podman exec -i "$c" sh -c 'read -r p; f=$(mktemp); cat > $f; SQLCMDPASSWORD=$p /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -b -i $f; r=$?; rm -f $f; exit $r' >/dev/null || return 1 ;;
-    oracle) { printf 'whenever sqlerror exit failure\nCONNECT sys/"%s"@//localhost:1521/FREE AS SYSDBA\n' "$old"
+    oracle) out=$({ printf 'whenever sqlerror exit failure\nCONNECT sys/"%s"@//localhost:1521/FREE AS SYSDBA\n' "$old"
               printf 'ALTER USER sys IDENTIFIED BY "%s";\nALTER USER system IDENTIFIED BY "%s";\nexit\n' "$new" "$new"; } \
-      | podman exec -i "$c" sqlplus -s -L /nolog >/dev/null || return 1 ;;
+      | podman exec -i "$c" sqlplus -s -L /nolog 2>&1) || return 1
+            # whenever sqlerror misses a failed CONNECT (an SQL*Plus command) and the "not connected" errors after it
+            case $out in *ORA-*|*SP2-*) return 1 ;; esac ;;
     db2) printf '%s\n' "$old" | podman exec -i "$c" bash -c 'read -r p; f=$(mktemp); printf "connect to LFCDB user db2inst1 using %s;\n" "$p" > $f; chown db2inst1 $f; su - db2inst1 -c "db2 -x -t -s -f $f" >/dev/null 2>&1; r=$?; rm -f $f; exit $r' || return 1
          printf 'db2inst1:%s\n' "$new" | podman exec -i -u root "$c" sh -c 'read -r l; echo "$l" | chpasswd' >/dev/null || return 1 ;;
     # prep() re-applies INFORMIX_PASSWORD from the database's own env file at every start (up applies it before this check too), so a re-created container gets the new value back
@@ -221,15 +224,21 @@ rotate_change() {
 }
 # rotate_admin <engine> <container> <env file>: the clone's admin password becomes a new one. The new value is prepared in a
 # file beside the env file first; the env file is replaced only after the change succeeded. Returns 1 when the change failed:
-# the database keeps the old password (the marker stays, so the next up tries again).
+# the marker stays, so the next up tries again. The tried value is kept as <env file>.pending, never deleted: Oracle changes
+# sys and then system, so a failure after the first leaves one of them with it.
 rotate_admin() {
   local e=$1 c=$2 f=$3 k old new t
   k=$(admin_key "$e"); [ -n "$k" ] || return 0
   old=$(sed -n "s/^$k=//p" "$f" | head -1); [ -n "$old" ] || return 1
   new=$(pw); t=$(mktemp "$f.XXXXXX") || return 1
   if ! sed "s|^$k=.*|$k=$new|" "$f" > "$t" || ! chmod 600 "$t"; then rm -f "$t"; return 1; fi
-  rotate_change "$e" "$c" "$old" "$new" || { rm -f "$t"; return 1; }
+  if ! rotate_change "$e" "$c" "$old" "$new"; then
+    mv -f "$t" "$f.pending" 2>/dev/null || rm -f "$t"
+    [ ! -e "$f.pending" ] || echo "slot: if part of the change went through, the tried admin password is in $f.pending" >&2
+    return 1
+  fi
   mv -f "$t" "$f" || { echo "slot: the new admin password is in $t: move it over $f" >&2; return 1; }
+  rm -f "$f.pending"
   return 0
 }
 # the container from the record and the env file: every start, so the env file's current values apply (P: the port)
@@ -456,7 +465,7 @@ case $CMD in
     running "$OWNER" "$N" && park_one "$OWNER" "$N"
     D=$ROOT/dbs/$OWNER/$N
     if [ -d "$D" ]; then juicefs rmr "$D" >/dev/null 2>&1 || rm -rf "${D:?}"; fi
-    rm -f "$M" "$STATE/$OWNER/$N.env" "$STATE/$OWNER/$N.login" "$STATE/$OWNER/$N.rotate"
+    rm -f "$M" "$STATE/$OWNER/$N.env" "$STATE/$OWNER/$N.env.pending" "$STATE/$OWNER/$N.login" "$STATE/$OWNER/$N.rotate"
     log "$N" rm; echo "removed $N" ;;
 
   limits)
