@@ -161,6 +161,12 @@ ok "import: a download that doesn't match its sha256 is removed and fails" \
 ok "import: the mismatched run still deletes the SAS file" '[ ! -e "$T/sas.use" ]'
 serve
 
+serve postgres.env   # an admin env changed on the way: never installed, so no clone gets a password its master doesn't have
+import_run "$T/vm7" "$T/vm7s" none > /dev/null 2>"$T/imp10.err"; rc=$?
+ok "import: an admin env that doesn't match its sha256 fails and isn't installed" \
+  '[ $rc != 0 ] && grep -q "postgres.env: sha256 doesn.t match" "$T/imp10.err" && [ ! -e "$T/vm7s/postgres.env" ]'
+serve
+
 cp "$T/sas" "$T/sas.u6"; chmod 600 "$T/sas.u6"
 env -u MASTERS STORAGE=local ROOT="$T/vm6" SECRETS="$T/vm6s" MASTERS_URL="$MU" MASTERS_SAS_FILE="$T/sas.u6" bash "$S/slot-vm-setup.sh" masters > "$T/imp9.out" 2>"$T/imp9.err"; rc=$?
 ok "import with MASTERS unset: every master of the manifest (as masters-export.sh's default), rc 0" \
