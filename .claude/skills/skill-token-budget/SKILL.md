@@ -26,12 +26,12 @@ Tokens are about characters / 4. A script an agent reads instead of runs costs i
 **scripts/ gets the logic.** A step says what to run, not how it works:
 - Each runnable script starts with a usage header that names it: `# name.sh <arg> [--flag]: what it does, in one sentence.`, then the options. It prints that header when run with no arguments (`[ $# -ge 1 ] || { sed -n 2,12p "$0"; exit 2; }`).
 - SKILL.md lists a script as one line: its path and what it does. The agent runs it with no arguments for the rest; it doesn't open the file.
-- [SCRIPTS.md](../../SCRIPTS.md) at the repo root has one line per script, generated from the headers: `python3 bin/scripts_index.py` after adding or renaming a script.
+- [SCRIPTS.md](../../../SCRIPTS.md) at the repo root has one line per script, generated from the headers: `python3 bin/scripts_index.py` after adding or renaming a script.
 - One copy of each piece of logic: a generic script lives once (the public repo), and an internal repo wraps it instead of copying it.
 
 **Output stays short:** a script prints counts, pass/fail and the links to what it created, and writes the details to a file it names. Make the summary the default or a `--summary` flag. Tool output fills context as fast as SKILL.md does.
 
-**Small rules that save tokens and errors:** one JSON value is `jq -r '.path'`, several are `yq -p json -o shell` + `eval` ([shell-json-scripting](../shell-json-scripting/SKILL.md)); `rm -r` on a variable is `"${VAR:?}/..."`; a flag a script reads only as `$1` is passed first.
+**Small rules that save tokens and errors:** one JSON value is `jq -r '.path'`, several are `yq -p json -o shell` + `eval` ([shell-json-scripting](../../../skills/shell-json-scripting/SKILL.md)); `rm -r` on a variable is `"${VAR:?}/..."`; a flag a script reads only as `$1` is passed first.
 
 ## Check
 

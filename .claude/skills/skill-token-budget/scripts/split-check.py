@@ -3,7 +3,7 @@
 SKILL.md at <commit> that is no longer anywhere in skills/<skill>/ (any .md file), ignoring link targets, which change
 when a section moves. Prints the SKILL.md tokens (characters / 4) before and after. Exits 1 if a line is missing.
 
-  python3 skills/skill-token-budget/scripts/split-check.py zerobus-debezium-test a8d8cb0
+  python3 .claude/skills/skill-token-budget/scripts/split-check.py zerobus-debezium-test a8d8cb0
 """
 from __future__ import annotations
 
