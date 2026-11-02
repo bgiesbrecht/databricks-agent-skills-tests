@@ -1,0 +1,21 @@
+# Contributing
+
+Results, fixes and new tests are welcome. The repo works like a shared notebook ([How to use this repo](README.md#how-to-use-this-repo)): each run adds its own records, so people testing in parallel never edit the same file.
+
+## How a change gets in
+
+1. Fork the repo, and make one topic branch per change from `main` ([git-topic-branches](skills/git-topic-branches/SKILL.md)).
+2. Run the checks your change touches: `bash bin/test_scripts.sh`, `uv run bin/check_links.py`, and `uv run bin/scripts_index.py` when you add or change a script ([docs/running-tests.md](docs/running-tests.md)).
+3. Open a pull request to `main`. It's merged after a review by someone other than its author.
+
+## Adding test results
+
+Record each result with `record.py` ([lfc-test-results](skills/lfc-test-results/SKILL.md)). With the skills installed as a plugin, your records are in `~/.lfc/tests/results/`: copy the run files into `results/runs/` of your fork and open a pull request.
+
+## What can't go in
+
+This repo is public. No customer data, internal information, IPs, hostnames, IDs, emails, workspace or catalog names, or credentials, in code, results, docs or commit messages ([SECURITY.md](SECURITY.md)).
+
+## Questions and access
+
+Open an issue. Maintainers: the repository owner ([@rsleedbx](https://github.com/rsleedbx)).
