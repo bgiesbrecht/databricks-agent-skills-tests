@@ -97,7 +97,7 @@ class Stats(AckCallback):
     def __init__(self):
         super().__init__()
         self.lock, self.sent, self.acks, self.errors, self.reconnects, self.last_send = threading.Lock(), 0, 0, 0, 0, None
-        self.kafka_sent, self.kafka_errors, self.dups = 0, 0, 0
+        self.kafka_sent, self.kafka_errors, self.dups, self.worker_failures = 0, 0, 0, 0
 
     def on_ack(self, offset):
         with self.lock:
@@ -187,6 +187,14 @@ def main():
         return a.burst_x if burst and burst[0] <= now < burst[1] else 1.0
 
     def worker(idx, group):
+        try:
+            send(idx, group)
+        except Exception as e:                                                # a dead stream thread is a failed run
+            print(f"stream {idx} stopped: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+            with stats.lock:
+                stats.worker_failures += 1
+
+    def send(idx, group):
         stream = open_stream() if use_zb else None
         kafka = open_kafka() if use_kafka else None
         r, slices = random.Random(idx), [group[i::10] for i in range(min(10, len(group)))]
@@ -252,8 +260,11 @@ def main():
                     with stats.lock:
                         stats.kafka_errors += left
             if stream is not None:
-                stream.flush()
-                stream.close()
+                try:
+                    stream.flush()
+                    stream.close()
+                except Exception as e:                                        # a broken stream: report the first error, not this one
+                    print(f"stream {idx}: close failed: {e}", file=sys.stderr, flush=True)
 
     groups = [assets[i::a.streams] for i in range(a.streams)]
     threads = [threading.Thread(target=worker, args=(i, g), daemon=True) for i, g in enumerate(groups) if g]
@@ -280,12 +291,14 @@ def main():
            "start": t0, "end": t1, "burst": burst, "sent": stats.sent, "errors": stats.errors,
            "kafka_sent": stats.kafka_sent if use_kafka else None, "kafka_errors": stats.kafka_errors if use_kafka else None,
            "reconnects": stats.reconnects, "streams": a.streams, "assets": a.assets, "tags": a.tags, "hz": a.hz,
-           "burst_x": a.burst_x if burst else None, "dup_rate": a.dup_rate, "dups_sent": stats.dups}
+           "burst_x": a.burst_x if burst else None, "dup_rate": a.dup_rate, "dups_sent": stats.dups,
+           "worker_failures": stats.worker_failures}
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out).write_text(json.dumps(out, indent=1))
     print(f"done: sent={stats.sent:,} in {t1 - t0:,.0f} s, errors={stats.errors}, reconnects={stats.reconnects}"
-          + (f", kafka_errors={stats.kafka_errors}" if use_kafka else "") + f"; wrote {a.out}")
-    if stats.errors or stats.kafka_errors:                                   # no sys.exit(0): a Databricks Python task counts any SystemExit as a failure
+          + (f", kafka_errors={stats.kafka_errors}" if use_kafka else "")
+          + (f", streams stopped={stats.worker_failures}" if stats.worker_failures else "") + f"; wrote {a.out}")
+    if stats.errors or stats.kafka_errors or stats.worker_failures:                                   # no sys.exit(0): a Databricks Python task counts any SystemExit as a failure
         sys.exit(1)
 
 

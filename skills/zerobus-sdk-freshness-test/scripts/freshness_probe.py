@@ -60,9 +60,13 @@ def main():
             try:
                 r = w.statement_execution.execute_statement(statement=sql, warehouse_id=wh, wait_timeout="30s",
                                                             disposition=Disposition.INLINE, format=Format.JSON_ARRAY)
-                while r.status.state in (StatementState.PENDING, StatementState.RUNNING):
+                give_up = min(stop, t + 60)                                   # a queued or stuck statement: a null sample, not a hang
+                while r.status.state in (StatementState.PENDING, StatementState.RUNNING) and time.time() < give_up:
                     time.sleep(0.1)
                     r = w.statement_execution.get_statement(r.statement_id)
+                if r.status.state in (StatementState.PENDING, StatementState.RUNNING):
+                    w.statement_execution.cancel_execution(r.statement_id)
+                    raise RuntimeError(f"statement still {r.status.state.value} after {time.time() - t:.0f} s: cancelled")
                 if r.status.state != StatementState.SUCCEEDED:                # a bad --path or a stopped warehouse: say so
                     err = r.status.error.message if r.status.error else r.status.state.value
                     raise RuntimeError(f"statement {r.status.state.value}: {err}")

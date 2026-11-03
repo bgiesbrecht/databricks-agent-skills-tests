@@ -15,7 +15,8 @@ what one producer run landed and how fresh it was: rows sent vs landed, the per-
   --column     the event time column (default producer_time); an expression works for a VARIANT column
   --id-column  the event id column (default event_id; value:event_id::string for a VARIANT value). With a run file that
                has dups_sent, the distinct events sent (sent - dups_sent) are compared with the distinct ids landed:
-               lost events, and extra copies beyond the duplicates sent (at-least-once delivery on the way)
+               lost events (sent - dups_sent - distinct), and extra copies beyond the duplicates sent
+               (landed - distinct - dups_sent: at-least-once delivery on the way), counted apart so one can't hide the other
   --json       print one JSON object (metrics for a record.py record) instead of the text report
 
 Commits come from DESCRIBE HISTORY within the run window. Its timestamps are whole seconds, so each interval is
@@ -119,7 +120,7 @@ def main():
     out = {"window": [iso(start), iso(end)], "burst": [iso(burst[0]), iso(burst[1])] if burst else None,
            "sent": sent, "landed": landed, "missing": (sent - landed) if sent is not None else None,
            "events": {"sent": sent - dups_sent, "landed": distinct, "lost": sent - dups_sent - distinct,
-                      "extra_copies": landed - sent} if distinct is not None else None,
+                      "extra_copies": landed - distinct - dups_sent} if distinct is not None else None,
            "rate_per_s": {"median": round(base), "peak": max((n for _, n in per_s), default=0),
                           "burst_mean": round(statistics.mean(n for s, n in per_s if seen_burst and seen_burst[0] <= s < seen_burst[1])) if seen_burst else None},
            "commits": {"operations": ops, "write_commits": len(writes),
