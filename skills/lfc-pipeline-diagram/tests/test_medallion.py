@@ -86,7 +86,7 @@ class Drawing(unittest.TestCase):
 
     def test_zerobus_needs_engine_and_bronze(self):
         r = subprocess.run([sys.executable, os.path.join(SCRIPTS, "pipeline-diagram.py"), "--ingest", "zerobus"],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, check=False)
         self.assertEqual(r.returncode, 2)
         self.assertIn("needs --engine and --bronze", r.stderr)
 

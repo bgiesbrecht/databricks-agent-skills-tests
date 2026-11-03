@@ -49,6 +49,12 @@ On a slot VM (`lfc-source-cloud-vm`), `slot.sh facts <name>` prints the same JSO
 
 `medallion.py` also runs alone (`--save layers.json`, then `--layers-json` to draw saved counts offline). `show-diagram.sh` takes `LAYERS` (space-separated `NAME=CATALOG.SCHEMA`) and `REVERSE_ETL`.
 
+## SaaS connectors
+
+A SaaS pipeline is read like a database one; the source box is the connector's REST API and the host it calls: from the connection's options (`instance_url`, `domain`, `host`, ...; never a secret field), the report URL (Workday reports), or the connector's public API host (Google Ads, Meta Ads, Slack, ...). Change capture is the connector's API reads. With a load tool for the source, `--model` draws it on top as for a database (`--model jira-test-data-generator --model-scale "Small, 5000 issues"`); without one, there is no model box. The connection, pipeline, landing tables, medallion and reverse ETL are the same as for a database.
+
+The connector's table count (incremental and full-refresh tables, or "objects discovered from the source" for connectors that list them at run time) comes from an optional file, `$LFC_SAAS_TABLES` (default `~/.config/lfc/saas-tables.json`): `{"connectors": {"<CONNECTION_TYPE>": {"tables": N, "incremental": N, "full": N, "inventory": "finite|runtime"}}}`. Without it the box has no count.
+
 ## Zerobus instead of Lakeflow Connect
 
 `--ingest zerobus --engine <mysql|postgresql|sqlserver|oracle|db2|informix|cockroachdb|mariadb> --bronze CATALOG.SCHEMA.TABLE[,...]` draws the same source half (model, VM, database, change capture) with Debezium Server (`--producer`) on the source host pushing to the Zerobus ingest endpoint (a service principal, OAuth) and the append-only bronze change log, which is layer 1 of the medallion. No pipeline is read; the layers after bronze come from `--layer` as above.

@@ -76,6 +76,8 @@ def capture_text(engine, mode, spec_src, connector_type):
         return ("Informix CDC API", "syscdcv1", "the change data capture API (syscdcv1) on a logged database")
     if engine == "COCKROACHDB":
         return ("changefeed", "CHANGEFEED", "a CockroachDB changefeed on the tables")
+    if engine == "SAAS":
+        return ("API reads", "REST API", "the connector's API calls each update: incremental by a cursor field where the API has one, else a full read")
     if engine in ("POSTGRESQL", "POSTGRES"):
         sc = (spec_src or {}).get("postgres", {}).get("slot_config", {})
         slot = sc.get("slot_name", "<slot>"); pub = sc.get("publication_name", "<publication>")
@@ -100,6 +102,8 @@ MODELS = {
     "tpcb": (4, "statschema + datagen"), "tpcc": (9, "statschema + datagen"), "tpch": (8, "statschema + datagen"),
     "tpcdi": (18, "statschema + datagen"), "tpcds": (24, "statschema + datagen"), "tpce": (32, "statschema + datagen"),
     "mautic": (128, "the application: its own install and traffic"),
+    # SaaS load tools: what they create, through the connector's own REST API (no fixed table count)
+    "jira-test-data-generator": (None, "jira-test-data-generator: projects, issues, comments through the Jira REST API"),
 }
 
 
@@ -113,6 +117,51 @@ def workload(a):
     tables = a.model_tables if a.model_tables is not None else w.get("tables", known[0] if known else None)
     return {"model": name, "tables": tables, "scale": a.model_scale or w.get("scale"),
             "by": known[1] if known else "the test's own tables"}
+
+
+# SaaS: the connection option that holds the REST host, in order; else the connector's fixed public API host
+SAAS_HOST_OPTIONS = ("instance_url", "domain", "host", "base_url", "url", "site_url", "endpoint")
+SAAS_API_HOSTS = {
+    "GOOGLE_ADS": "googleads.googleapis.com", "GOOGLE_DRIVE": "www.googleapis.com", "GA4_RAW_DATA": "bigquery.googleapis.com",
+    "SLACK": "slack.com", "OUTLOOK": "graph.microsoft.com", "META_MARKETING": "graph.facebook.com",
+    "META_ADS": "graph.facebook.com", "ZENDESK": "<subdomain>.zendesk.com", "JIRA": "<site>.atlassian.net",
+    "CONFLUENCE": "<site>.atlassian.net", "SERVICENOW": "<instance>.service-now.com", "HUBSPOT": "api.hubapi.com",
+}
+SAAS_NAMES = {"SALESFORCE": "Salesforce", "SHAREPOINT": "SharePoint", "SERVICENOW": "ServiceNow", "GA4_RAW_DATA": "GA4",
+              "WORKDAY_RAAS": "Workday reports", "DYNAMICS365": "Dynamics 365", "HUBSPOT": "HubSpot", "SFTP": "SFTP",
+              "GOOGLE_ADS": "Google Ads", "GOOGLE_DRIVE": "Google Drive", "META_MARKETING": "Meta Ads", "META_ADS": "Meta Ads"}
+
+
+def saas_host(ctype, opts, idef):
+    """The REST host a SaaS connector calls, from its options (never a secret field), else the known public host."""
+    for k in SAAS_HOST_OPTIONS:
+        v = (opts or {}).get(k)
+        if v:
+            return v.split("://", 1)[-1].split("/", 1)[0]
+    for o in (idef or {}).get("objects") or []:          # Workday reports: the report URL is in the object
+        url = (o.get("report") or {}).get("source_url")
+        if url:
+            return url.split("://", 1)[-1].split("/", 1)[0]
+    return SAAS_API_HOSTS.get(ctype.upper(), "")
+
+
+# tables per SaaS connector, keyed by connection type: {"connectors": {TYPE: {tables, incremental, full, inventory}}}.
+# Optional; written by an internal catalog tool. Without it the source box has no table count.
+SAAS_TABLES = os.environ.get("LFC_SAAS_TABLES") or os.path.expanduser("~/.config/lfc/saas-tables.json")
+
+
+def saas_tables(ctype):
+    """One line on the connector's tables from the saas-tables file, or ""."""
+    try:
+        with open(SAAS_TABLES) as f:
+            row = (json.load(f).get("connectors") or {}).get(ctype.upper())
+    except (OSError, ValueError):
+        return ""
+    if not row:
+        return ""
+    if row.get("tables"):
+        return f"{row['tables']} tables: {row.get('incremental', 0)} incremental, {row.get('full', 0)} full refresh"
+    return "objects discovered from the source" if row.get("inventory") == "runtime" else ""
 
 
 SECRET_KIND = {"uc": "UC secret", "workspace": "Workspace secret scope", "inline": "stored in the connection"}
@@ -185,14 +234,20 @@ def model(a, ap, gw, conn, host, events=()):
     ctype = (conn or {}).get("connection_type", "")
     saas = bool(ctype) and ctype.upper() not in DB_TYPES
     srccfg = next((c.get("catalog") for c in idef.get("source_configurations") or [] if c.get("catalog")), None)
-    cap = capture_text(ctype.upper(), a.capture or capture_from_events(events), srccfg, idef.get("connector_type"))
+    cap = capture_text("SAAS" if saas else ctype.upper(), a.capture or capture_from_events(events), srccfg,
+                       None if saas else idef.get("connector_type"))
+    api_host = saas_host(ctype, opts, idef) if saas else ""
+    api_tables = saas_tables(ctype) if saas else ""
     return {
         "saas": saas,
         "capture": cap,
         "integrated": integrated,
         "source_cloud": CLOUD_NAMES.get(a.source_cloud or "", a.source_cloud or "source"),
         "source_host": a.source_host or "database host",
-        "engine": (ctype or "database").title().replace("Sqlserver", "SQL Server")
+        "api_host": "" if a.hide_host else api_host,
+        "api_tables": api_tables,
+        "engine": SAAS_NAMES.get(ctype.upper(), ctype.replace("_", " ").title()) if saas else
+                  (ctype or "database").title().replace("Sqlserver", "SQL Server")
                   .replace("Postgresql", "PostgreSQL").replace("Mysql", "MySQL"),
         "nodes": nodes,
         "firewall": a.firewall,
@@ -200,7 +255,7 @@ def model(a, ap, gw, conn, host, events=()):
         "secret_kind": SECRET_KIND[a.secret_kind],
         "workspace_cloud": workspace_cloud(host),
         "connection": (conn or {}).get("name") or gdef.get("connection_name") or idef.get("connection_name") or "?",
-        "target": "" if a.hide_host else target.replace(",", ":"),
+        "target": "" if a.hide_host or saas else target.replace(",", ":"),
         "gw_compute": gw_compute,
         "gw_name": (gw or {}).get("name") or gdef.get("gateway_storage_name") or "gateway",
         "ap_name": ap.get("name") or spec.get("name") or "ingestion pipeline",
@@ -313,18 +368,22 @@ def workload_line(m):
 
 def text(m):
     L = []
-    if m["workload"] and not m["saas"]:
+    if m["workload"]:
         L.append(workload_line(m))
         L.append("        | loads the source")
     nodes = "   ".join(f"[{d['role']}{'*' if d['active'] else ''}]" for d in m["nodes"])
-    L.append(f"{m['source_cloud']}: {m['source_host']}, {m['engine']}")
-    for line in m["facts"]:
-        L.append(f"  {line}")
     if m["saas"]:
-        L[-1] = f"{m['engine']} API (SaaS)"
+        L.append(f"SaaS: {m['engine']} REST API" + (f" at {m['api_host']}" if m.get("api_host") else ""))
+        if m.get("api_tables"):
+            L.append(f"  connector tables: {m['api_tables']}")
     else:
+        L.append(f"{m['source_cloud']}: {m['source_host']}, {m['engine']}")
+        for line in m["facts"]:
+            L.append(f"  {line}")
         L.append(f"  {nodes}" + ("   (* = the connection's target)" if len(m["nodes"]) > 1 else ""))
-    if m["capture"][0]:
+    if m["capture"][0] and m["saas"]:
+        L.append(f"  change capture: {m['capture'][0]}: {m['capture'][2]}")
+    elif m["capture"][0]:
         where = next((d["role"] for d in m["nodes"] if d["active"]), "database")
         L.append(f"  change capture: {m['capture'][0]}, read on the {where}: {m['capture'][2]}")
     L.append("        |")
@@ -373,21 +432,23 @@ def q(s):
 def mermaid(m):
     # wider text before Mermaid wraps a line (default about 200 px), so host and VM facts stay one per line
     L = ['%%{init: {"flowchart": {"wrappingWidth": 420}}}%%', "flowchart TD"]
-    w = m["workload"] if not m["saas"] else None
+    w = m["workload"]
     if w:
         n = f"{w['tables']} tables" if w["tables"] is not None else "tables: ?"
         L.append(f"  WL[/{q('model ' + w['model'] + '<br/>' + n + (', ' + w['scale'] if w['scale'] else '') + '<br/>' + w['by'])}/]")
     L.append(f"  subgraph SRC[{q(m['source_cloud'] + ': ' + m['source_host'])}]")
     if m["saas"]:
-        L[-1] = f"  subgraph SRC[{q(m['engine'] + ' (SaaS)')}]"
-        L.append(f"    N0[{q(m['engine'] + ' API')}]")
+        L[-1] = f"  subgraph SRC[{q('SaaS: ' + m['engine'])}]"
+        api = m["engine"] + " REST API" + ("<br/>" + m["api_host"] if m.get("api_host") else "") \
+            + ("<br/>" + m["api_tables"] if m.get("api_tables") else "")
+        L.append(f"    N0[{q(api)}]")
     else:
         for i, d in enumerate(m["nodes"]):
             hp = "" if m["hide_host"] or not d["hp"] else "<br/>" + d["hp"].replace(",", ":")
             L.append(f"    N{i}[({q(m['engine'] + ' ' + d['role'] + hp)})]")
         if len(m["nodes"]) == 2:
             L.append("    N0 -. availability group .-> N1")
-    if m["facts"]:
+    if m["facts"] and not m["saas"]:
         L.append(f"    HW[{q('<br/>'.join(m['facts_short']))}]")
         L.append("    HW ~~~ N0")
     active = next((i for i, d in enumerate(m["nodes"]) if d["active"]), 0)
