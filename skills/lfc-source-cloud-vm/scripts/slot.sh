@@ -433,7 +433,7 @@ case $CMD in
     log "$N" up
     P=$(field "$M" port)
     jq -cn --arg n "$N" --arg e "$E" --arg h "$(host)" --arg p "$P" --rawfile pw "$STATE/$OWNER/$N.login" --arg c "$C" --arg s "$SERVICE" --arg d "$DBNAME" \
-      '{name: $n, engine: $e, host: $h, port: ($p | tonumber), user: "lfc_user", password: ($pw | rtrimstr("\n")), container: $c, state: "running"} + (if $s == "" then {} else {service: $s} end) + (if $d == "" then {} else {database: $d} end)' ;;
+      '{contract: 1, name: $n, engine: $e, host: $h, port: ($p | tonumber), user: "lfc_user", password: ($pw | rtrimstr("\n")), container: $c, state: "running"} + (if $s == "" then {} else {service: $s} end) + (if $d == "" then {} else {database: $d} end)' ;;
 
   park)
     N=${1:-}; name_ok "$N"; [ -f "$(meta "$OWNER" "$N")" ] || die "no database $N"

@@ -1,0 +1,46 @@
+# layers-baseline.txt: the disallowed references that exist today, one per line, as
+#   <from> -> <to>: <file>:<pattern>
+# bin/check_layers.py fails on any disallowed reference that has no line here, and on a line here that matches no
+# reference (delete it when the reference goes). The baseline only shrinks; docs/layers.md lists the main ones and why.
+account-token-fallback -> bin/run_matrix.sh: skills/account-token-fallback/SKILL.md:bin/run_matrix.sh
+cdc-table-plan -> lfc-source-statschema: skills/cdc-table-plan/SKILL.md:lfc-source-statschema/scripts/collect-activity-mysql.sql
+lfc-schema-change-test -> lfc-source-cloud-vm: skills/lfc-schema-change-test/SKILL.md:lfc-source-cloud-vm/scripts/add-mssql-container.sh
+lfc-schema-change-test -> lfc-source-datagen: skills/lfc-schema-change-test/scripts/sqlserver-scale.sh:lfc-source-datagen/scripts/bundle.sh
+lfc-schema-change-test -> lfc-source-datagen: skills/lfc-schema-change-test/scripts/sqlserver-scale.sh:lfc-source-datagen/scripts/copies.sh
+lfc-schema-change-test -> lfc-source-statschema: skills/lfc-schema-change-test/scripts/sqlserver-scale.sh:lfc-source-statschema/schemas/$MODEL.yaml
+lfc-schema-change-test -> lfc-source-statschema: skills/lfc-schema-change-test/scripts/sqlserver-scale.sh:lfc-source-statschema/scripts/ddl.py
+lfc-schema-change-test -> lfc-source-statschema: skills/lfc-schema-change-test/scripts/sqlserver-scale.sh:lfc-source-statschema/scripts/shape.py
+lfc-source-aws-aurora -> lfc-source-setup: skills/lfc-source-aws-aurora/SKILL.md:lfc-source-setup/references/engine-mysql.md
+lfc-source-aws-aurora -> lfc-source-setup: skills/lfc-source-aws-aurora/SKILL.md:lfc-source-setup/references/engine-postgres.md
+lfc-source-aws-rds -> lfc-source-setup: skills/lfc-source-aws-rds/SKILL.md:lfc-source-setup/references/engine-mysql.md
+lfc-source-aws-rds -> lfc-source-setup: skills/lfc-source-aws-rds/SKILL.md:lfc-source-setup/references/engine-oracle.md
+lfc-source-aws-rds -> lfc-source-setup: skills/lfc-source-aws-rds/SKILL.md:lfc-source-setup/references/engine-postgres.md
+lfc-source-aws-rds -> lfc-source-setup: skills/lfc-source-aws-rds/SKILL.md:lfc-source-setup/references/engine-sqlserver.md
+lfc-source-azure-flexserver -> lfc-source-setup: skills/lfc-source-azure-flexserver/SKILL.md:lfc-source-setup/references/engine-mysql.md
+lfc-source-azure-flexserver -> lfc-source-setup: skills/lfc-source-azure-flexserver/SKILL.md:lfc-source-setup/references/engine-postgres.md
+lfc-source-azure-sql -> lfc-source-setup: skills/lfc-source-azure-sql/SKILL.md:lfc-source-setup/references/engine-sqlserver.md
+lfc-source-cloud-vm -> lfc-source-setup: skills/lfc-source-cloud-vm/SKILL.md:lfc-source-setup/SKILL.md
+lfc-source-cloud-vm -> lfc-source-setup: skills/lfc-source-cloud-vm/references/shared-vm-slots.md:lfc-source-setup/references/engine-db2.md
+lfc-source-cloud-vm -> lfc-source-setup: skills/lfc-source-cloud-vm/references/shared-vm-slots.md:lfc-source-setup/references/engine-oracle.md
+lfc-source-datagen -> lfc-source-setup: skills/lfc-source-datagen/references/append-through-connection.md:lfc-source-setup/references/engine-postgres.md
+lfc-source-firewall -> bin/compute_report.sh: skills/lfc-source-firewall/references/classic-egress.md:bin/compute_report.sh
+lfc-source-firewall -> lfc-test-results: skills/lfc-source-firewall/references/private-paths.md:lfc-test-results/references/test-matrix.md
+lfc-source-gcp-cloudsql -> lfc-source-setup: skills/lfc-source-gcp-cloudsql/SKILL.md:lfc-source-setup/SKILL.md
+lfc-source-statschema -> lfc-source-sizing: skills/lfc-source-statschema/SKILL.md:lfc-source-sizing/references/workload-patterns.md
+lfc-test-results -> bin/test_scripts.sh: skills/lfc-test-results/SKILL.md:bin/test_scripts.sh
+lfc-workspace-setup -> bin/run_batch.sh: skills/lfc-workspace-setup/SKILL.md:bin/run_batch.sh
+lfc-workspace-setup -> bin/run_batch.sh: skills/lfc-workspace-setup/scripts/keep-catalogs.sh:bin/run_batch.sh
+lfc-workspace-setup -> lfc-source-firewall: skills/lfc-workspace-setup/SKILL.md:lfc-source-firewall/SKILL.md
+lfc-workspace-setup -> lfc-source-firewall: skills/lfc-workspace-setup/scripts/ready.sh:lfc-source-firewall/scripts/serverless-egress.sh
+skill-token-budget -> bin/check_links.py: .claude/skills/skill-token-budget/SKILL.md:bin/check_links.py
+skill-token-budget -> bin/lint_scripts.py: .claude/skills/skill-token-budget/SKILL.md:bin/lint_scripts.py
+skill-token-budget -> bin/scripts_index.py: .claude/skills/skill-token-budget/SKILL.md:bin/scripts_index.py
+skill-token-budget -> bin/test_scripts.sh: .claude/skills/skill-token-budget/SKILL.md:bin/test_scripts.sh
+zerobus-debezium-test -> lfc-source-cloud-vm: skills/zerobus-debezium-test/scripts/run-all.sh:lfc-source-cloud-vm/scripts/cloud-links.sh
+zerobus-debezium-test -> lfc-source-datagen: skills/zerobus-debezium-test/scripts/debezium-zerobus.sh:lfc-source-datagen/scripts
+zerobus-debezium-test -> lfc-source-datagen: skills/zerobus-debezium-test/scripts/run-all.sh:lfc-source-datagen
+zerobus-debezium-test -> lfc-source-podman: skills/zerobus-debezium-test/scripts/run-all.sh:lfc-source-podman
+zerobus-debezium-test -> lfc-source-podman: skills/zerobus-debezium-test/scripts/run-all.sh:lfc-source-podman/scripts/ensure-lima-podman.sh
+zerobus-debezium-test -> lfc-source-podman: skills/zerobus-debezium-test/scripts/run-all.sh:lfc-source-podman/scripts/ensure-podman-socket.sh
+zerobus-debezium-test -> lfc-source-statschema: skills/zerobus-debezium-test/scripts/debezium-zerobus.sh:lfc-source-statschema/scripts
+zerobus-debezium-test -> lfc-source-statschema: skills/zerobus-debezium-test/scripts/run-all.sh:lfc-source-statschema

@@ -33,7 +33,7 @@ Never point these at a shared source: the DDL forces a full refresh on everyone'
 1. **A SQL Server source you can run DDL on**, reachable from serverless. The tested one is the SQL Server 2022 Podman container on the cloud VM from **lfc-source-cloud-vm**: start the VM and the container, and open the firewall with **lfc-source-firewall** if serverless can't reach it. Stop the VM afterwards.
 2. **A UC `SQLSERVER` connection** to that source (**lfc-connection-sync** or **lfc-source-setup**), and the login it uses on the source.
 3. **A catalog with its own storage.** CDC refuses Default Storage, and a catalog whose storage credential is broken fails at create ("Azure storage credential was not found"). The script checks for Default Storage before it creates anything.
-4. **A command that runs T-SQL on the source as an admin**, reading stdin, first argument the database. For the VM container, [scripts/vm-mssql.sh](scripts/vm-mssql.sh) does it over SSH and keeps the `sa` password on the VM.
+4. **A command that runs T-SQL on the source as an admin**, reading stdin, first argument the database. For the VM container, [scripts/vm-mssql.sh](scripts/vm-mssql.sh) does it over SSH and keeps the `sa` password on the VM. Or set `SOURCE_JSON=<contract file>` in place of `SRC_SQL`, `CONN_USER` and `CONNECTION`: the source contract, [lfc-source-contract](../lfc-source-contract/SKILL.md).
 
 ## Run
 
@@ -62,7 +62,7 @@ EOF2
 RUNS=/tmp/ct-runs scripts/parallel.sh slots jobs     # PROFILE, CATALOG, CONN_USER, VM_IP exported as above
 ```
 
-[scripts/parallel.sh](scripts/parallel.sh) starts each job on the next free source, from its own copy of the scripts, with that source's `CONNECTION`, `MSSQL_CONTAINER` and `SRC_SQL`, and prints a line as each starts and ends. It needs bash 4 or later.
+[scripts/parallel.sh](scripts/parallel.sh) starts each job on the next free source, from its own copy of the scripts, with that source's `CONNECTION`, `MSSQL_CONTAINER` and `SRC_SQL`, and prints a line as each starts and ends. It needs bash 4 or later. A slot line `- json:<contract file>` takes the source from a source contract ([lfc-source-contract](../lfc-source-contract/SKILL.md)).
 
 It exits 0 when every claim passed, 1 when one failed, 2 when a prerequisite is missing (nothing is left behind in either case).
 

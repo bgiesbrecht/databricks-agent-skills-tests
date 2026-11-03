@@ -85,4 +85,4 @@ flowchart LR
 
 ## Testing a route
 
-Run it through: a load, a normal sync (an update, a delete, an insert), a gap (changes ingested while the history pipeline doesn't run), a full refresh of the destination table, history runs during and after the refresh, the next change, and a run with nothing new. With integrated CDC a full refresh is two updates (re-read, then apply): run both with `EARLY_STOP=0`. Needs and options of the harness scripts: as **lfc-schema-change-test** `lib.sh`; run a script with no arguments for its usage.
+Run it through: a load, a normal sync (an update, a delete, an insert), a gap (changes ingested while the history pipeline doesn't run), a full refresh of the destination table, history runs during and after the refresh, the next change, and a run with nothing new. With integrated CDC a full refresh is two updates (re-read, then apply): run both with `EARLY_STOP=0`. Needs and options of the harness scripts: as **lfc-schema-change-test** `lib.sh`, or `SOURCE_JSON=<contract file>` for a source with a contract ([lfc-source-contract](../lfc-source-contract/SKILL.md)); run a script with no arguments for its usage.
