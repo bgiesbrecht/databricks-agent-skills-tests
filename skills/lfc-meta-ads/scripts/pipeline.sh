@@ -87,6 +87,7 @@ if [ -n "$id" ]; then
 else
   id=$(dbx pipelines create --json "$spec" -o json | jq -r .pipeline_id)
   echo "created pipeline $NAME ($n objects)" >&2
+  bash "$(dirname "$0")/../../lfc-pipeline-diagram/scripts/show-diagram.sh" "$id"   # stderr only: stdout is the id
 fi
 link pipeline "/pipelines/$id"
 echo "$id"

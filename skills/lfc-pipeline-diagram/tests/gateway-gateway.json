@@ -1,0 +1,28 @@
+{
+  "pipeline_id": "11111111-1111-1111-1111-111111111111",
+  "name": "demo_ag_gw",
+  "spec": {
+    "id": "11111111-1111-1111-1111-111111111111",
+    "name": "demo_ag_gw",
+    "catalog": "main",
+    "schema": "demo_ag_stg",
+    "serverless": null,
+    "clusters": [
+      {
+        "cluster_log_conf": {
+          "volumes": {
+            "destination": "/Volumes/main/demo_ag_stg/logs"
+          }
+        },
+        "label": "default"
+      }
+    ],
+    "continuous": true,
+    "gateway_definition": {
+      "connection_name": "demo_ag_sec",
+      "gateway_storage_catalog": "main",
+      "gateway_storage_name": "demo_ag_gw",
+      "gateway_storage_schema": "demo_ag_stg"
+    }
+  }
+}

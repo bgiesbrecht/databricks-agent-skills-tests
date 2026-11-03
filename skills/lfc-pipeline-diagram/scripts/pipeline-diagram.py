@@ -1,0 +1,382 @@
+#!/usr/bin/env python3
+"""pipeline-diagram.py: draw a Lakeflow Connect database pipeline as text and/or Mermaid.
+
+The pipeline, its gateway and its UC connection are read with the Databricks CLI (or from saved JSON), so the
+diagram shows what was created: gateway or integrated CDC, serverless or classic, staging, the connection and the
+host:port it points at, the destination tables and their SCD type. What the API can't see (where the source runs,
+replicas, the firewall, a secret store) comes from flags.
+
+usage: pipeline-diagram.py --pipeline <ingestion pipeline id> [--profile P] [options]
+       pipeline-diagram.py --pipeline-json ap.json [--gateway-json gw.json] [--connection-json conn.json] [options]
+  --format text|mermaid|both     default both
+  --source-cloud aws|azure|gcp|laptop      where the source database runs
+  --source-host TEXT             e.g. "VM + Podman", "Azure SQL Managed Instance", "RDS"
+  --primary HOST,PORT --secondary HOST,PORT   draw both nodes; the one the connection points at is marked
+  --firewall TEXT                e.g. "NSG", "security group", "pg_hba"
+  --secret-store TEXT            e.g. "Azure Key Vault", "AWS Secrets Manager"
+  --secret-kind uc|workspace|inline         where the connection's password comes from (default inline)
+  --capture cdc|ct|cdc+ct        SQL Server: how the tables are captured (default: from the pipeline's events after
+                                 its first run, "Replication tables: <n> CT tables, <m> CDC tables")
+  --source-facts FILE            VM type, vCPU, RAM, disks, JuiceFS, container limits: the JSON from vm-facts.sh or
+                                 slot.sh facts (default: $LFC_FACTS_DIR/<connection>.json, ~/.config/lfc/source-facts,
+                                 which lfc db up writes)
+  --vm TEXT                      or the VM line as text, e.g. "Standard_D2s_v5, 2 vCPU, 8 GB RAM, 64 GB Premium SSD"
+  --hide-host                    don't print host names or ports
+  -o FILE                        write there instead of stdout (a .md file gets the Mermaid in a fenced block)
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+
+CLOUD_NAMES = {"aws": "AWS", "azure": "Azure", "gcp": "Google Cloud", "laptop": "Laptop"}
+DB_TYPES = {"SQLSERVER", "ORACLE", "MYSQL", "POSTGRESQL", "MARIADB"}
+
+
+def capture_text(engine, mode, spec_src, connector_type):
+    """How changes leave the source, per engine: (short label, one-line detail)."""
+    if connector_type and connector_type.upper() not in ("CDC", ""):
+        return ("query-based", "cursor column", "a SELECT per run on a cursor column (updated-at or increasing id); deletes need a separate scan")
+    if engine == "SQLSERVER":
+        cdc = ("CDC", "change tables cdc.*_CT", "SQL Server's capture job copies the transaction log into change tables cdc.<capture instance>_CT;"
+                      " the utility objects (ALTER TABLE trigger, tracking table, 3 procedures) handle schema changes")
+        ct = ("change tracking", "CHANGETABLE", "CHANGETABLE(CHANGES ...) joined to the table: the latest version of each changed row")
+        if mode == "cdc":
+            return cdc
+        if mode == "ct":
+            return ct
+        if mode == "cdc+ct":
+            return ("CDC + change tracking", "change tables + CHANGETABLE", "per table: " + cdc[2] + "; and " + ct[2])
+        return ("CDC or change tracking", "per table", "decided per table by the source setup; shown after the pipeline's first run")
+    if engine == "ORACLE":
+        return ("LogMiner", "redo + archived redo logs", "redo and archived redo logs read with LogMiner (supplemental logging on)")
+    if engine in ("MYSQL", "MARIADB"):
+        return ("binlog", "ROW binlog", "the binary log in ROW format, read like a replica")
+    if engine == "POSTGRESQL":
+        sc = (spec_src or {}).get("postgres", {}).get("slot_config", {})
+        slot = sc.get("slot_name", "<slot>"); pub = sc.get("publication_name", "<publication>")
+        return ("logical replication", f"slot {slot} / publication {pub}", f"WAL decoded by pgoutput: slot {slot}, publication {pub}")
+    return ("", "", "")
+
+
+def capture_from_events(events):
+    """SQL Server: cdc / ct / cdc+ct from the newest 'Replication tables: <n> CT tables, <m> CDC tables' event."""
+    import re
+    for e in events:
+        mt = re.search(r"Replication tables: (\d+) CT tables, (\d+) CDC tables", e.get("message", ""))
+        if mt:
+            ct, cdc = int(mt.group(1)), int(mt.group(2))
+            return "cdc+ct" if ct and cdc else "ct" if ct else "cdc" if cdc else None
+    return None
+
+
+SECRET_KIND = {"uc": "UC secret", "workspace": "Workspace secret scope", "inline": "stored in the connection"}
+
+
+def cli(args, profile):
+    cmd = ["databricks", *args, "-o", "json"] + (["-p", profile] if profile else [])
+    return json.loads(subprocess.run(cmd, check=True, capture_output=True, text=True).stdout)
+
+
+def load(path):
+    with open(path) as f:
+        return json.load(f)
+
+
+def workspace_cloud(host):
+    h = (host or "").lower()
+    return "Azure" if "azuredatabricks" in h else "Google Cloud" if "gcp.databricks" in h else "AWS" if h else ""
+
+
+FACTS_DIR = os.environ.get("LFC_FACTS_DIR") or os.path.expanduser("~/.config/lfc/source-facts")
+
+
+def facts_for(conn_name):
+    """The facts file a database tool saved for this connection, if any."""
+    p = os.path.join(FACTS_DIR, f"{conn_name}.json") if conn_name else ""
+    return load(p) if p and os.path.isfile(p) else None
+
+
+def model(a, ap, gw, conn, host, events=()):
+    """Everything the two renderers need, as plain values."""
+    if a.facts is None:
+        a.facts = facts_for((conn or {}).get("name"))
+    fv = (a.facts or {}).get("vm") or {}
+    a.source_cloud = a.source_cloud or fv.get("cloud") or None
+    a.source_host = a.source_host or (a.facts or {}).get("source_host")
+    spec = ap.get("spec", ap)
+    idef = spec.get("ingestion_definition") or {}
+    gspec = (gw or {}).get("spec", gw or {})
+    gdef = gspec.get("gateway_definition") or {}
+    integrated = not idef.get("ingestion_gateway_id")
+    opts = (conn or {}).get("options") or {}
+    target = f"{opts.get('host', '?')},{opts.get('port', '?')}" if opts else ""
+    tables, scd = [], set()
+    for o in idef.get("objects") or []:
+        t = o.get("table") or o.get("schema") or {}
+        cat = t.get("destination_catalog") or spec.get("catalog")
+        sch = t.get("destination_schema") or spec.get("schema")
+        name = t.get("destination_table") or t.get("source_table") or "*"
+        tables.append(f"{cat}.{sch}.{name}")
+        scd.add(((t.get("table_configuration") or {}).get("scd_type") or "SCD_TYPE_1").replace("SCD_TYPE_", "SCD "))
+    ap_id = ap.get("pipeline_id") or spec.get("id") or "<pipeline>"
+    if integrated:
+        staging = f"{spec.get('catalog')}.{spec.get('schema')}  volume __databricks_ingestion_gateway_staging_data-{ap_id}"
+        gw_compute = "serverless" if spec.get("serverless") else "classic"
+    else:
+        gid = idef.get("ingestion_gateway_id")
+        staging = (f"{gdef.get('gateway_storage_catalog')}.{gdef.get('gateway_storage_schema')}"
+                   f"  volume __databricks_ingestion_gateway_staging_data-{gid}")
+        gw_compute = "serverless" if gspec.get("serverless") else "classic cluster"
+    nodes = []
+    if a.primary or a.secondary:
+        for role, hp in (("primary", a.primary), ("secondary", a.secondary)):
+            if hp:
+                nodes.append({"role": role, "hp": hp, "active": hp.replace(":", ",") == target})
+    else:
+        nodes.append({"role": "database", "hp": target, "active": True})
+    ctype = (conn or {}).get("connection_type", "")
+    saas = bool(ctype) and ctype.upper() not in DB_TYPES
+    srccfg = next((c.get("catalog") for c in idef.get("source_configurations") or [] if c.get("catalog")), None)
+    cap = capture_text(ctype.upper(), a.capture or capture_from_events(events), srccfg, idef.get("connector_type"))
+    return {
+        "saas": saas,
+        "capture": cap,
+        "integrated": integrated,
+        "source_cloud": CLOUD_NAMES.get(a.source_cloud or "", a.source_cloud or "source"),
+        "source_host": a.source_host or "database host",
+        "engine": (ctype or "database").title().replace("Sqlserver", "SQL Server")
+                  .replace("Postgresql", "PostgreSQL").replace("Mysql", "MySQL"),
+        "nodes": nodes,
+        "firewall": a.firewall,
+        "secret_store": a.secret_store,
+        "secret_kind": SECRET_KIND[a.secret_kind],
+        "workspace_cloud": workspace_cloud(host),
+        "connection": (conn or {}).get("name") or gdef.get("connection_name") or idef.get("connection_name") or "?",
+        "target": "" if a.hide_host else target.replace(",", ":"),
+        "gw_compute": gw_compute,
+        "gw_name": (gw or {}).get("name") or gdef.get("gateway_storage_name") or "gateway",
+        "ap_name": ap.get("name") or spec.get("name") or "ingestion pipeline",
+        "ap_compute": "serverless" if spec.get("serverless") else "classic",
+        "staging": staging,
+        "tables": tables,
+        "scd": ", ".join(sorted(scd)) or "SCD 1",
+        "hide_host": a.hide_host,
+        "facts": facts_lines(a.facts, a.vm),
+        "facts_short": facts_short(a.facts, a.vm),
+    }
+
+
+def gb(x):
+    return f"{x:g} GB" if isinstance(x, (int, float)) else "?"
+
+
+def facts_lines(f, vm_text):
+    """The source host as short lines: VM, database container, object storage."""
+    out = []
+    if vm_text:
+        out.append(f"VM {vm_text}")
+    vm = (f or {}).get("vm")
+    if vm and not vm_text:
+        disks = ", ".join(
+            f"{d.get('role')} {gb(d.get('gb'))} {d.get('type')}"
+            + (f" ({d['iops']} IOPS, {d['mbps']} MB/s)" if d.get("iops") and d.get("role") != "os" else "")
+            for d in vm.get("disks") or [])
+        out.append(f"VM {vm.get('type')}: {vm.get('cpu', '?')} vCPU, {gb(vm.get('ram_gb'))} RAM" + (f"; disks: {disks}" if disks else ""))
+    db = (f or {}).get("db")
+    if db:
+        cpu = f"{db['cpu']:g} CPU" if db.get("cpu") else "CPU not limited"
+        ram = f"{gb(db['ram_gb'])} RAM" if db.get("ram_gb") else "RAM not limited"
+        eng = f" (SQL Server max memory {gb(db['engine_ram_gb'])})" if db.get("engine_ram_gb") else ""
+        data = f", data {db['data_mb'] / 1024:.1f} GB on {'JuiceFS' if db.get('data_on') == 'juicefs' else 'the disk'}" \
+            if db.get("data_mb") is not None else ""
+        out.append(f"container {db.get('container')}: {cpu}, {ram}{eng}{data}")
+    for j in (f or {}).get("juicefs") or []:
+        out.append(f"JuiceFS {j.get('name')} at {j.get('mount')} (object storage: {j.get('backend')})")
+    return out
+
+
+def facts_short(f, vm_text):
+    """The same facts as short lines for the Mermaid box (one fact per line, data disks only)."""
+    if vm_text:
+        return [vm_text]
+    out, vm, db = [], (f or {}).get("vm"), (f or {}).get("db")
+    if vm:
+        out += [f"VM {vm.get('type')}", f"{vm.get('cpu', '?')} vCPU, {gb(vm.get('ram_gb'))} RAM"]
+        out += [f"disk {gb(d.get('gb'))} {d.get('type')}" + (f", {d['iops']} IOPS" if d.get("iops") else "")
+                for d in vm.get("disks") or [] if d.get("role") != "os"]
+    for j in (f or {}).get("juicefs") or []:
+        out.append(f"JuiceFS {j.get('name')}: {j.get('backend')}")
+    if db:
+        lim = ", ".join(x for x in (f"{db['cpu']:g} CPU" if db.get("cpu") else "",
+                                    f"{gb(db['ram_gb'])} RAM" if db.get("ram_gb") else "") if x) or "no CPU/RAM limit"
+        out.append(f"container {db.get('container')}")
+        out.append(lim + (f", engine max {gb(db['engine_ram_gb'])}" if db.get("engine_ram_gb") else ""))
+        if db.get("data_mb") is not None:
+            out.append(f"data {db['data_mb'] / 1024:.1f} GB on {'JuiceFS' if db.get('data_on') == 'juicefs' else 'disk'}")
+    return out
+
+
+def tables_line(m, n=3):
+    t = m["tables"]
+    return ", ".join(t[:n]) + (f" (+{len(t) - n} more)" if len(t) > n else "") if t else "(no tables)"
+
+
+def text(m):
+    L = []
+    nodes = "   ".join(f"[{d['role']}{'*' if d['active'] else ''}]" for d in m["nodes"])
+    L.append(f"{m['source_cloud']}: {m['source_host']}, {m['engine']}")
+    for line in m["facts"]:
+        L.append(f"  {line}")
+    if m["saas"]:
+        L[-1] = f"{m['engine']} API (SaaS)"
+    else:
+        L.append(f"  {nodes}" + ("   (* = the connection's target)" if len(m["nodes"]) > 1 else ""))
+    if m["capture"][0]:
+        where = next((d["role"] for d in m["nodes"] if d["active"]), "database")
+        L.append(f"  change capture: {m['capture'][0]}, read on the {where}: {m['capture'][2]}")
+    L.append("        |")
+    if m["firewall"]:
+        L.append(f"  firewall: {m['firewall']}")
+        L.append("        |")
+    L.append(f"Databricks ({m['workspace_cloud'] or 'workspace'})")
+    secret = f"  <-- {m['secret_kind']}" + (f" <-- {m['secret_store']}" if m["secret_store"] else "")
+    target = f" -> {m['target']}" if m["target"] else ""
+    L.append(f"  connection {m['connection']}{target}{secret}")
+    L.append("        |")
+    if m["saas"]:
+        L.append(f"  ingestion pipeline {m['ap_name']} ({m['ap_compute']}): API reads -> apply")
+    elif m["integrated"]:
+        L.append(f"  ingestion pipeline {m['ap_name']} (integrated CDC, {m['ap_compute']}): extract -> staging -> apply")
+        L.append(f"    staging: {m['staging']}")
+    else:
+        L.append(f"  gateway {m['gw_name']} ({m['gw_compute']}, continuous)")
+        L.append(f"    staging: {m['staging']}")
+        L.append("        |")
+        L.append(f"  ingestion pipeline {m['ap_name']} (applier, {m['ap_compute']})")
+    L.append("        |")
+    L.append(f"  streaming tables ({m['scd']}): {tables_line(m)}")
+    return "\n".join(L) + "\n"
+
+
+def q(s):
+    return '"' + str(s).replace('"', "'") + '"'
+
+
+def mermaid(m):
+    # wider text before Mermaid wraps a line (default about 200 px), so host and VM facts stay one per line
+    L = ['%%{init: {"flowchart": {"wrappingWidth": 420}}}%%', "flowchart TD"]
+    L.append(f"  subgraph SRC[{q(m['source_cloud'] + ': ' + m['source_host'])}]")
+    if m["saas"]:
+        L[-1] = f"  subgraph SRC[{q(m['engine'] + ' (SaaS)')}]"
+        L.append(f"    N0[{q(m['engine'] + ' API')}]")
+    else:
+        for i, d in enumerate(m["nodes"]):
+            hp = "" if m["hide_host"] or not d["hp"] else "<br/>" + d["hp"].replace(",", ":")
+            L.append(f"    N{i}[({q(m['engine'] + ' ' + d['role'] + hp)})]")
+        if len(m["nodes"]) == 2:
+            L.append("    N0 -. availability group .-> N1")
+    if m["facts"]:
+        L.append(f"    HW[{q('<br/>'.join(m['facts_short']))}]")
+        L.append("    HW ~~~ N0")
+    active = next((i for i, d in enumerate(m["nodes"]) if d["active"]), 0)
+    reader = f"N{active}"
+    if m["capture"][0]:
+        L.append(f"    CAP[/{q('change capture: ' + m['capture'][0] + '<br/>' + m['capture'][1])}/]")
+        L.append(f"    N{active} --> CAP")
+        reader = "CAP"
+    L.append("  end")
+    if m["firewall"]:
+        L.append(f"  FW{{{{{q('firewall: ' + m['firewall'])}}}}}")
+    L.append(f"  subgraph DBX[{q('Databricks workspace' + (' (' + m['workspace_cloud'] + ')' if m['workspace_cloud'] else ''))}]")
+    conn = f"UC connection<br/>{m['connection']}" + (f"<br/>{m['target']}" if m["target"] else "")
+    L.append(f"    C[{q(conn)}]")
+    L.append(f"    SEC[/{q(m['secret_kind'])}/]")
+    if m["saas"]:
+        L.append(f"    A[{q('ingestion pipeline ' + m['ap_name'] + '<br/>' + m['ap_compute'])}]")
+        first, last = "A", "A"
+    elif m["integrated"]:
+        L.append(f"    subgraph AP[{q('ingestion pipeline ' + m['ap_name'] + ' (integrated CDC, ' + m['ap_compute'] + ')')}]")
+        L.append("      X[extract] --> STG[(staging volume)] --> APL[apply]")
+        L.append("    end")
+        first, last = "X", "APL"
+    else:
+        L.append(f"    G[{q('gateway ' + m['gw_name'] + '<br/>' + m['gw_compute'] + ', continuous')}]")
+        L.append(f"    STG[({q('staging volume<br/>' + m['staging'].split('  ')[0])})]")
+        L.append(f"    A[{q('ingestion pipeline ' + m['ap_name'] + '<br/>applier, ' + m['ap_compute'])}]")
+        L.append("    G --> STG --> A")
+        first, last = "G", "A"
+    L.append(f"    T[({q('streaming tables (' + m['scd'] + ')<br/>' + tables_line(m, 2))})]")
+    L.append(f"    {last} --> T")
+    L.append(f"    C --> {first}")
+    L.append("    SEC --> C")
+    L.append("  end")
+    if m["secret_store"]:
+        L.append(f"  KV[/{q(m['secret_store'])}/] --> SEC")
+    if m["firewall"]:
+        L.append(f"  {reader} --- FW --- C")
+    else:
+        L.append(f"  {reader} --- C")
+    return "\n".join(L) + "\n"
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument("--pipeline"); p.add_argument("--profile")
+    p.add_argument("--pipeline-json"); p.add_argument("--gateway-json"); p.add_argument("--connection-json")
+    p.add_argument("--workspace-host", help="with --pipeline-json: the workspace URL, for its cloud")
+    p.add_argument("--format", choices=["text", "mermaid", "both"], default="both")
+    p.add_argument("--source-cloud"); p.add_argument("--source-host")
+    p.add_argument("--primary"); p.add_argument("--secondary")
+    p.add_argument("--firewall"); p.add_argument("--secret-store")
+    p.add_argument("--secret-kind", choices=list(SECRET_KIND), default="inline")
+    p.add_argument("--capture", choices=["cdc", "ct", "cdc+ct"])
+    p.add_argument("--events-json", help="with --pipeline-json: saved events of the reading pipeline")
+    p.add_argument("--source-facts"); p.add_argument("--vm")
+    p.add_argument("--hide-host", action="store_true")
+    p.add_argument("-o", dest="out")
+    a = p.parse_args()
+    a.facts = load(a.source_facts) if a.source_facts else None
+    if not (a.pipeline or a.pipeline_json):
+        print(__doc__, file=sys.stderr); sys.exit(2)
+    if a.pipeline_json:
+        ap = load(a.pipeline_json)
+        gw = load(a.gateway_json) if a.gateway_json else None
+        conn = load(a.connection_json) if a.connection_json else None
+        host = a.workspace_host or ""
+        events = load(a.events_json).get("events", []) if a.events_json else []
+    else:
+        ap = cli(["pipelines", "get", a.pipeline], a.profile)
+        gid = (ap.get("spec", {}).get("ingestion_definition") or {}).get("ingestion_gateway_id")
+        gw = cli(["pipelines", "get", gid], a.profile) if gid else None
+        cname = ((gw or {}).get("spec", {}).get("gateway_definition") or {}).get("connection_name") \
+            or (ap.get("spec", {}).get("ingestion_definition") or {}).get("connection_name")
+        conn = cli(["connections", "get", cname], a.profile) if cname else None
+        if conn:  # never keep a secret, even in memory
+            (conn.get("options") or {}).pop("password", None)
+        host = cli(["auth", "describe"], a.profile).get("details", {}).get("host", "")
+        events = []
+        if not a.capture and (conn or {}).get("connection_type", "").upper() == "SQLSERVER":
+            reader = gid or ap.get("pipeline_id")
+            try:
+                events = cli(["api", "get", f"/api/2.0/pipelines/{reader}/events?max_results=250"], a.profile).get("events", [])
+            except subprocess.CalledProcessError:
+                events = []
+    m = model(a, ap, gw, conn, host, events)
+    md = bool(a.out and a.out.endswith(".md"))
+    parts = []
+    if a.format in ("text", "both"):
+        parts.append(("```text\n" + text(m) + "```\n") if md else text(m))
+    if a.format in ("mermaid", "both"):
+        parts.append(("```mermaid\n" + mermaid(m) + "```\n") if md else mermaid(m))
+    out = "\n".join(parts)
+    if a.out:
+        with open(a.out, "w") as f:
+            f.write(out)
+    else:
+        sys.stdout.write(out)
+
+
+if __name__ == "__main__":
+    main()

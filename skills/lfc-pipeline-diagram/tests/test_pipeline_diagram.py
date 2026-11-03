@@ -1,0 +1,124 @@
+"""Offline checks of pipeline-diagram.py on saved pipeline, gateway and connection JSON (names are placeholders)."""
+import os
+import subprocess
+import sys
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SCRIPT = os.path.join(HERE, "..", "scripts", "pipeline-diagram.py")
+
+
+def run(*args):
+    return subprocess.run([sys.executable, SCRIPT, *args], check=True, capture_output=True, text=True).stdout
+
+
+def f(name):
+    return os.path.join(HERE, name)
+
+
+class Gateway(unittest.TestCase):
+    def setUp(self):
+        self.out = run("--pipeline-json", f("gateway-pipeline.json"), "--gateway-json", f("gateway-gateway.json"),
+                       "--connection-json", f("gateway-connection.json"),
+                       "--workspace-host", "https://adb-1.2.azuredatabricks.net", "--source-cloud", "azure",
+                       "--source-host", "VM + Podman", "--primary", "203.0.113.10,30005",
+                       "--secondary", "203.0.113.10,30006", "--firewall", "NSG", "--secret-kind", "uc")
+
+    def test_text(self):
+        self.assertIn("[primary]   [secondary*]", self.out)
+        self.assertIn("gateway demo_ag_gw (classic cluster, continuous)", self.out)
+        self.assertIn("staging: main.demo_ag_stg", self.out)
+        self.assertIn("<-- UC secret", self.out)
+        self.assertIn("Databricks (Azure)", self.out)
+
+    def test_mermaid(self):
+        self.assertIn("flowchart TD", self.out)
+        self.assertIn("N0 -. availability group .-> N1", self.out)
+        self.assertIn("N1 --> CAP", self.out)  # the connection points at the secondary: capture read there
+        self.assertIn("CAP --- FW --- C", self.out)
+        self.assertIn("change capture: CDC or change tracking, read on the secondary", self.out)
+        self.assertIn("G --> STG --> A", self.out)
+
+
+class Integrated(unittest.TestCase):
+    def test_integrated(self):
+        out = run("--pipeline-json", f("integrated-pipeline.json"), "--connection-json", f("integrated-connection.json"),
+                  "--workspace-host", "https://x.cloud.databricks.com", "--hide-host")
+        self.assertIn("(integrated CDC, serverless): extract -> staging -> apply", out)
+        self.assertIn("streaming tables (SCD 2)", out)
+        self.assertIn("Databricks (AWS)", out)
+        self.assertNotIn("1433", out)  # --hide-host
+        self.assertIn("X[extract] --> STG[(staging volume)] --> APL[apply]", out)
+
+
+class Facts(unittest.TestCase):
+    def test_vm_container_juicefs(self):
+        out = run("--pipeline-json", f("integrated-pipeline.json"), "--connection-json", f("integrated-connection.json"),
+                  "--source-facts", f("vm-facts.json"))
+        self.assertIn("VM Standard_D16s_v5: 16 vCPU, 64 GB RAM; disks: os 64 GB Premium_LRS, data 256 GB PremiumV2_LRS (3000 IOPS, 125 MB/s)", out)
+        self.assertIn("container demo-db-s: CPU not limited, RAM not limited (SQL Server max memory 4 GB), data 2.8 GB on the disk", out)
+        self.assertIn("JuiceFS demo-jfs at /mnt/jfs (object storage: Azure Blob)", out)
+        self.assertIn('HW["VM Standard_D16s_v5<br/>16 vCPU, 64 GB RAM<br/>disk 256 GB PremiumV2_LRS, 3000 IOPS', out)
+
+    def test_facts_found_by_connection_name(self):
+        import json, shutil, tempfile
+        d = tempfile.mkdtemp()
+        try:
+            facts = json.load(open(f("vm-facts.json"))); facts["source_host"] = "VM + Podman"
+            json.dump(facts, open(os.path.join(d, "my_sqlserver_conn.json"), "w"))
+            out = subprocess.run([sys.executable, SCRIPT, "--pipeline-json", f("integrated-pipeline.json"),
+                                  "--connection-json", f("integrated-connection.json"), "--format", "text"],
+                                 check=True, capture_output=True, text=True, env={**os.environ, "LFC_FACTS_DIR": d}).stdout
+        finally:
+            shutil.rmtree(d)
+        self.assertIn("Azure: VM + Podman, SQL Server", out)   # cloud and host from the facts
+        self.assertIn("VM Standard_D16s_v5: 16 vCPU", out)
+
+    def test_vm_text(self):
+        out = run("--pipeline-json", f("integrated-pipeline.json"), "--connection-json", f("integrated-connection.json"),
+                  "--vm", "Standard_D2s_v5, 2 vCPU, 8 GB RAM, 64 GB Premium SSD", "--format", "text")
+        self.assertIn("VM Standard_D2s_v5, 2 vCPU, 8 GB RAM, 64 GB Premium SSD", out)
+
+
+class Capture(unittest.TestCase):
+    """The change-capture line per engine, from a connection type (and events or spec where it depends on them)."""
+
+    def variant(self, ctype, pipeline_edit=None, extra=()):
+        import json, tempfile
+        conn = json.load(open(f("integrated-connection.json"))); conn["connection_type"] = ctype
+        ap = json.load(open(f("integrated-pipeline.json")))
+        if pipeline_edit:
+            pipeline_edit(ap["spec"]["ingestion_definition"])
+        with tempfile.TemporaryDirectory() as d:
+            cj, aj = os.path.join(d, "c.json"), os.path.join(d, "a.json")
+            json.dump(conn, open(cj, "w")); json.dump(ap, open(aj, "w"))
+            return run("--pipeline-json", aj, "--connection-json", cj, "--format", "text", *extra)
+
+    def test_sqlserver_events(self):
+        import json, tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as e:
+            json.dump({"events": [{"message": "Replication tables: 2 CT tables, 3 CDC tables"}]}, e)
+        try:
+            self.assertIn("change capture: CDC + change tracking", self.variant("SQLSERVER", extra=("--events-json", e.name)))
+        finally:
+            os.unlink(e.name)
+
+    def test_sqlserver_flag(self):
+        self.assertIn("change capture: change tracking", self.variant("SQLSERVER", extra=("--capture", "ct")))
+
+    def test_engines(self):
+        self.assertIn("change capture: LogMiner", self.variant("ORACLE"))
+        self.assertIn("change capture: binlog", self.variant("MYSQL"))
+        pg = self.variant("POSTGRESQL", lambda d: d.update(source_configurations=[{"catalog": {
+            "source_catalog": "db", "postgres": {"slot_config": {"slot_name": "s1", "publication_name": "p1"}}}}]))
+        self.assertIn("slot s1, publication p1", pg)
+
+    def test_query_based_and_saas(self):
+        self.assertIn("change capture: query-based", self.variant("SQLSERVER", lambda d: d.update(connector_type="QUERY_BASED")))
+        saas = self.variant("SALESFORCE")
+        self.assertIn("Salesforce API (SaaS)", saas)
+        self.assertIn("API reads -> apply", saas)
+
+
+if __name__ == "__main__":
+    unittest.main()
