@@ -186,7 +186,10 @@ def text(layers, reverse, indent="  "):
 
 
 def q(s):
-    return '"' + str(s).replace('"', "'") + '"'
+    """A Mermaid label: double quotes become single, and < > other than the <br/> line breaks are escaped (Mermaid
+    drops what looks like an HTML tag, such as a <slot> or <catalog> placeholder)."""
+    t = str(s).replace('"', "'").replace("<br/>", "\0").replace("<", "&lt;").replace(">", "&gt;").replace("\0", "<br/>")
+    return '"' + t + '"'
 
 
 def mermaid(layers, reverse, attach_from=None, indent="  ", first_id="L1", first_text=""):

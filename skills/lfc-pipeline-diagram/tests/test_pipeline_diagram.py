@@ -217,6 +217,11 @@ class Saas(unittest.TestCase):
         finally:
             os.unlink(c.name)
 
+    def test_mermaid_keeps_placeholders(self):
+        out = Capture().variant("POSTGRESQL", extra=("--format", "mermaid"))   # no slot in the spec
+        self.assertIn("slot &lt;slot&gt; / publication &lt;publication&gt;", out)
+        self.assertIn("<br/>", out)
+
     def test_load_tool_and_medallion(self):
         out = self.draw("JIRA", {}, "--model", "jira-test-data-generator", "--model-scale", "Small, 5000 issues",
                         "--model-tables", "12", "--reverse-etl", "PostgreSQL:synced tables:2", "--format", "text")
