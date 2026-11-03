@@ -18,7 +18,7 @@ write simulated tag observations to a Delta table through Zerobus Ingest (Python
   --burst-at M --burst-minutes 2 --burst-x 10
                     multiply the rate by --burst-x from minute M for --burst-minutes (no --burst-at: no burst)
   --dup-rate 0.001  share of events sent twice with the same event_id (at-least-once delivery upstream)
-  --out run.json    sent counts, errors, and the run and burst windows (epoch seconds) for report.py
+  --out run.json    sent counts (dups_sent: the copies --dup-rate added), errors, and the run and burst windows (epoch seconds) for report.py
 
   Kafka fan-out (optional): the same events, at the same moments, to a Kafka topic as JSON keyed by asset_id
   --kafka-bootstrap host:port   e.g. <namespace>.servicebus.windows.net:9093 for Event Hubs; SASL_SSL, PLAIN
@@ -97,7 +97,7 @@ class Stats(AckCallback):
     def __init__(self):
         super().__init__()
         self.lock, self.sent, self.acks, self.errors, self.reconnects, self.last_send = threading.Lock(), 0, 0, 0, 0, None
-        self.kafka_sent, self.kafka_errors = 0, 0
+        self.kafka_sent, self.kafka_errors, self.dups = 0, 0, 0
 
     def on_ack(self, offset):
         with self.lock:
@@ -205,7 +205,8 @@ def main():
                                           "quality": quality(r), "asset_id": asset.id, "asset_type": asset.type,
                                           "system": system, "measurement": meas, "unit": unit, "eng_low": lo,
                                           "eng_high": hi, "producer_id": f"{a.producer_id}-{idx}"})
-                    batch.extend([e for e in batch if r.random() < a.dup_rate])
+                    dups = [e for e in batch if r.random() < a.dup_rate]
+                    batch.extend(dups)
                     if stream is not None:
                         try:
                             stream.ingest_records_nowait(batch)
@@ -235,6 +236,7 @@ def main():
                             stats.kafka_sent += len(batch)
                     with stats.lock:
                         stats.sent += len(batch)
+                        stats.dups += len(dups)
                         stats.last_send = time.time()
                     next_t += period / len(slices)
                     delay = next_t - time.monotonic()
@@ -278,7 +280,7 @@ def main():
            "start": t0, "end": t1, "burst": burst, "sent": stats.sent, "errors": stats.errors,
            "kafka_sent": stats.kafka_sent if use_kafka else None, "kafka_errors": stats.kafka_errors if use_kafka else None,
            "reconnects": stats.reconnects, "streams": a.streams, "assets": a.assets, "tags": a.tags, "hz": a.hz,
-           "burst_x": a.burst_x if burst else None, "dup_rate": a.dup_rate}
+           "burst_x": a.burst_x if burst else None, "dup_rate": a.dup_rate, "dups_sent": stats.dups}
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     Path(a.out).write_text(json.dumps(out, indent=1))
     print(f"done: sent={stats.sent:,} in {t1 - t0:,.0f} s, errors={stats.errors}, reconnects={stats.reconnects}"

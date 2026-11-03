@@ -3,7 +3,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["databricks-sdk>=0.40"]
 # ///
-"""report.py <profile> --warehouse <id> --table <catalog.schema.table> (--run run.json | --window <start>,<end>) [--probe probe.json] [--sent N] [--column producer_time] [--json]:
+"""report.py <profile> --warehouse <id> --table <catalog.schema.table> (--run run.json | --window <start>,<end>) [--probe probe.json] [--sent N] [--column producer_time] [--id-column event_id] [--json]:
 what one producer run landed and how fresh it was: rows sent vs landed, the per-second rate and burst seen in the data, the table's commits, and freshness by phase.
 
   --run        producer.py's output: the run window, the burst window, and the rows sent
@@ -13,6 +13,9 @@ what one producer run landed and how fresh it was: rows sent vs landed, the per-
                (the first --warmup 15 seconds of the run are left out while the streams open)
   --sent N     rows sent, when there's no --run file (the producer's last line)
   --column     the event time column (default producer_time); an expression works for a VARIANT column
+  --id-column  the event id column (default event_id; value:event_id::string for a VARIANT value). With a run file that
+               has dups_sent, the distinct events sent (sent - dups_sent) are compared with the distinct ids landed:
+               lost events, and extra copies beyond the duplicates sent (at-least-once delivery on the way)
   --json       print one JSON object (metrics for a record.py record) instead of the text report
 
 Commits come from DESCRIBE HISTORY within the run window. Its timestamps are whole seconds, so each interval is
@@ -60,6 +63,7 @@ def main():
     p.add_argument("--probe")
     p.add_argument("--sent", type=int)
     p.add_argument("--column", default="producer_time")
+    p.add_argument("--id-column", default="event_id")
     p.add_argument("--burst-above", type=float, default=0)
     p.add_argument("--warmup", type=float, default=15)
     p.add_argument("--json", action="store_true")
@@ -92,6 +96,11 @@ def main():
         f"SELECT unix_timestamp(date_trunc('SECOND', {col})), count(*) FROM {a.table} "
         f"WHERE {col} >= timestamp_seconds({int(start) - 60}) AND {col} < timestamp_seconds({int(end) + 60}) GROUP BY 1 ORDER BY 1")]
     landed = sum(n for _, n in per_s)
+    dups_sent = run.get("dups_sent")
+    distinct = None
+    if dups_sent is not None and sent is not None:
+        distinct = int(sql(f"SELECT count(DISTINCT {a.id_column}) FROM {a.table} WHERE {col} >= timestamp_seconds({int(start) - 60}) "
+                           f"AND {col} < timestamp_seconds({int(end) + 60})")[0][0])
     base = statistics.median(n for _, n in per_s) if per_s else 0
     hot = [s for s, n in per_s if n > (a.burst_above or 3 * base)]
     seen_burst = (min(hot), max(hot) + 1) if hot else None
@@ -109,6 +118,8 @@ def main():
 
     out = {"window": [iso(start), iso(end)], "burst": [iso(burst[0]), iso(burst[1])] if burst else None,
            "sent": sent, "landed": landed, "missing": (sent - landed) if sent is not None else None,
+           "events": {"sent": sent - dups_sent, "landed": distinct, "lost": sent - dups_sent - distinct,
+                      "extra_copies": landed - sent} if distinct is not None else None,
            "rate_per_s": {"median": round(base), "peak": max((n for _, n in per_s), default=0),
                           "burst_mean": round(statistics.mean(n for s, n in per_s if seen_burst and seen_burst[0] <= s < seen_burst[1])) if seen_burst else None},
            "commits": {"operations": ops, "write_commits": len(writes),
@@ -134,6 +145,9 @@ def main():
         return
     print(f"window   {out['window'][0]} .. {out['window'][1]} UTC" + (f"; burst {out['burst'][0]} .. {out['burst'][1]}" if burst else ""))
     print(f"rows     sent {sent if sent is not None else '?'}, landed {landed}" + (f", missing {out['missing']}" if sent is not None else ""))
+    if out["events"]:
+        e = out["events"]
+        print(f"events   distinct sent {e['sent']}, landed {e['landed']}, lost {e['lost']}; copies landed beyond those sent {e['extra_copies']}")
     r = out["rate_per_s"]
     print(f"rate     median {r['median']:,}/s, peak {r['peak']:,}/s" + (f", burst mean {r['burst_mean']:,}/s" if r["burst_mean"] else ""))
     c = out["commits"]
