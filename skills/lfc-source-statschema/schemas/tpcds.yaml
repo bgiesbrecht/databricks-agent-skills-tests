@@ -16,6 +16,7 @@
 # Scaling tables use row_count_per_sf; integer SF is assumed.
 # Reference: https://www.tpc.org/tpc_documents_current_versions/pdf/tpc-ds_v3.2.0.pdf
 
+version: "1.0"
 tables:
 
 # ── Fixed dimension tables ──────────────────────────────────────────────────

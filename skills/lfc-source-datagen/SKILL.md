@@ -21,6 +21,10 @@ Two more scripts use the same drivers (`drivers.py`), for engines whose CLI can'
 
 How the planner works (every row from one integer, resuming, keys only at the ends, scrambled and random columns, the audit, foreign keys and the tags), and why generated values instead of realistic fake data: [references/how-it-works.md](references/how-it-works.md).
 
+## A workload for a model
+
+[`scripts/workload.sh`](scripts/workload.sh) `--model <model> --sf <scale> --dialect tsql --out <dir>` shapes one of statschema's models (its `schemas/` folder) at a scale, and writes `<dir>/workload.json` (the workload contract, lfc-workload-contract) with the model's DDL, its tables, and this folder's `copies.sh` (fill) and `bundle.sh` (bundle) as the commands. A test takes that file as `WORKLOAD_JSON`. Only `tsql` (SQL Server) has a fill command so far. It needs uv.
+
 ## Make a dataset
 
 A typical request: *"Create 100 tables, rows uniformly distributed up to 1 million, with a variety of data types."*

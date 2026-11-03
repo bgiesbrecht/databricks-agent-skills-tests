@@ -1,0 +1,7 @@
+version: "1.0"
+tables:
+  - name: branch
+    row_count: 1
+    columns:
+      - {name: bid, type: integer}
+      - {name: bid, type: integer}
