@@ -21,7 +21,7 @@ In Claude Code, from any folder, with no clone:
 
 From a terminal, the same with `claude plugin marketplace add rsleedbx/databricks-agent-skills-tests` and `claude plugin install lfc-tests@lfc-tests`. The public Lakeflow Connect skill the tests use comes from the Databricks plugin: `/plugin marketplace add databricks/databricks-agent-skills`, then `/plugin install databricks@databricks-agent-skills`.
 
-Then ask in plain words, as above. Each session starts by naming any tool the tests need that isn't installed (Databricks CLI, uv, jq, yq, DuckDB, Podman, and Lima on macOS); ask *"check the tools for local tests"* for the install commands ([check-tools.sh](skills/lfc-source-setup/scripts/check-tools.sh)). `/plugin update lfc-tests@lfc-tests` gets the latest. Results you record go to `~/.lfc/tests/results/` (or `$LFC_TESTS_RESULTS`), next to the ones shipped with the plugin; to add yours to this repo, open a pull request from a clone ([CONTRIBUTING.md](CONTRIBUTING.md)).
+Then ask in plain words, as above. Each session starts by naming any tool the tests need that isn't installed (Databricks CLI, uv, jq, yq, DuckDB, Podman, and Lima on macOS); ask *"check the tools for local tests"* for the install commands ([check-tools.sh](skills/cli-setup/scripts/check-tools.sh)). `/plugin update lfc-tests@lfc-tests` gets the latest. Results you record go to `~/.lfc/tests/results/` (or `$LFC_TESTS_RESULTS`), next to the ones shipped with the plugin; to add yours to this repo, open a pull request from a clone ([CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## What's tested, by route
 
@@ -60,6 +60,7 @@ The test space is large: where the source runs, the database and version, the in
 - [docs/lakeflow-connect-database.md](docs/lakeflow-connect-database.md): the prompts that reproduce each cell of the table, and what they create, in order.
 - [docs/coverage.md](docs/coverage.md): every axis tested, what the product refuses by design, and what's not tested yet.
 - [docs/findings.md](docs/findings.md): what the tests turned up, by source, route, layer and topology, with the fix or workaround for each: look up a combination before building it.
+- [docs/layers.md](docs/layers.md): which layer each skill is in (common, shape, contract, sources, lakeflow), what each may use, and the check that keeps the references one way ([layers.yaml](layers.yaml), [bin/check_layers.py](bin/check_layers.py)).
 - [docs/running-tests.md](docs/running-tests.md): setup, the deploy matrix, schema-change and script tests, recording results.
 - [MATRIX.md](MATRIX.md): every deploy-test cell and its pass criteria.
 - [skill-token-budget](.claude/skills/skill-token-budget/SKILL.md): how to write a skill so an agent loads few tokens (SKILL.md under 5k tokens, detail in references/, scripts run from their usage line), and the checks that enforce it.

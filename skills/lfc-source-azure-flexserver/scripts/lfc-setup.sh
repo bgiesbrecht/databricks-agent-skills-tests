@@ -12,7 +12,7 @@
 #          the same two tables with dt ON UPDATE CURRENT_TIMESTAMP; 10 rows each
 #   Idempotent: rerun after a fix. Ends by reading the row counts as the test user.
 set -euo pipefail
-. "$(dirname "${BASH_SOURCE[0]}")/../../lfc-source-setup/scripts/pw.sh"   # pw/pw_check: a password file or keyring:<name>
+. "$(dirname "${BASH_SOURCE[0]}")/../../secret-handling/scripts/pw.sh"   # pw/pw_check: a password file or keyring:<name>
 E=${1:?pg|mysql}
 : "${HOST:?}" "${DB:?}" "${ADMIN_PW_FILE:?}" "${LOGIN_PW_FILE:?}"
 LOGIN=${LOGIN:-lfc_user}

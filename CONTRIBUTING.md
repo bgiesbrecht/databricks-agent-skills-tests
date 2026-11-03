@@ -12,6 +12,10 @@ Results, fixes and new tests are welcome. The repo works like a shared notebook 
 
 Record each result with `record.py` ([lfc-test-results](skills/lfc-test-results/SKILL.md)). With the skills installed as a plugin, your records are in `~/.lfc/tests/results/`: copy the run files into `results/runs/` of your fork and open a pull request.
 
+## Layers
+
+Every skill and bin script is in a layer ([docs/layers.md](docs/layers.md)). A new one goes into [layers.yaml](layers.yaml) under the layer it belongs to, and a reference may only point to a layer that layer may use: `bin/check_layers.py` (run by `bin/test_scripts.sh`) fails otherwise. A fix that removes a reference from [layers-baseline.txt](layers-baseline.txt) is welcome; adding a line to it needs a reason in the pull request.
+
 ## What can't go in
 
 This repo is public. No customer data, internal information, IPs, hostnames, IDs, emails, workspace or catalog names, or credentials, in code, results, docs or commit messages ([SECURITY.md](SECURITY.md)).

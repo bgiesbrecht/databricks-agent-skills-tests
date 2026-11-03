@@ -12,5 +12,5 @@ fi
 printf 'lfc-tests plugin: paths in its skills that start with skills/, bin/, results/ or docs/ are relative to $LFC_TESTS (%s); run them as "$LFC_TESTS/<path>", from any folder.\n' "$here"
 tools="databricks uv jq yq duckdb podman"; [ "$(uname -s)" = Darwin ] && tools="$tools limactl"
 gone=""; for t in $tools; do command -v "$t" > /dev/null 2>&1 || gone="$gone $t"; done
-[ -z "$gone" ] || printf 'lfc-tests plugin: missing for local tests:%s. Before the first test, run bash "$LFC_TESTS/skills/lfc-source-setup/scripts/check-tools.sh" local and give the user its install commands; install nothing without asking.\n' "$gone"
+[ -z "$gone" ] || printf 'lfc-tests plugin: missing for local tests:%s. Before the first test, run bash "$LFC_TESTS/skills/cli-setup/scripts/check-tools.sh" local and give the user its install commands; install nothing without asking.\n' "$gone"
 exit 0

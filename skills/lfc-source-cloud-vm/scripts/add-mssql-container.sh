@@ -8,7 +8,7 @@
 #   the VM and stays there (~/.<container>.env); the login's password goes through standard input only.
 #   Prints the container name and the connection; checks the connection with remote_query.
 set -euo pipefail
-. "$(dirname "${BASH_SOURCE[0]}")/../../lfc-source-setup/scripts/pw.sh"   # pw/pw_check: a password file or keyring:<name>
+. "$(dirname "${BASH_SOURCE[0]}")/../../secret-handling/scripts/pw.sh"   # pw/pw_check: a password file or keyring:<name>
 : "${1:?port}" "${VM_IP:?}" "${PROFILE:?}" "${CONNECTION_NAME:?}" "${LOGIN_PW_FILE:?}"
 PORT=$1; LOGIN=${LOGIN:-lfc_user}; IMAGE=${IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}
 SSH=(ssh -i "${SSH_KEY:-$HOME/.ssh/lfc_test_rsa}" -o BatchMode=yes -o ConnectTimeout=15 "${VM_USER:-azureuser}@$VM_IP")
