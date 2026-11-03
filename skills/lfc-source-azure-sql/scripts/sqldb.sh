@@ -12,10 +12,10 @@
 #   currently available") until it's online, about a minute. wake: logs in until it answers (needs sqlcmd, ADMIN_PW_FILE).
 #   status: the database's state (Online, Paused, Resuming) and its pause settings. delete: the server and its databases.
 set -euo pipefail
-. "$(dirname "${BASH_SOURCE[0]}")/../../lfc-source-setup/scripts/pw.sh"   # pw/pw_check: a password file or keyring:<name>
+. "$(dirname "${BASH_SOURCE[0]}")/../../secret-handling/scripts/pw.sh"   # pw/pw_check: a password file or keyring:<name>
 CMD=${1:?plan|create|status|wake|delete}
 : "${RG:?}" "${SERVER:?}" "${DB:?}"
-. "$(dirname "$0")/../../lfc-source-setup/scripts/cloud-identity.sh"
+. "$(dirname "$0")/../../cli-setup/scripts/cloud-identity.sh"
 case $CMD in
 plan|create) SUBSCRIPTION=${SUBSCRIPTION:-$(az account show --query id -o tsv)} ;;
 *) : "${SUBSCRIPTION:?the subscription_id from the create IDENTITY line (the az default is not used)}" ;;

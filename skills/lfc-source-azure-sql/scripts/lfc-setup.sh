@@ -9,7 +9,7 @@
 #   (no key) with 10 rows each; the Lakeflow utility objects from the docs; change tracking on intpk, CDC on dtix,
 #   lakeflowFixPermissions; then db_owner is dropped again. Idempotent: rerun after a fix.
 set -euo pipefail
-. "$(dirname "${BASH_SOURCE[0]}")/../../lfc-source-setup/scripts/pw.sh"   # pw/pw_check: a password file or keyring:<name>
+. "$(dirname "${BASH_SOURCE[0]}")/../../secret-handling/scripts/pw.sh"   # pw/pw_check: a password file or keyring:<name>
 : "${HOST:?}" "${DB:?}" "${ADMIN_PW_FILE:?}" "${LOGIN_PW_FILE:?}"
 PORT=${PORT:-1433}; LOGIN=${LOGIN:-lfc_user}; SC=${SCHEMA:-dbo}
 for f in "$ADMIN_PW_FILE" "$LOGIN_PW_FILE"; do pw_check "$f" || exit 2; done
