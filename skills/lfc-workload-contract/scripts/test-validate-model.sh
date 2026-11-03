@@ -22,6 +22,7 @@ none_is_usage() { python3 "$VM" > /dev/null 2>&1; [ $? = 2 ]; }
 
 check "tables at indent 0, flow columns, a value list over two lines: passes" passes model-indent0.yaml
 check "tables at indent 2, block columns, a comment, version in single quotes: passes" passes model-indent2.yaml
+check "a long value that yaml.safe_dump wrapped over three lines (shape.py's output): passes" passes model-folded.yaml
 check "no version: refused" refused model-no-version.yaml "missing version"
 check "version as a number (1.0): refused" refused model-version-float.yaml 'needs the string "1.0"'
 check "no row count: refused" refused model-no-rows.yaml "needs exactly one of"

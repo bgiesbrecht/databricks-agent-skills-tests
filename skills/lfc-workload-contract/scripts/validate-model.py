@@ -209,8 +209,8 @@ class Block:
                 self.L[self.i] = [n, ind + off, rest]
                 out.append(self.node(ind + off))
             else:
-                out.append(inline(rest, n))
                 self.i += 1
+                out.append(inline(self.folded(rest, ind), n))
         return out
 
     def map(self, ind: int):
@@ -239,8 +239,16 @@ class Block:
                 else:
                     out[key] = None
             else:
-                out[key] = inline(val, n)
+                out[key] = inline(self.folded(val, ind), n)
         return out
+
+    def folded(self, val: str, ind: int) -> str:
+        """A scalar that a YAML writer wrapped (yaml.safe_dump folds long values): the deeper-indented lines after a
+        non-empty value can only continue it; join them with one space, as YAML folds them."""
+        while self.i < len(self.L) and self.L[self.i][1] > ind:
+            val += " " + self.L[self.i][2]
+            self.i += 1
+        return val
 
 
 def bracket_delta(s: str) -> int:
