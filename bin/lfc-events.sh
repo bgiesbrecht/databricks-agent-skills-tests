@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # lfc-events.sh <profile> <pipeline-id> [--update <id>] [--since <hours>] [--source table|api|auto] [--warehouse <id>]
-#               [--types <t1,t2>] [--summary]: a pipeline's events, from the pipeline events system table or the API.
+#               [--types <t1,t2>] [--levels <L1,L2>] [--summary | --json [--max <n>] [--details-chars <n>]]:
+#               a pipeline's events, from the pipeline events system table or the API.
 #
 # Two sources, both public:
 #   table  system.lakeflow_pipeline_events_preview.pipeline_events (Beta; system.lakeflow.pipeline_events at GA): every
@@ -11,7 +12,11 @@
 #          debugging a pipeline that is running now.
 #   auto   (default) the table, unless it can't be read or it is behind the API's newest event: then the API.
 #
-# Prints one line per event: time, type, level, update, flow or dataset, message. --types keeps only those event types.
+# Prints one line per event: time, type, level, update, flow or dataset, message. --types keeps only those event types,
+# --levels only those levels (INFO, WARN, ERROR; with the API the filter goes to the API, so fewer pages are read).
+# --json prints instead one JSON array, newest first: timestamp, level, event_type, update_id, flow, message, error_class
+# (API only), details (JSON text, cut to --details-chars, default 800); --max keeps the newest n (and with the API stops
+# reading pages once it has them). --since 0: no time window (the API's 40 pages at most).
 # --summary prints instead: events by type and level; warnings (gc_pressure, abnormal_termination, disk_space, WARN
 # and ERROR); outbound API calls (remote_api_usage, SaaS connectors); the newest cluster_resources (autoscaling, task
 # slots); each update's start, full refresh and last state; rows and backlog per table (flow_progress); the latest
@@ -21,11 +26,12 @@
 set -euo pipefail
 [ $# -ge 2 ] || { sed -n 2,20p "$0"; exit 2; }
 PROFILE=$1 PIPE=$2; shift 2
-UPD="" SINCE=24 SRC=auto WH="" TYPES="" SUMMARY=0
+UPD="" SINCE=24 SRC=auto WH="" TYPES="" SUMMARY=0 LEVELS="" JSON=0 MAX=0 DCH=800
 while [ $# -gt 0 ]; do
   case $1 in
     --update) UPD=$2; shift ;; --since) SINCE=$2; shift ;; --source) SRC=$2; shift ;;
     --warehouse) WH=$2; shift ;; --types) TYPES=$2; shift ;; --summary) SUMMARY=1 ;;
+    --levels) LEVELS=$2; shift ;; --json) JSON=1 ;; --max) MAX=$2; shift ;; --details-chars) DCH=$2; shift ;;
     *) sed -n 2,20p "$0"; exit 2 ;;
   esac
   shift
@@ -37,23 +43,28 @@ note() { echo "$*" >&2; }
 [[ $PIPE =~ ^[0-9a-f-]{36}$ ]] || { note "pipeline id should be a UUID: $PIPE"; exit 2; }
 [[ -z $UPD || $UPD =~ ^[0-9a-f-]+$ ]] || { note "update id should be hex: $UPD"; exit 2; }
 [[ $SINCE =~ ^[0-9]+$ ]] || { note "--since takes hours: $SINCE"; exit 2; }
+[[ -z $LEVELS || $LEVELS =~ ^(INFO|WARN|ERROR)(,(INFO|WARN|ERROR))*$ ]] || { note "--levels: INFO, WARN, ERROR, comma separated"; exit 2; }
+[[ $MAX =~ ^[0-9]+$ && $DCH =~ ^[0-9]+$ ]] || { note "--max and --details-chars take numbers"; exit 2; }
 
 # events -> $W/events.tsv: time, type, level, update, flow-or-dataset, message, details (JSON, base64: @tsv would
-# escape the backslashes in JSON strings such as stream_progress.progress_json)
+# escape the backslashes in JSON strings such as stream_progress.progress_json), error class (API only)
 from_api() {
-  echo '[]' > "$W/all.json"; local tok="" cutoff
-  cutoff=$(jq -rn --argjson h "$SINCE" 'now - $h * 3600 | strftime("%Y-%m-%dT%H:%M:%S")')
+  echo '[]' > "$W/all.json"; local tok="" cutoff lf=""
+  cutoff=$(jq -rn --argjson h "$SINCE" 'if $h == 0 then "" else now - $h * 3600 | strftime("%Y-%m-%dT%H:%M:%S") end')
+  [ -n "$LEVELS" ] && lf="&filter=$(jq -rn --arg l "$LEVELS" '"level in (" + ($l | split(",") | map("'"'"'" + . + "'"'"'") | join(", ")) + ")" | @uri')"
   for _ in $(seq 1 40); do
-    databricks api get "/api/2.0/pipelines/$PIPE/events?max_results=250${tok:+&page_token=$tok}" --profile "$PROFILE" -o json > "$W/page.json"
+    databricks api get "/api/2.0/pipelines/$PIPE/events?max_results=250$lf${tok:+&page_token=$tok}" --profile "$PROFILE" -o json > "$W/page.json"
     yq -o json -i ". + load(\"$W/page.json\").events" "$W/all.json"
     tok=$(yq -r '.next_page_token // ""' "$W/page.json")
     [ -n "$tok" ] || break
-    [[ "$(jq -r '.events[-1].timestamp // ""' "$W/page.json")" < "$cutoff" ]] && break   # newest first: past the window
+    [ "$MAX" -gt 0 ] && [ "$(jq length "$W/all.json")" -ge "$MAX" ] && [ -z "$UPD" ] && break   # enough of the newest
+    [ -n "$cutoff" ] && [[ "$(jq -r '.events[-1].timestamp // ""' "$W/page.json")" < "$cutoff" ]] && break   # newest first: past the window
   done
   jq -r --arg c "$cutoff" --arg u "$UPD" '.[] | select(.timestamp >= $c)
     | select($u == "" or ((.origin.update_id // "") | startswith($u)))
     | [.timestamp, .event_type, .level, (.origin.update_id // ""), (.origin.flow_name // .origin.dataset_name // ""),
-       ((.message // "") | gsub("[\t\n]+"; " ")), (.details // {} | tojson | @base64)] | @tsv' "$W/all.json" | sort > "$W/events.tsv"
+       ((.message // "") | gsub("[\t\n]+"; " ")), (.details // {} | tojson | @base64),
+       ((.error.exceptions // [])[0].class_name // "")] | @tsv' "$W/all.json" | sort > "$W/events.tsv"
 }
 
 sql() {   # sql <statement>: rows as TSV; empty on failure, the error in $W/sql.err
@@ -96,9 +107,20 @@ esac
 if [ -n "$TYPES" ]; then
   awk -F'\t' -v t=",$TYPES," 'index(t, "," $2 ",")' "$W/events.tsv" > "$W/f.tsv" && mv "$W/f.tsv" "$W/events.tsv"
 fi
+if [ -n "$LEVELS" ]; then
+  awk -F'\t' -v t=",$LEVELS," 'index(t, "," $3 ",")' "$W/events.tsv" > "$W/f.tsv" && mv "$W/f.tsv" "$W/events.tsv"
+fi
 n=$(wc -l < "$W/events.tsv" | tr -d ' ')
-note "$n events from the $used, last $SINCE h${UPD:+, update $UPD}"
+win="last $SINCE h"; [ "$SINCE" = 0 ] && win="no time window"
+note "$n events from the $used, $win${UPD:+, update $UPD}"
 
+if [ "$JSON" = 1 ]; then
+  jq -Rn --argjson max "$MAX" --argjson dch "$DCH" '[inputs | split("\t") | {timestamp: .[0], event_type: .[1], level: .[2],
+      update_id: .[3], flow: .[4], message: (.[5] | .[0:500]), error_class: (.[7] // ""),
+      details: ((.[6] // "") | if . == "" then "{}" else @base64d end | .[0:$dch])}] | reverse
+    | if $max > 0 then .[0:$max] else . end' "$W/events.tsv"
+  exit 0
+fi
 if [ "$SUMMARY" = 0 ]; then
   cut -f1-6 "$W/events.tsv"
   exit 0
