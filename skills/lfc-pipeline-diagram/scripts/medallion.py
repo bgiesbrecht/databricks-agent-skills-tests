@@ -28,6 +28,7 @@ KINDS = ("scd1", "scd2", "append", "recomputed", "keyed", "view", "unknown")
 LABEL = {"scd1": "SCD 1", "scd2": "SCD 2", "append": "append-only", "recomputed": "recomputed (MV)",
          "keyed": "keyed MERGE/update", "view": "views", "unknown": "written outside a pipeline"}
 MATERIALIZED = {"STREAMING_TABLE", "MATERIALIZED_VIEW", "MANAGED", "EXTERNAL", "FOREIGN"}
+WRITTEN = {"append": "append", "scd1": "scd1", "scd2": "scd2", "merge": "keyed"}   # --written values -> KINDS
 FLOW_KIND = {"APPEND": "append", "COMPLETE": "recomputed", "MATERIALIZED_VIEW": "recomputed", "VIEW": "view",
              "MERGE": "keyed", "UPDATE": "keyed", "REPLACE_USING": "keyed", "REPLACE_WHERE": "keyed"}
 
@@ -223,7 +224,13 @@ def collect(a):
     if a.layers_json:
         with open(a.layers_json) as f:
             return json.load(f)
-    written = dict(w.split("=", 1) for w in a.written or [])
+    written = {}
+    for w in a.written or []:
+        name, _, how = w.partition("=")
+        how = WRITTEN.get(how)
+        if how is None:
+            raise SystemExit(f"medallion: --written {w}: how must be one of {', '.join(WRITTEN)}")
+        written[name] = how
     cache = {}
     out = []
     for spec in a.layer or []:

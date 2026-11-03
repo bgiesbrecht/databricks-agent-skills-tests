@@ -112,6 +112,11 @@ class Workspace(unittest.TestCase):
         import argparse
         a = argparse.Namespace(layers_json=None, layer=["bronze=c.s"], written=["bronze=append"], profile=None)
         self.assertEqual(med.collect(a)[0]["by_kind"], {"append": 1})
+        a.written = ["bronze=merge"]
+        self.assertEqual(med.collect(a)[0]["by_kind"], {"keyed": 1})                  # merge is counted as keyed
+        a.written = ["bronze=upsert"]
+        with self.assertRaises(SystemExit):
+            med.collect(a)
 
     def test_count_layer(self):
         cols = lambda *n: [{"name": x} for x in n]
