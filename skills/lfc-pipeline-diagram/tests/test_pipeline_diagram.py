@@ -51,6 +51,21 @@ class Integrated(unittest.TestCase):
         self.assertIn("X[extract] --> STG[(staging volume)] --> APL[apply]", out)
 
 
+class Facts(unittest.TestCase):
+    def test_vm_container_juicefs(self):
+        out = run("--pipeline-json", f("integrated-pipeline.json"), "--connection-json", f("integrated-connection.json"),
+                  "--source-facts", f("vm-facts.json"))
+        self.assertIn("VM Standard_D16s_v5: 16 vCPU, 64 GB RAM; disks: os 64 GB Premium_LRS, data 256 GB PremiumV2_LRS (3000 IOPS, 125 MB/s)", out)
+        self.assertIn("container demo-db-s: CPU not limited, RAM not limited (SQL Server max memory 4 GB), data 2.8 GB on the disk", out)
+        self.assertIn("JuiceFS demo-jfs at /mnt/jfs (object storage: Azure Blob)", out)
+        self.assertIn('HW["VM Standard_D16s_v5<br/>16 vCPU, 64 GB RAM<br/>disk 256 GB PremiumV2_LRS, 3000 IOPS', out)
+
+    def test_vm_text(self):
+        out = run("--pipeline-json", f("integrated-pipeline.json"), "--connection-json", f("integrated-connection.json"),
+                  "--vm", "Standard_D2s_v5, 2 vCPU, 8 GB RAM, 64 GB Premium SSD", "--format", "text")
+        self.assertIn("VM Standard_D2s_v5, 2 vCPU, 8 GB RAM, 64 GB Premium SSD", out)
+
+
 class Capture(unittest.TestCase):
     """The change-capture line per engine, from a connection type (and events or spec where it depends on them)."""
 

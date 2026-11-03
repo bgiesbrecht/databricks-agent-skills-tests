@@ -17,6 +17,8 @@ usage: pipeline-diagram.py --pipeline <ingestion pipeline id> [--profile P] [opt
   --secret-kind uc|workspace|inline         where the connection's password comes from (default inline)
   --capture cdc|ct|cdc+ct        SQL Server: how the tables are captured (default: from the pipeline's events after
                                  its first run, "Replication tables: <n> CT tables, <m> CDC tables")
+  --source-facts FILE            VM type, vCPU, RAM, disks, JuiceFS, container limits: the JSON from vm-facts.sh
+  --vm TEXT                      or the VM line as text, e.g. "Standard_D2s_v5, 2 vCPU, 8 GB RAM, 64 GB Premium SSD"
   --hide-host                    don't print host names or ports
   -o FILE                        write there instead of stdout (a .md file gets the Mermaid in a fenced block)
 """
@@ -144,7 +146,59 @@ def model(a, ap, gw, conn, host, events=()):
         "tables": tables,
         "scd": ", ".join(sorted(scd)) or "SCD 1",
         "hide_host": a.hide_host,
+        "facts": facts_lines(a.facts, a.vm),
+        "facts_short": facts_short(a.facts, a.vm),
     }
+
+
+def gb(x):
+    return f"{x:g} GB" if isinstance(x, (int, float)) else "?"
+
+
+def facts_lines(f, vm_text):
+    """The source host as short lines: VM, database container, object storage."""
+    out = []
+    if vm_text:
+        out.append(f"VM {vm_text}")
+    vm = (f or {}).get("vm")
+    if vm and not vm_text:
+        disks = ", ".join(
+            f"{d.get('role')} {gb(d.get('gb'))} {d.get('type')}"
+            + (f" ({d['iops']} IOPS, {d['mbps']} MB/s)" if d.get("iops") and d.get("role") != "os" else "")
+            for d in vm.get("disks") or [])
+        out.append(f"VM {vm.get('type')}: {vm.get('cpu', '?')} vCPU, {gb(vm.get('ram_gb'))} RAM" + (f"; disks: {disks}" if disks else ""))
+    db = (f or {}).get("db")
+    if db:
+        cpu = f"{db['cpu']:g} CPU" if db.get("cpu") else "CPU not limited"
+        ram = f"{gb(db['ram_gb'])} RAM" if db.get("ram_gb") else "RAM not limited"
+        eng = f" (SQL Server max memory {gb(db['engine_ram_gb'])})" if db.get("engine_ram_gb") else ""
+        data = f", data {db['data_mb'] / 1024:.1f} GB on {'JuiceFS' if db.get('data_on') == 'juicefs' else 'the disk'}" \
+            if db.get("data_mb") is not None else ""
+        out.append(f"container {db.get('container')}: {cpu}, {ram}{eng}{data}")
+    for j in (f or {}).get("juicefs") or []:
+        out.append(f"JuiceFS {j.get('name')} at {j.get('mount')} (object storage: {j.get('backend')})")
+    return out
+
+
+def facts_short(f, vm_text):
+    """The same facts as short lines for the Mermaid box (one fact per line, data disks only)."""
+    if vm_text:
+        return [vm_text]
+    out, vm, db = [], (f or {}).get("vm"), (f or {}).get("db")
+    if vm:
+        out += [f"VM {vm.get('type')}", f"{vm.get('cpu', '?')} vCPU, {gb(vm.get('ram_gb'))} RAM"]
+        out += [f"disk {gb(d.get('gb'))} {d.get('type')}" + (f", {d['iops']} IOPS" if d.get("iops") else "")
+                for d in vm.get("disks") or [] if d.get("role") != "os"]
+    for j in (f or {}).get("juicefs") or []:
+        out.append(f"JuiceFS {j.get('name')}: {j.get('backend')}")
+    if db:
+        lim = ", ".join(x for x in (f"{db['cpu']:g} CPU" if db.get("cpu") else "",
+                                    f"{gb(db['ram_gb'])} RAM" if db.get("ram_gb") else "") if x) or "no CPU/RAM limit"
+        out.append(f"container {db.get('container')}")
+        out.append(lim + (f", engine max {gb(db['engine_ram_gb'])}" if db.get("engine_ram_gb") else ""))
+        if db.get("data_mb") is not None:
+            out.append(f"data {db['data_mb'] / 1024:.1f} GB on {'JuiceFS' if db.get('data_on') == 'juicefs' else 'disk'}")
+    return out
 
 
 def tables_line(m, n=3):
@@ -156,6 +210,8 @@ def text(m):
     L = []
     nodes = "   ".join(f"[{d['role']}{'*' if d['active'] else ''}]" for d in m["nodes"])
     L.append(f"{m['source_cloud']}: {m['source_host']}, {m['engine']}")
+    for line in m["facts"]:
+        L.append(f"  {line}")
     if m["saas"]:
         L[-1] = f"{m['engine']} API (SaaS)"
     else:
@@ -192,7 +248,8 @@ def q(s):
 
 
 def mermaid(m):
-    L = ["flowchart TD"]
+    # wider text before Mermaid wraps a line (default about 200 px), so host and VM facts stay one per line
+    L = ['%%{init: {"flowchart": {"wrappingWidth": 420}}}%%', "flowchart TD"]
     L.append(f"  subgraph SRC[{q(m['source_cloud'] + ': ' + m['source_host'])}]")
     if m["saas"]:
         L[-1] = f"  subgraph SRC[{q(m['engine'] + ' (SaaS)')}]"
@@ -203,6 +260,9 @@ def mermaid(m):
             L.append(f"    N{i}[({q(m['engine'] + ' ' + d['role'] + hp)})]")
         if len(m["nodes"]) == 2:
             L.append("    N0 -. availability group .-> N1")
+    if m["facts"]:
+        L.append(f"    HW[{q('<br/>'.join(m['facts_short']))}]")
+        L.append("    HW ~~~ N0")
     active = next((i for i, d in enumerate(m["nodes"]) if d["active"]), 0)
     reader = f"N{active}"
     if m["capture"][0]:
@@ -256,9 +316,11 @@ def main():
     p.add_argument("--secret-kind", choices=list(SECRET_KIND), default="inline")
     p.add_argument("--capture", choices=["cdc", "ct", "cdc+ct"])
     p.add_argument("--events-json", help="with --pipeline-json: saved events of the reading pipeline")
+    p.add_argument("--source-facts"); p.add_argument("--vm")
     p.add_argument("--hide-host", action="store_true")
     p.add_argument("-o", dest="out")
     a = p.parse_args()
+    a.facts = load(a.source_facts) if a.source_facts else None
     if not (a.pipeline or a.pipeline_json):
         print(__doc__, file=sys.stderr); sys.exit(2)
     if a.pipeline_json:

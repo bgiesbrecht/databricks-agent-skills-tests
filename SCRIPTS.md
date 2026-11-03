@@ -51,6 +51,7 @@ line of its usage. Run a script with no arguments for its full usage instead of 
 
 - `skills/lfc-pipeline-diagram/scripts/pipeline-diagram.py` draw a Lakeflow Connect database pipeline as text and/or Mermaid.
 - `skills/lfc-pipeline-diagram/scripts/show-diagram.sh` <ingestion pipeline id>: print the pipeline's text diagram to stderr right after it is created, so whoever ran the cr...
+- `skills/lfc-pipeline-diagram/scripts/vm-facts.sh` azure <resource-group> <vm-name> | aws <instance-id>  [options]: the source VM's facts as one JSON line for pipeline-...
 
 ## lfc-saas-answer
 
