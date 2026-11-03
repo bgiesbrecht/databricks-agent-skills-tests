@@ -79,6 +79,7 @@ layers:
     bin:
       - check_links.py
       - check_layers.py
+      - check_model_counts.py
       - lint_scripts.py
       - plugin-session.sh
       - run_batch.sh

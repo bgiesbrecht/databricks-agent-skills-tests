@@ -3,7 +3,8 @@
 # whoever ran the create sees which components exist, and save text + Mermaid to $DIAGRAM_MD when set. Never fails the
 # caller. Profile: $PROFILE or $DATABRICKS_CONFIG_PROFILE. Flags from env: SRC_CLOUD, SRC_HOST, SRC_PRIMARY,
 # SRC_SECONDARY, SRC_FIREWALL, SECRET_STORE, SECRET_KIND, CAPTURE (cdc|ct|cdc+ct), SRC_FACTS (a vm-facts.sh JSON file),
-# SRC_VM (the VM as text). DIAGRAM=0 skips it.
+# SRC_VM (the VM as text), SRC_MODEL, SRC_MODEL_TABLES, SRC_MODEL_SCALE (the data model loaded into the source).
+# DIAGRAM=0 skips it.
 id=${1:?usage: show-diagram.sh <ingestion pipeline id>}
 [ "${DIAGRAM:-1}" = 1 ] || exit 0
 py="$(cd "$(dirname "$0")" && pwd)/pipeline-diagram.py"
@@ -19,6 +20,9 @@ p=${PROFILE:-${DATABRICKS_CONFIG_PROFILE:-}}; [ -n "$p" ] && fl+=(--profile "$p"
 [ -n "${CAPTURE:-}" ] && fl+=(--capture "$CAPTURE")
 [ -n "${SRC_FACTS:-}" ] && [ -f "$SRC_FACTS" ] && fl+=(--source-facts "$SRC_FACTS")   # from vm-facts.sh
 [ -n "${SRC_VM:-}" ] && fl+=(--vm "$SRC_VM")
+[ -n "${SRC_MODEL:-}" ] && fl+=(--model "$SRC_MODEL")
+[ -n "${SRC_MODEL_TABLES:-}" ] && fl+=(--model-tables "$SRC_MODEL_TABLES")
+[ -n "${SRC_MODEL_SCALE:-}" ] && fl+=(--model-scale "$SRC_MODEL_SCALE")
 {
   echo "Components created for pipeline $id:"
   python3 "$py" ${fl[@]+"${fl[@]}"} --format text 2>/dev/null || echo "(diagram skipped: pipeline-diagram.py failed)"
