@@ -14,6 +14,7 @@ case "$*" in
   "group show"*) [ -n "${FA_GROUP:-}" ] ;;
   "eventhubs namespace show"*)
     [ -z "${FA_LOOKUP_FAILS:-}" ] || { echo "ERROR: AADSTS700082: The refresh token has expired" >&2; exit 1; }
+    [ -z "${FA_OTHER_SUB:-}" ] || { echo "ERROR: (ResourceGroupNotFound) Resource group 'rg1' could not be found." >&2; exit 3; }
     [ -n "${FA_NS:-}" ] || { echo "ERROR: (ResourceNotFound) The Resource was not found" >&2; exit 3; }
     [ "$FA_NS" = none ] && echo "" || echo "$FA_NS" ;;
   *"authorization-rule keys list"*) echo "Endpoint=sb://x.servicebus.windows.net/;SharedAccessKeyName=kafka-test;SharedAccessKey=k" ;;
@@ -43,4 +44,6 @@ FA_NS= eh down rg1 ns1 --apply; rc=$?
 ok "down, nothing there: rc 0, no delete" '[ $rc = 0 ] && ! calls | grep -q delete'
 FA_LOOKUP_FAILS=1 FA_NS=lfc-kafka-freshness-test eh down rg1 ns1 --apply; rc=$?
 ok "down, the lookup fails (expired login): rc 1, no delete, the error shown" '[ $rc = 1 ] && ! calls | grep -q delete && grep -q AADSTS "$T/out"'
+FA_OTHER_SUB=1 eh down rg1 ns1 --apply; rc=$?
+ok "down, the group isn't in this subscription: rc 1, not \"nothing to delete\"" '[ $rc = 1 ] && ! calls | grep -q delete && grep -q "check the subscription" "$T/out"'
 exit $fail

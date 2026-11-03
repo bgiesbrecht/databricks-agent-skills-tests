@@ -45,7 +45,8 @@ down)
   E=$(mktemp); trap 'rm -f "$E"' EXIT
   if ! by=$(az eventhubs namespace show ${AZ_SUBSCRIPTION:+--subscription "$AZ_SUBSCRIPTION"} -g "$RG" -n "$NS" --query tags.CreatedBy -o tsv 2>"$E"); then
     # only a namespace that isn't there is nothing to delete; an expired login or a wrong subscription is a failure
-    grep -q -E 'ResourceNotFound|ResourceGroupNotFound' "$E" && { echo "namespace $NS not found in $RG: nothing to delete"; exit 0; }
+    grep -q '(ResourceNotFound)' "$E" && { echo "namespace $NS not found in $RG: nothing to delete"; exit 0; }
+    grep -q 'ResourceGroupNotFound' "$E" && { echo "resource group $RG not found${AZ_SUBSCRIPTION:+ in subscription $AZ_SUBSCRIPTION}: check the subscription; nothing deleted"; exit 1; }
     echo "couldn't look up namespace $NS in $RG; nothing deleted:"; cat "$E"; exit 1
   fi
   [ "$by" = "$MINE" ] || { echo "namespace $NS wasn't created by this script (CreatedBy=${by:-none}): not deleted"; exit 2; }
