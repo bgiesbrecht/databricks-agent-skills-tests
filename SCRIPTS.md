@@ -50,6 +50,7 @@ line of its usage. Run a script with no arguments for its full usage instead of 
 ## lfc-pipeline-diagram
 
 - `skills/lfc-pipeline-diagram/scripts/pipeline-diagram.py` draw a Lakeflow Connect database pipeline as text and/or Mermaid.
+- `skills/lfc-pipeline-diagram/scripts/show-diagram.sh` <ingestion pipeline id>: print the pipeline's text diagram to stderr right after it is created, so whoever ran the cr...
 
 ## lfc-saas-answer
 

@@ -1,6 +1,6 @@
 ---
 name: lfc-pipeline-diagram
-description: Draw a Lakeflow Connect database pipeline as a text diagram and a Mermaid flowchart, from what was actually created (gateway or integrated CDC, serverless or classic, staging volume, UC connection and the host it points at, destination tables and SCD type) plus flags for what the API can't see (where the source runs, primary/secondary, firewall, secret store). Use right after creating a pipeline, in a test report or a customer write-up, or to check which node a connection points at.
+description: Draw a Lakeflow Connect pipeline as a text diagram and a Mermaid flowchart, from what was actually created (gateway or integrated CDC, serverless or classic, staging volume, UC connection and the host it points at, how changes are captured: SQL Server CDC or change tracking, Oracle LogMiner, MySQL binlog, PostgreSQL slot and publication, query-based, SaaS API; destination tables and SCD type) plus flags for what the API can't see (where the source runs, primary/secondary, firewall, secret store). Use right after creating a pipeline, in a test report or a customer write-up, or to check which node a connection points at.
 ---
 
 # Pipeline diagram
@@ -21,9 +21,27 @@ scripts/pipeline-diagram.py --pipeline <id> --source-cloud azure --source-host "
 | UC connection name, type and `host:port` (the password is dropped as soon as it is read) | `--firewall` |
 | Destination tables (first few, then a count) and SCD type | `--secret-store`, `--secret-kind uc\|workspace\|inline` |
 | The workspace's cloud, from its URL | `--hide-host` leaves host names and ports out |
+| How changes leave the source (below) | `--capture cdc\|ct\|cdc+ct` for SQL Server before its first run |
+
+## Change capture per source
+
+| Source | Shown as | Where it comes from |
+|---|---|---|
+| SQL Server | CDC (change tables `cdc.<capture instance>_CT`, utility objects for schema changes), change tracking (`CHANGETABLE`), or both | The pipeline's event `Replication tables: <n> CT tables, <m> CDC tables` (gateway or integrated pipeline); before the first run, `--capture` |
+| Oracle | LogMiner on redo and archived redo logs | Connection type |
+| MySQL, MariaDB | binlog in ROW format | Connection type |
+| PostgreSQL | logical replication: slot and publication (pgoutput) | The pipeline's `source_configurations` |
+| Query-based | a SELECT per run on a cursor column | `connector_type` other than `CDC` |
+| SaaS | the connector's API, one pipeline | Connection type not a database |
+
+The capture step is drawn on the node the connection points at (the secondary, when `--secondary` is the target).
 
 `--format text|mermaid|both` (default both). With `-o <file>.md` each diagram goes in a fenced block, ready for a report; the Mermaid renders on GitHub as is.
 
-The pipeline-creation helper in `lfc-schema-change-test` (`lib.sh` `pipelines_create`) prints the text diagram after each create and saves both in the run's work directory as `diagram.md`; set `DIAGRAM=0` to skip it. `SRC_CLOUD`, `SRC_HOST`, `SRC_PRIMARY`, `SRC_SECONDARY`, `SRC_FIREWALL`, `SECRET_STORE` and `SECRET_KIND` feed the flags.
+## After every create
 
-Tests: `tests/test_pipeline_diagram.py` runs the script on saved JSON (placeholder names) for a gateway pipeline on an availability group and an integrated one.
+`scripts/show-diagram.sh <ingestion pipeline id>` prints "Components created for pipeline <id>:" and the text diagram to stderr (stdout stays free for scripts that print the id), saves text + Mermaid to `$DIAGRAM_MD` when set, and never fails the caller. `DIAGRAM=0` skips it. The flags come from `SRC_CLOUD`, `SRC_HOST`, `SRC_PRIMARY`, `SRC_SECONDARY`, `SRC_FIREWALL`, `SECRET_STORE`, `SECRET_KIND`, `CAPTURE`.
+
+Called right after the create in `lfc-schema-change-test` (`lib.sh` `pipelines_create`, which also saves `$W/diagram.md`; `sqlserver-add-column.sh`; `integrated-scd2-ct.sh`) and `lfc-meta-ads` (`pipeline.sh`). A new script that creates an ingestion pipeline calls it the same way.
+
+Tests: `tests/test_pipeline_diagram.py` runs the script on saved JSON (placeholder names): a gateway pipeline on an availability group, an integrated one, and the capture line per source.

@@ -34,7 +34,9 @@ class Gateway(unittest.TestCase):
     def test_mermaid(self):
         self.assertIn("flowchart TD", self.out)
         self.assertIn("N0 -. availability group .-> N1", self.out)
-        self.assertIn("N1 --- FW --- C", self.out)  # the connection points at the secondary
+        self.assertIn("N1 --> CAP", self.out)  # the connection points at the secondary: capture read there
+        self.assertIn("CAP --- FW --- C", self.out)
+        self.assertIn("change capture: CDC or change tracking, read on the secondary", self.out)
         self.assertIn("G --> STG --> A", self.out)
 
 
@@ -47,6 +49,46 @@ class Integrated(unittest.TestCase):
         self.assertIn("Databricks (AWS)", out)
         self.assertNotIn("1433", out)  # --hide-host
         self.assertIn("X[extract] --> STG[(staging volume)] --> APL[apply]", out)
+
+
+class Capture(unittest.TestCase):
+    """The change-capture line per engine, from a connection type (and events or spec where it depends on them)."""
+
+    def variant(self, ctype, pipeline_edit=None, extra=()):
+        import json, tempfile
+        conn = json.load(open(f("integrated-connection.json"))); conn["connection_type"] = ctype
+        ap = json.load(open(f("integrated-pipeline.json")))
+        if pipeline_edit:
+            pipeline_edit(ap["spec"]["ingestion_definition"])
+        with tempfile.TemporaryDirectory() as d:
+            cj, aj = os.path.join(d, "c.json"), os.path.join(d, "a.json")
+            json.dump(conn, open(cj, "w")); json.dump(ap, open(aj, "w"))
+            return run("--pipeline-json", aj, "--connection-json", cj, "--format", "text", *extra)
+
+    def test_sqlserver_events(self):
+        import json, tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as e:
+            json.dump({"events": [{"message": "Replication tables: 2 CT tables, 3 CDC tables"}]}, e)
+        try:
+            self.assertIn("change capture: CDC + change tracking", self.variant("SQLSERVER", extra=("--events-json", e.name)))
+        finally:
+            os.unlink(e.name)
+
+    def test_sqlserver_flag(self):
+        self.assertIn("change capture: change tracking", self.variant("SQLSERVER", extra=("--capture", "ct")))
+
+    def test_engines(self):
+        self.assertIn("change capture: LogMiner", self.variant("ORACLE"))
+        self.assertIn("change capture: binlog", self.variant("MYSQL"))
+        pg = self.variant("POSTGRESQL", lambda d: d.update(source_configurations=[{"catalog": {
+            "source_catalog": "db", "postgres": {"slot_config": {"slot_name": "s1", "publication_name": "p1"}}}}]))
+        self.assertIn("slot s1, publication p1", pg)
+
+    def test_query_based_and_saas(self):
+        self.assertIn("change capture: query-based", self.variant("SQLSERVER", lambda d: d.update(connector_type="QUERY_BASED")))
+        saas = self.variant("SALESFORCE")
+        self.assertIn("Salesforce API (SaaS)", saas)
+        self.assertIn("API reads -> apply", saas)
 
 
 if __name__ == "__main__":

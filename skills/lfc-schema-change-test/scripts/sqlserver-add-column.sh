@@ -220,6 +220,7 @@ fi
 AP=$(dbx pipelines create -o json --json "{\"name\":\"$APN\",\"catalog\":\"$CATALOG\",\"schema\":\"$S\",\"serverless\":true,
   \"ingestion_definition\":{$SRCDEF,\"objects\":[$OBJS]}}" | yq '.pipeline_id')
 [ -n "$AP" ] && [ "$AP" != null ] || { echo "ingestion pipeline create failed"; exit 2; }
+bash "$(dirname "$0")/../../lfc-pipeline-diagram/scripts/show-diagram.sh" "$AP"   # what was created (DIAGRAM=0 skips it)
 T="\`$CATALOG\`.$S"
 
 DT=dtix; [ "${EXCLUDE_DTIX:-0}" = 1 ] && DT=intpk   # stands in for dtix in shared queries

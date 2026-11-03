@@ -15,6 +15,8 @@ usage: pipeline-diagram.py --pipeline <ingestion pipeline id> [--profile P] [opt
   --firewall TEXT                e.g. "NSG", "security group", "pg_hba"
   --secret-store TEXT            e.g. "Azure Key Vault", "AWS Secrets Manager"
   --secret-kind uc|workspace|inline         where the connection's password comes from (default inline)
+  --capture cdc|ct|cdc+ct        SQL Server: how the tables are captured (default: from the pipeline's events after
+                                 its first run, "Replication tables: <n> CT tables, <m> CDC tables")
   --hide-host                    don't print host names or ports
   -o FILE                        write there instead of stdout (a .md file gets the Mermaid in a fenced block)
 """
@@ -24,6 +26,46 @@ import subprocess
 import sys
 
 CLOUD_NAMES = {"aws": "AWS", "azure": "Azure", "gcp": "Google Cloud", "laptop": "Laptop"}
+DB_TYPES = {"SQLSERVER", "ORACLE", "MYSQL", "POSTGRESQL", "MARIADB"}
+
+
+def capture_text(engine, mode, spec_src, connector_type):
+    """How changes leave the source, per engine: (short label, one-line detail)."""
+    if connector_type and connector_type.upper() not in ("CDC", ""):
+        return ("query-based", "cursor column", "a SELECT per run on a cursor column (updated-at or increasing id); deletes need a separate scan")
+    if engine == "SQLSERVER":
+        cdc = ("CDC", "change tables cdc.*_CT", "SQL Server's capture job copies the transaction log into change tables cdc.<capture instance>_CT;"
+                      " the utility objects (ALTER TABLE trigger, tracking table, 3 procedures) handle schema changes")
+        ct = ("change tracking", "CHANGETABLE", "CHANGETABLE(CHANGES ...) joined to the table: the latest version of each changed row")
+        if mode == "cdc":
+            return cdc
+        if mode == "ct":
+            return ct
+        if mode == "cdc+ct":
+            return ("CDC + change tracking", "change tables + CHANGETABLE", "per table: " + cdc[2] + "; and " + ct[2])
+        return ("CDC or change tracking", "per table", "decided per table by the source setup; shown after the pipeline's first run")
+    if engine == "ORACLE":
+        return ("LogMiner", "redo + archived redo logs", "redo and archived redo logs read with LogMiner (supplemental logging on)")
+    if engine in ("MYSQL", "MARIADB"):
+        return ("binlog", "ROW binlog", "the binary log in ROW format, read like a replica")
+    if engine == "POSTGRESQL":
+        sc = (spec_src or {}).get("postgres", {}).get("slot_config", {})
+        slot = sc.get("slot_name", "<slot>"); pub = sc.get("publication_name", "<publication>")
+        return ("logical replication", f"slot {slot} / publication {pub}", f"WAL decoded by pgoutput: slot {slot}, publication {pub}")
+    return ("", "", "")
+
+
+def capture_from_events(events):
+    """SQL Server: cdc / ct / cdc+ct from the newest 'Replication tables: <n> CT tables, <m> CDC tables' event."""
+    import re
+    for e in events:
+        mt = re.search(r"Replication tables: (\d+) CT tables, (\d+) CDC tables", e.get("message", ""))
+        if mt:
+            ct, cdc = int(mt.group(1)), int(mt.group(2))
+            return "cdc+ct" if ct and cdc else "ct" if ct else "cdc" if cdc else None
+    return None
+
+
 SECRET_KIND = {"uc": "UC secret", "workspace": "Workspace secret scope", "inline": "stored in the connection"}
 
 
@@ -42,7 +84,7 @@ def workspace_cloud(host):
     return "Azure" if "azuredatabricks" in h else "Google Cloud" if "gcp.databricks" in h else "AWS" if h else ""
 
 
-def model(a, ap, gw, conn, host):
+def model(a, ap, gw, conn, host, events=()):
     """Everything the two renderers need, as plain values."""
     spec = ap.get("spec", ap)
     idef = spec.get("ingestion_definition") or {}
@@ -75,11 +117,17 @@ def model(a, ap, gw, conn, host):
                 nodes.append({"role": role, "hp": hp, "active": hp.replace(":", ",") == target})
     else:
         nodes.append({"role": "database", "hp": target, "active": True})
+    ctype = (conn or {}).get("connection_type", "")
+    saas = bool(ctype) and ctype.upper() not in DB_TYPES
+    srccfg = next((c.get("catalog") for c in idef.get("source_configurations") or [] if c.get("catalog")), None)
+    cap = capture_text(ctype.upper(), a.capture or capture_from_events(events), srccfg, idef.get("connector_type"))
     return {
+        "saas": saas,
+        "capture": cap,
         "integrated": integrated,
         "source_cloud": CLOUD_NAMES.get(a.source_cloud or "", a.source_cloud or "source"),
         "source_host": a.source_host or "database host",
-        "engine": (conn or {}).get("connection_type", "database").title().replace("Sqlserver", "SQL Server")
+        "engine": (ctype or "database").title().replace("Sqlserver", "SQL Server")
                   .replace("Postgresql", "PostgreSQL").replace("Mysql", "MySQL"),
         "nodes": nodes,
         "firewall": a.firewall,
@@ -108,7 +156,13 @@ def text(m):
     L = []
     nodes = "   ".join(f"[{d['role']}{'*' if d['active'] else ''}]" for d in m["nodes"])
     L.append(f"{m['source_cloud']}: {m['source_host']}, {m['engine']}")
-    L.append(f"  {nodes}" + ("   (* = the connection's target)" if len(m["nodes"]) > 1 else ""))
+    if m["saas"]:
+        L[-1] = f"{m['engine']} API (SaaS)"
+    else:
+        L.append(f"  {nodes}" + ("   (* = the connection's target)" if len(m["nodes"]) > 1 else ""))
+    if m["capture"][0]:
+        where = next((d["role"] for d in m["nodes"] if d["active"]), "database")
+        L.append(f"  change capture: {m['capture'][0]}, read on the {where}: {m['capture'][2]}")
     L.append("        |")
     if m["firewall"]:
         L.append(f"  firewall: {m['firewall']}")
@@ -118,7 +172,9 @@ def text(m):
     target = f" -> {m['target']}" if m["target"] else ""
     L.append(f"  connection {m['connection']}{target}{secret}")
     L.append("        |")
-    if m["integrated"]:
+    if m["saas"]:
+        L.append(f"  ingestion pipeline {m['ap_name']} ({m['ap_compute']}): API reads -> apply")
+    elif m["integrated"]:
         L.append(f"  ingestion pipeline {m['ap_name']} (integrated CDC, {m['ap_compute']}): extract -> staging -> apply")
         L.append(f"    staging: {m['staging']}")
     else:
@@ -138,11 +194,21 @@ def q(s):
 def mermaid(m):
     L = ["flowchart TD"]
     L.append(f"  subgraph SRC[{q(m['source_cloud'] + ': ' + m['source_host'])}]")
-    for i, d in enumerate(m["nodes"]):
-        hp = "" if m["hide_host"] or not d["hp"] else "<br/>" + d["hp"].replace(",", ":")
-        L.append(f"    N{i}[({q(m['engine'] + ' ' + d['role'] + hp)})]")
-    if len(m["nodes"]) == 2:
-        L.append("    N0 -. availability group .-> N1")
+    if m["saas"]:
+        L[-1] = f"  subgraph SRC[{q(m['engine'] + ' (SaaS)')}]"
+        L.append(f"    N0[{q(m['engine'] + ' API')}]")
+    else:
+        for i, d in enumerate(m["nodes"]):
+            hp = "" if m["hide_host"] or not d["hp"] else "<br/>" + d["hp"].replace(",", ":")
+            L.append(f"    N{i}[({q(m['engine'] + ' ' + d['role'] + hp)})]")
+        if len(m["nodes"]) == 2:
+            L.append("    N0 -. availability group .-> N1")
+    active = next((i for i, d in enumerate(m["nodes"]) if d["active"]), 0)
+    reader = f"N{active}"
+    if m["capture"][0]:
+        L.append(f"    CAP[/{q('change capture: ' + m['capture'][0] + '<br/>' + m['capture'][1])}/]")
+        L.append(f"    N{active} --> CAP")
+        reader = "CAP"
     L.append("  end")
     if m["firewall"]:
         L.append(f"  FW{{{{{q('firewall: ' + m['firewall'])}}}}}")
@@ -150,7 +216,10 @@ def mermaid(m):
     conn = f"UC connection<br/>{m['connection']}" + (f"<br/>{m['target']}" if m["target"] else "")
     L.append(f"    C[{q(conn)}]")
     L.append(f"    SEC[/{q(m['secret_kind'])}/]")
-    if m["integrated"]:
+    if m["saas"]:
+        L.append(f"    A[{q('ingestion pipeline ' + m['ap_name'] + '<br/>' + m['ap_compute'])}]")
+        first, last = "A", "A"
+    elif m["integrated"]:
         L.append(f"    subgraph AP[{q('ingestion pipeline ' + m['ap_name'] + ' (integrated CDC, ' + m['ap_compute'] + ')')}]")
         L.append("      X[extract] --> STG[(staging volume)] --> APL[apply]")
         L.append("    end")
@@ -168,11 +237,10 @@ def mermaid(m):
     L.append("  end")
     if m["secret_store"]:
         L.append(f"  KV[/{q(m['secret_store'])}/] --> SEC")
-    active = next((i for i, d in enumerate(m["nodes"]) if d["active"]), 0)
     if m["firewall"]:
-        L.append(f"  N{active} --- FW --- C")
+        L.append(f"  {reader} --- FW --- C")
     else:
-        L.append(f"  N{active} --- C")
+        L.append(f"  {reader} --- C")
     return "\n".join(L) + "\n"
 
 
@@ -186,6 +254,8 @@ def main():
     p.add_argument("--primary"); p.add_argument("--secondary")
     p.add_argument("--firewall"); p.add_argument("--secret-store")
     p.add_argument("--secret-kind", choices=list(SECRET_KIND), default="inline")
+    p.add_argument("--capture", choices=["cdc", "ct", "cdc+ct"])
+    p.add_argument("--events-json", help="with --pipeline-json: saved events of the reading pipeline")
     p.add_argument("--hide-host", action="store_true")
     p.add_argument("-o", dest="out")
     a = p.parse_args()
@@ -196,6 +266,7 @@ def main():
         gw = load(a.gateway_json) if a.gateway_json else None
         conn = load(a.connection_json) if a.connection_json else None
         host = a.workspace_host or ""
+        events = load(a.events_json).get("events", []) if a.events_json else []
     else:
         ap = cli(["pipelines", "get", a.pipeline], a.profile)
         gid = (ap.get("spec", {}).get("ingestion_definition") or {}).get("ingestion_gateway_id")
@@ -206,7 +277,14 @@ def main():
         if conn:  # never keep a secret, even in memory
             (conn.get("options") or {}).pop("password", None)
         host = cli(["auth", "describe"], a.profile).get("details", {}).get("host", "")
-    m = model(a, ap, gw, conn, host)
+        events = []
+        if not a.capture and (conn or {}).get("connection_type", "").upper() == "SQLSERVER":
+            reader = gid or ap.get("pipeline_id")
+            try:
+                events = cli(["api", "get", f"/api/2.0/pipelines/{reader}/events?max_results=250"], a.profile).get("events", [])
+            except subprocess.CalledProcessError:
+                events = []
+    m = model(a, ap, gw, conn, host, events)
     md = bool(a.out and a.out.endswith(".md"))
     parts = []
     if a.format in ("text", "both"):
