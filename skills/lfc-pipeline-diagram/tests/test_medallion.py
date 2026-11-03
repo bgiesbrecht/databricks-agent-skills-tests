@@ -105,6 +105,21 @@ class Workspace(unittest.TestCase):
         self.assertEqual(sum(1 for c in self.calls if c[:2] == ["api", "get"]), 1)  # one events read for pipeline p1
 
 
+class Unreadable(unittest.TestCase):
+    def test_no_access_is_drawn_not_raised(self):
+        real = med.cli
+        def cli(args, profile):
+            raise subprocess.CalledProcessError(1, "databricks", stderr="Error: no USE CATALOG on Catalog 'c'.\nmore")
+        med.cli = cli
+        try:
+            lay = med.count_layer("landing", ["c.s"], None)
+        finally:
+            med.cli = real
+        self.assertEqual(lay["tables"], 0)
+        self.assertEqual(med.layer_line(lay), "not readable (c.s: Error: no USE CATALOG on Catalog 'c'.)")
+        self.assertIn("not readable", med.mermaid([lay], None)[0][1])
+
+
 class Drawing(unittest.TestCase):
     def setUp(self):
         self.layers = [{"name": "silver", "schemas": ["main.demo_s"], "tables": 3, "materialized": 3,

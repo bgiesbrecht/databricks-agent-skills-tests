@@ -76,10 +76,16 @@ def kind_of(t, flows, written):
 def count_layer(name, schemas, profile, written=None, only=None, cache=None):
     """List each schema's tables and count them."""
     cache = {} if cache is None else cache
-    tables = []
+    tables, unreadable = [], []
     for cs in schemas:
         cat, sch = cs.split(".", 1)
-        for t in cli(["tables", "list", cat, sch], profile) or []:
+        try:
+            listed = cli(["tables", "list", cat, sch], profile) or []
+        except subprocess.CalledProcessError as e:      # no access, or gone: draw the layer as not readable
+            err = (e.stderr or "").strip().splitlines()
+            unreadable.append(f"{cs}: {err[0][:120] if err else 'tables list failed'}")
+            continue
+        for t in listed:
             if only and t["name"] not in only:
                 continue
             props = t.get("properties") or {}
@@ -90,7 +96,10 @@ def count_layer(name, schemas, profile, written=None, only=None, cache=None):
             pid = props.get("pipelines.pipelineId") or t.get("pipeline_id")
             row["kind"] = kind_of(row, flow_types(pid, profile, cache) if pid else None, written)
             tables.append(row)
-    return summarize(name, schemas, tables)
+    lay = summarize(name, schemas, tables)
+    if unreadable:
+        lay["unreadable"] = unreadable
+    return lay
 
 
 def summarize(name, schemas, tables):
@@ -126,6 +135,12 @@ def n_tables(n):
 
 
 def layer_line(lay):
+    if lay.get("unreadable") and not lay["tables"]:
+        return "not readable (" + "; ".join(lay["unreadable"]) + ")"
+    return counts_line(lay) + (f"; not readable: {'; '.join(lay['unreadable'])}" if lay.get("unreadable") else "")
+
+
+def counts_line(lay):
     kinds = ", ".join(f"{n} {LABEL[k]}" for k, n in lay["by_kind"].items() if k != "view")
     views = lay["by_kind"].get("view", 0)
     mat = f"{lay['materialized']} materialized" + (f" ({kinds})" if kinds else "")
@@ -161,7 +176,8 @@ def mermaid(layers, reverse, attach_from=None, indent="  ", first_id="L1", first
     ids = [first_id] + [f"L{i}" for i in range(2, len(layers) + 1)]
     L = [f"{indent}subgraph MED[{q('medallion')}]"]
     for i, (nid, lay) in enumerate(zip(ids, layers), 1):
-        kinds = "<br/>".join(f"{n} {LABEL[k]}" for k, n in lay["by_kind"].items())
+        kinds = "<br/>".join(f"{n} {LABEL[k]}" for k, n in lay["by_kind"].items()) or \
+            ("not readable" if lay.get("unreadable") else "")
         head = f"L{i} {lay['name']}: {n_tables(lay['tables'])}" + (f"<br/>{first_text}" if i == 1 and first_text else "")
         L.append(f"{indent}  {nid}[({q(head + '<br/>' + kinds)})]")
     if len(ids) > 1:
