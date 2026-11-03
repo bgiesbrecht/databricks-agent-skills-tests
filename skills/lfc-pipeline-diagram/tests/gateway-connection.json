@@ -1,0 +1,9 @@
+{
+  "name": "demo_ag_sec",
+  "connection_type": "SQLSERVER",
+  "options": {
+    "host": "203.0.113.10",
+    "port": "30006",
+    "trustServerCertificate": "true"
+  }
+}

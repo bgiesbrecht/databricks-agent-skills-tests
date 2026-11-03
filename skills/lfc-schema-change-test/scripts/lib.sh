@@ -169,6 +169,12 @@ pipelines_create() {
   # Postgres: the slot after the pipelines exist, so a refused create leaves none holding WAL
   [ "$ENGINE" = postgres ] && { echo "SELECT pg_create_logical_replication_slot('$SLOT', 'pgoutput');" | src >/dev/null || { echo "slot create failed"; exit 2; }; }
   echo "LINK pipeline $(dbx auth describe -o json 2>/dev/null | yq -r '.details.host // ""')/pipelines/$AP"
+  # the pipeline as a diagram (lfc-pipeline-diagram): text on stderr, text + Mermaid in $W/diagram.md; DIAGRAM=0 skips it
+  [ "${DIAGRAM:-1}" = 1 ] && pipeline_diagram
+  return 0
+}
+pipeline_diagram() {
+  DIAGRAM_MD="$W/diagram.md" bash "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../lfc-pipeline-diagram/scripts" && pwd)/show-diagram.sh" "$AP"
 }
 # set_objects <objs>: replace the ingestion pipeline's table list (pipelines update needs the whole spec)
 set_objects() {

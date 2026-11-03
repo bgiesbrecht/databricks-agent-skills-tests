@@ -69,6 +69,7 @@ PC=${PIPELINE_CONF:-'{}'}
 AP=$(dbx pipelines create -o json --json "{\"name\":\"${PREFIX}_scd2ct_$E\",\"catalog\":\"$CATALOG\",\"schema\":\"$S\",\"serverless\":true,\"configuration\":$PC,
   \"ingestion_definition\":{\"connection_name\":\"$CONNECTION\",\"connector_type\":\"CDC\",\"objects\":[$(obj s1ct SCD_TYPE_1),$(obj s2ct SCD_TYPE_2),$(obj s2cdc SCD_TYPE_2)]}}" | yq '.pipeline_id')
 echo "pipeline $AP"
+bash "$(dirname "$0")/../../lfc-pipeline-diagram/scripts/show-diagram.sh" "$AP"   # what was created (DIAGRAM=0 skips it)
 STG="$T.__${AP//-/_}_cdc_staging_table"
 fp() { q "SELECT (SELECT COUNT(*) FROM $T.s1ct), (SELECT COUNT(*) FROM $T.s2ct), (SELECT COUNT(*) FROM $T.s2cdc), (SELECT COUNT(*) FROM $STG)" 2>/dev/null | tr '\t' ' '; }
 # run: one update, stopped once it has run 3 minutes and fp() is unchanged for 3 polls

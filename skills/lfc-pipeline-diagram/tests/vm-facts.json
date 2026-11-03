@@ -1,0 +1,39 @@
+{
+  "vm": {
+    "cloud": "azure",
+    "type": "Standard_D16s_v5",
+    "cpu": 16,
+    "ram_gb": 64,
+    "disks": [
+      {
+        "role": "os",
+        "gb": 64,
+        "type": "Premium_LRS",
+        "iops": 240,
+        "mbps": 50
+      },
+      {
+        "role": "data",
+        "gb": 256,
+        "type": "PremiumV2_LRS",
+        "iops": 3000,
+        "mbps": 125
+      }
+    ]
+  },
+  "db": {
+    "container": "demo-db-s",
+    "cpu": null,
+    "ram_gb": null,
+    "engine_ram_gb": 4,
+    "data_mb": 2848,
+    "data_on": "disk"
+  },
+  "juicefs": [
+    {
+      "name": "demo-jfs",
+      "mount": "/mnt/jfs",
+      "backend": "Azure Blob"
+    }
+  ]
+}

@@ -1,0 +1,66 @@
+{
+  "pipeline_id": "00000000-0000-0000-0000-0000000000a1",
+  "name": "ing_integrated",
+  "spec": {
+    "id": "22222222-2222-2222-2222-222222222222",
+    "name": "demo_ag_ing",
+    "catalog": "main",
+    "schema": "demo_ag",
+    "serverless": true,
+    "ingestion_definition": {
+      "ingestion_gateway_id": null,
+      "objects": [
+        {
+          "table": {
+            "destination_catalog": "main",
+            "destination_schema": "demo_ag",
+            "source_catalog": "lfcag",
+            "source_schema": "dbo",
+            "source_table": "t1",
+            "table_configuration": {
+              "scd_type": "SCD_TYPE_2"
+            }
+          }
+        },
+        {
+          "table": {
+            "destination_catalog": "main",
+            "destination_schema": "demo_ag",
+            "source_catalog": "lfcag",
+            "source_schema": "dbo",
+            "source_table": "t2",
+            "table_configuration": {
+              "scd_type": "SCD_TYPE_2"
+            }
+          }
+        },
+        {
+          "table": {
+            "destination_catalog": "main",
+            "destination_schema": "demo_ag",
+            "source_catalog": "lfcag",
+            "source_schema": "dbo",
+            "source_table": "t3",
+            "table_configuration": {
+              "scd_type": "SCD_TYPE_2"
+            }
+          }
+        },
+        {
+          "table": {
+            "destination_catalog": "main",
+            "destination_schema": "demo_ag",
+            "source_catalog": "lfcag",
+            "source_schema": "dbo",
+            "source_table": "t4",
+            "table_configuration": {
+              "scd_type": "SCD_TYPE_2"
+            }
+          }
+        }
+      ],
+      "source_type": "SQLSERVER",
+      "connection_name": "my_sqlserver_conn"
+    }
+  }
+}
