@@ -27,6 +27,14 @@ usage: pipeline-diagram.py --pipeline <ingestion pipeline id> [--profile P] [opt
   --model-tables N               its number of tables (default: the model's own count, for the names above)
   --model-scale TEXT             e.g. "SF 1" or "3 copies"
   --hide-host                    don't print host names or ports
+  medallion (medallion.py): layer 1 is what the ingestion lands; then
+  --layer NAME=CATALOG.SCHEMA[,...][:only=t1,t2]   each next layer, in flow order (counted from the workspace)
+  --written NAME=append|scd1|scd2|merge             tables of that layer written outside a pipeline
+  --layers-json FILE             layers 2..n saved by medallion.py --save, instead of reading the workspace
+  --reverse-etl TARGET[:METHOD[:TABLES]]           the last box: out to a database
+  Zerobus instead of Lakeflow Connect (no --pipeline):
+  --ingest zerobus --engine mysql|postgresql|sqlserver|oracle|db2|informix|cockroachdb|mariadb
+  --bronze CATALOG.SCHEMA.TABLE[,...]   the table(s) Zerobus appends to   --producer TEXT (default Debezium Server)
   -o FILE                        write there instead of stdout (a .md file gets the Mermaid in a fenced block)
 """
 import argparse
@@ -34,6 +42,9 @@ import json
 import os
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import medallion  # beside this script
 
 CLOUD_NAMES = {"aws": "AWS", "azure": "Azure", "gcp": "Google Cloud", "laptop": "Laptop"}
 DB_TYPES = {"SQLSERVER", "ORACLE", "MYSQL", "POSTGRESQL", "MARIADB"}
@@ -44,8 +55,9 @@ def capture_text(engine, mode, spec_src, connector_type):
     if connector_type and connector_type.upper() not in ("CDC", ""):
         return ("query-based", "cursor column", "a SELECT per run on a cursor column (updated-at or increasing id); deletes need a separate scan")
     if engine == "SQLSERVER":
-        cdc = ("CDC", "change tables cdc.*_CT", "SQL Server's capture job copies the transaction log into change tables cdc.<capture instance>_CT;"
-                      " the utility objects (ALTER TABLE trigger, tracking table, 3 procedures) handle schema changes")
+        cdc = ("CDC", "change tables cdc.*_CT", ("SQL Server's capture job copies the transaction log into change tables"
+                                                 " cdc.<capture instance>_CT; the utility objects (ALTER TABLE trigger,"
+                                                 " tracking table, 3 procedures) handle schema changes"))
         ct = ("change tracking", "CHANGETABLE", "CHANGETABLE(CHANGES ...) joined to the table: the latest version of each changed row")
         if mode == "cdc":
             return cdc
@@ -58,7 +70,13 @@ def capture_text(engine, mode, spec_src, connector_type):
         return ("LogMiner", "redo + archived redo logs", "redo and archived redo logs read with LogMiner (supplemental logging on)")
     if engine in ("MYSQL", "MARIADB"):
         return ("binlog", "ROW binlog", "the binary log in ROW format, read like a replica")
-    if engine == "POSTGRESQL":
+    if engine == "DB2":
+        return ("ASN capture", "change tables", "Db2's SQL replication capture (ASN) copies the log into change tables")
+    if engine == "INFORMIX":
+        return ("Informix CDC API", "syscdcv1", "the change data capture API (syscdcv1) on a logged database")
+    if engine == "COCKROACHDB":
+        return ("changefeed", "CHANGEFEED", "a CockroachDB changefeed on the tables")
+    if engine in ("POSTGRESQL", "POSTGRES"):
         sc = (spec_src or {}).get("postgres", {}).get("slot_config", {})
         slot = sc.get("slot_name", "<slot>"); pub = sc.get("publication_name", "<publication>")
         return ("logical replication", f"slot {slot} / publication {pub}", f"WAL decoded by pgoutput: slot {slot}, publication {pub}")
@@ -138,14 +156,16 @@ def model(a, ap, gw, conn, host, events=()):
     integrated = not idef.get("ingestion_gateway_id")
     opts = (conn or {}).get("options") or {}
     target = f"{opts.get('host', '?')},{opts.get('port', '?')}" if opts else ""
-    tables, scd = [], set()
+    tables, scd, kinds = [], set(), []
     for o in idef.get("objects") or []:
         t = o.get("table") or o.get("schema") or {}
         cat = t.get("destination_catalog") or spec.get("catalog")
         sch = t.get("destination_schema") or spec.get("schema")
         name = t.get("destination_table") or t.get("source_table") or "*"
         tables.append(f"{cat}.{sch}.{name}")
-        scd.add(((t.get("table_configuration") or {}).get("scd_type") or "SCD_TYPE_1").replace("SCD_TYPE_", "SCD "))
+        st = (t.get("table_configuration") or {}).get("scd_type") or "SCD_TYPE_1"
+        scd.add(st.replace("SCD_TYPE_", "SCD ").replace("APPEND_ONLY", "append-only"))
+        kinds.append((f"{cat}.{sch}.{name}", {"SCD_TYPE_2": "scd2", "APPEND_ONLY": "append"}.get(st, "scd1")))
     ap_id = ap.get("pipeline_id") or spec.get("id") or "<pipeline>"
     if integrated:
         staging = f"{spec.get('catalog')}.{spec.get('schema')}  volume __databricks_ingestion_gateway_staging_data-{ap_id}"
@@ -192,6 +212,41 @@ def model(a, ap, gw, conn, host, events=()):
         "facts": facts_lines(a.facts, a.vm),
         "facts_short": facts_short(a.facts, a.vm),
         "workload": workload(a),
+        "layers": layers_for(a, medallion.landing("landing", kinds)) if a.layered else [],
+        "reverse": medallion.parse_reverse(a.reverse_etl),
+        "zerobus": None,
+    }
+
+
+def layers_for(a, first):
+    """Layer 1 (what lands), then the layers from --layer / --layers-json."""
+    rest = medallion.collect(a) if (a.layer or a.layers_json) else []
+    if rest and rest[0]["name"] == first["name"]:   # layer 1 given (counted from the workspace): use it
+        return rest
+    return [first] + rest
+
+
+def zerobus_model(a, host):
+    """The same picture for Debezium -> Zerobus -> bronze, from flags (there is no ingestion pipeline to read)."""
+    eng = (a.engine or "database").upper()
+    bronze = [b for b in (a.bronze or "").split(",") if b]
+    nodes = [{"role": "primary" if a.secondary else "database", "hp": a.primary or "", "active": True}]
+    if a.secondary:
+        nodes.append({"role": "secondary", "hp": a.secondary, "active": False})
+    if a.facts is None:
+        a.facts = None
+    names = {"SQLSERVER": "SQL Server", "POSTGRESQL": "PostgreSQL", "MYSQL": "MySQL", "MARIADB": "MariaDB",
+             "ORACLE": "Oracle", "DB2": "Db2", "INFORMIX": "Informix", "COCKROACHDB": "CockroachDB"}
+    return {
+        "saas": False, "integrated": False, "capture": capture_text(eng, None, None, None),
+        "source_cloud": CLOUD_NAMES.get(a.source_cloud or "", a.source_cloud or "source"),
+        "source_host": a.source_host or "database host", "engine": names.get(eng, eng.title()),
+        "nodes": nodes, "firewall": a.firewall, "workspace_cloud": workspace_cloud(host),
+        "hide_host": a.hide_host, "facts": facts_lines(a.facts, a.vm), "facts_short": facts_short(a.facts, a.vm),
+        "workload": workload(a), "tables": bronze, "scd": "append-only change log",
+        "layers": layers_for(a, medallion.landing("bronze", [(b, "append") for b in bronze], "MANAGED")),
+        "reverse": medallion.parse_reverse(a.reverse_etl),
+        "zerobus": {"producer": a.producer or "Debezium Server", "bronze": bronze},
     }
 
 
@@ -276,6 +331,14 @@ def text(m):
     if m["firewall"]:
         L.append(f"  firewall: {m['firewall']}")
         L.append("        |")
+    if m["zerobus"]:
+        z = m["zerobus"]
+        L.insert(len(L) - 1 - (2 if m["firewall"] else 0), f"  {z['producer']} (on the source host): reads the changes, pushes each to Zerobus")
+        L.append(f"Databricks ({m['workspace_cloud'] or 'workspace'})")
+        L.append("  Zerobus ingest endpoint  <-- service principal (OAuth)")
+        L.append("        |")
+        L.append(f"  bronze ({m['scd']}): {tables_line(m)}")
+        return finish_text(L, m)
     L.append(f"Databricks ({m['workspace_cloud'] or 'workspace'})")
     secret = f"  <-- {m['secret_kind']}" + (f" <-- {m['secret_store']}" if m["secret_store"] else "")
     target = f" -> {m['target']}" if m["target"] else ""
@@ -293,6 +356,13 @@ def text(m):
         L.append(f"  ingestion pipeline {m['ap_name']} (applier, {m['ap_compute']})")
     L.append("        |")
     L.append(f"  streaming tables ({m['scd']}): {tables_line(m)}")
+    return finish_text(L, m)
+
+
+def finish_text(L, m):
+    if m["layers"]:
+        L.append("        |")
+        L += medallion.text(m["layers"], m["reverse"])
     return "\n".join(L) + "\n"
 
 
@@ -331,6 +401,18 @@ def mermaid(m):
         L.append("  WL --> N0")
     if m["firewall"]:
         L.append(f"  FW{{{{{q('firewall: ' + m['firewall'])}}}}}")
+    if m["zerobus"]:
+        z = m["zerobus"]
+        L.insert(L.index("  end"), f"    PROD[{q(z['producer'] + '<br/>on the source host')}]")
+        L.insert(L.index("  end"), f"    {reader} --> PROD")
+        L.append(f"  subgraph DBX[{q('Databricks workspace' + (' (' + m['workspace_cloud'] + ')' if m['workspace_cloud'] else ''))}]")
+        L.append(f"    ZB[{q('Zerobus ingest endpoint')}]")
+        L.append(f"    SP[/{q('service principal (OAuth)')}/]")
+        if not m["layers"]:
+            L.append(f"    T[({q('bronze: ' + m['scd'] + '<br/>' + tables_line(m, 2))})]")
+        L.append("    SP --> ZB")
+        L.append("    ZB --> T")
+        return finish_mermaid(L, m, "PROD --- FW --- ZB" if m["firewall"] else "PROD --> ZB")
     L.append(f"  subgraph DBX[{q('Databricks workspace' + (' (' + m['workspace_cloud'] + ')' if m['workspace_cloud'] else ''))}]")
     conn = f"UC connection<br/>{m['connection']}" + (f"<br/>{m['target']}" if m["target"] else "")
     L.append(f"    C[{q(conn)}]")
@@ -349,17 +431,27 @@ def mermaid(m):
         L.append(f"    A[{q('ingestion pipeline ' + m['ap_name'] + '<br/>applier, ' + m['ap_compute'])}]")
         L.append("    G --> STG --> A")
         first, last = "G", "A"
-    L.append(f"    T[({q('streaming tables (' + m['scd'] + ')<br/>' + tables_line(m, 2))})]")
+    if not m["layers"]:   # with a medallion, the landing tables are its layer 1
+        L.append(f"    T[({q('streaming tables (' + m['scd'] + ')<br/>' + tables_line(m, 2))})]")
     L.append(f"    {last} --> T")
     L.append(f"    C --> {first}")
     L.append("    SEC --> C")
-    L.append("  end")
     if m["secret_store"]:
-        L.append(f"  KV[/{q(m['secret_store'])}/] --> SEC")
-    if m["firewall"]:
-        L.append(f"  {reader} --- FW --- C")
+        tail = [f"  KV[/{q(m['secret_store'])}/] --> SEC"]
     else:
-        L.append(f"  {reader} --- C")
+        tail = []
+    tail.append(f"  {reader} --- FW --- C" if m["firewall"] else f"  {reader} --- C")
+    return finish_mermaid(L, m, *[t.strip() for t in tail])
+
+
+def finish_mermaid(L, m, *after):
+    """Close the workspace box (with the medallion inside it), then the links that cross boxes, then reverse ETL."""
+    med, rev = medallion.mermaid(m["layers"], m["reverse"], indent="    ", first_id="T",
+                                 first_text=tables_line(m, 2))
+    L += med
+    L.append("  end")
+    L += [f"  {x}" for x in after]
+    L += rev
     return "\n".join(L) + "\n"
 
 
@@ -378,9 +470,18 @@ def main():
     p.add_argument("--source-facts"); p.add_argument("--vm")
     p.add_argument("--model"); p.add_argument("--model-tables", type=int); p.add_argument("--model-scale")
     p.add_argument("--hide-host", action="store_true")
+    medallion.add_args(p)
+    p.add_argument("--ingest", choices=["lakeflow", "zerobus"], default="lakeflow")
+    p.add_argument("--engine"); p.add_argument("--bronze"); p.add_argument("--producer")
     p.add_argument("-o", dest="out")
     a = p.parse_args()
     a.facts = load(a.source_facts) if a.source_facts else None
+    a.layered = bool(a.layer or a.layers_json or a.reverse_etl)
+    if a.ingest == "zerobus":
+        if not (a.engine and a.bronze):
+            print("--ingest zerobus needs --engine and --bronze", file=sys.stderr); sys.exit(2)
+        host = a.workspace_host or (cli(["auth", "describe"], a.profile).get("details", {}).get("host", "") if a.profile else "")
+        return emit(a, zerobus_model(a, host))
     if not (a.pipeline or a.pipeline_json):
         print(__doc__, file=sys.stderr); sys.exit(2)
     if a.pipeline_json:
@@ -406,7 +507,10 @@ def main():
                 events = cli(["api", "get", f"/api/2.0/pipelines/{reader}/events?max_results=250"], a.profile).get("events", [])
             except subprocess.CalledProcessError:
                 events = []
-    m = model(a, ap, gw, conn, host, events)
+    emit(a, model(a, ap, gw, conn, host, events))
+
+
+def emit(a, m):
     md = bool(a.out and a.out.endswith(".md"))
     parts = []
     if a.format in ("text", "both"):
