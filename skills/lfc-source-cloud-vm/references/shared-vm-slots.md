@@ -25,8 +25,10 @@ Engines: `postgres` (16), `mysql` (8.4), `sqlserver` (2022), `oracle` (`gvenzl/o
 `up` prints one JSON line:
 
 ```json
-{"name":"pg1","engine":"postgres","host":"203.0.113.10","port":30000,"user":"lfc_user","password":"...","container":"lfc-slot-alice-pg1","state":"running"}
+{"contract":1,"name":"pg1","engine":"postgres","host":"203.0.113.10","port":30000,"user":"lfc_user","password":"...","container":"lfc-slot-alice-pg1","state":"running"}
 ```
+
+`contract` is the source contract's version ([lfc-source-contract](../../lfc-source-contract/SKILL.md)). [scripts/slot-source.sh](../scripts/slot-source.sh) writes that contract for the database: `SLOT_HOST=<vm address> slot-source.sh --connection <uc connection> --out <file> < up.json`, with `sql_cmd` set to `slot-sql.sh` for the database.
 
 `service` is added for Oracle only: `FREEPDB1`, the PDB `lfc_user` lives in (the UC connection's `service_name`). `database` is added where a test uses one: `LFCDB`, `lfcdb`, `lfc`, `lfc`.
 
