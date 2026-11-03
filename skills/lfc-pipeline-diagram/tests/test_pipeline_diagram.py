@@ -205,6 +205,18 @@ class Saas(unittest.TestCase):
         finally:
             os.unlink(t.name)
 
+    def test_managed_host_names_the_service_flags_override(self):
+        conn = {"name": "c", "connection_type": "SQLSERVER", "options": {"host": "srv.database.windows.net", "port": "1433"}}
+        import json, tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as c:
+            json.dump(conn, c)
+        try:
+            base = ("--pipeline-json", f("integrated-pipeline.json"), "--connection-json", c.name, "--format", "text")
+            self.assertTrue(run(*base).startswith("Azure: Azure SQL Database, SQL Server"))
+            self.assertTrue(run(*base, "--source-cloud", "aws", "--source-host", "X").startswith("AWS: X, SQL Server"))
+        finally:
+            os.unlink(c.name)
+
     def test_load_tool_and_medallion(self):
         out = self.draw("JIRA", {}, "--model", "jira-test-data-generator", "--model-scale", "Small, 5000 issues",
                         "--model-tables", "12", "--reverse-etl", "PostgreSQL:synced tables:2", "--format", "text")

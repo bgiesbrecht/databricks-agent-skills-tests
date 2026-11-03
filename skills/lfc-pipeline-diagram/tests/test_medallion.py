@@ -98,7 +98,12 @@ class Workspace(unittest.TestCase):
             return pages[tok]
         med.cli = cli
         self.assertEqual(med.flow_types("p", None, {}), {"c.s.a": "CHANGE", "c.s.b": "APPEND"})
+        self.assertIn("max_results=250", self.calls[0][2])                         # the API's most per page
         self.assertEqual(len(self.calls), 2)                                       # stopped at update u1, no page t2
+
+    def test_names_compare_without_backticks_or_case(self):
+        self.assertEqual(med.kind_of({"full_name": "Main.S.T", "table_type": "STREAMING_TABLE", "scd2": False},
+                                     {med.norm("`main`.`s`.`t`"): "APPEND"}, None), "append")
 
     def test_parse_layer_and_written(self):
         self.assertEqual(med.parse_layer("silver=c.a,c.b:only=t1,t2"), ("silver", ["c.a", "c.b"], {"t1", "t2"}))

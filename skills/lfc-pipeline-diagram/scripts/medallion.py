@@ -37,17 +37,23 @@ def cli(args, profile):
     return json.loads(subprocess.run(cmd, check=True, capture_output=True, text=True).stdout or "null")
 
 
-def flow_types(pipeline_id, profile, cache, max_pages=20):
+def norm(name):
+    """A table name as flow events and tables list compare: no backticks, lower case."""
+    return (name or "").replace("`", "").lower()
+
+
+def flow_types(pipeline_id, profile, cache, max_pages=40):
     """{output table: flow_type} from the flow_definition events of the pipeline's newest update that has them.
 
     The events API can't filter by event type, and an update writes its flow_definition events when it starts, so a
     busy pipeline's are many pages back: page back (newest first) to the first flow_definition, then read the rest of
-    that update's events, and stop at the first event of an older update (or after max_pages pages of 500)."""
+    that update's events, and stop at the first event of an older update (or after max_pages pages of 250, the API's
+    most per page)."""
     if pipeline_id in cache:
         return cache[pipeline_id]
     out, update, token = {}, None, None
     for _ in range(max_pages):
-        q = f"/api/2.0/pipelines/{pipeline_id}/events?max_results=500" + (f"&page_token={token}" if token else "")
+        q = f"/api/2.0/pipelines/{pipeline_id}/events?max_results=250" + (f"&page_token={token}" if token else "")
         try:
             ev = cli(["api", "get", q], profile) or {}
         except subprocess.CalledProcessError:
@@ -61,7 +67,7 @@ def flow_types(pipeline_id, profile, cache, max_pages=20):
             fd = (e.get("details") or {}).get("flow_definition")
             if fd and fd.get("output_dataset"):
                 update = update or uid
-                out.setdefault(fd["output_dataset"], fd.get("flow_type"))
+                out.setdefault(norm(fd["output_dataset"]), fd.get("flow_type"))
         token = ev.get("next_page_token")
         if done or not token:
             break
@@ -75,7 +81,7 @@ def kind_of(t, flows, written):
     if ttype in ("VIEW", "METRIC_VIEW"):
         return "view"
     scd2 = t.get("scd2")
-    ft = flows.get(t["full_name"]) if flows is not None else None
+    ft = flows.get(norm(t["full_name"])) if flows is not None else None
     if ft in ("CHANGE", "SNAPSHOT_CHANGE"):
         return "scd2" if scd2 else "scd1"
     if ft in FLOW_KIND:
