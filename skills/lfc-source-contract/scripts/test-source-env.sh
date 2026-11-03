@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # test-source-env.sh: offline checks of the source contract (contract 1): source-env.sh on every fixture (valid, missing
 # field, bad port or engine, contract 2), each engine's default client (fake clients on PATH record their arguments and
-# environment: the password is never an argument), and a slot's contract from slot-source.sh, through slot-sql.sh and a fake
-# ssh to the forced command. Prints "all passed" or the failures; exit 1 on any failure.
+# environment: the password is never an argument). A slot's contract (slot-source.sh) is checked by lfc-source-cloud-vm's
+# test-slot-source.sh. Prints "all passed" or the failures; exit 1 on any failure.
 #   bash skills/lfc-source-contract/scripts/test-source-env.sh
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd); FX=$HERE/fixtures; SE=$HERE/source-env.sh
-SLOT=$(cd "$HERE/../../lfc-source-cloud-vm/scripts" && pwd)
 T=$(mktemp -d); fails=0
 ok() { printf "  ok    %s\n" "$1"; }
 no() { printf "  FAIL  %s\n" "$1"; fails=$((fails + 1)); }
@@ -66,7 +65,7 @@ check "a file that isn't JSON: refused" not_json
 # ---- the default clients ------------------------------------------------------------------------------------------------
 # a fake client: logs its name, arguments, the password variables it was given, and its stdin
 FB=$T/bin; mkdir -p "$FB"
-for c in sqlcmd psql mysql mariadb sqlplus ssh; do
+for c in sqlcmd psql mysql mariadb sqlplus; do
   cat > "$FB/$c" <<'FAKE'
 #!/usr/bin/env bash
 # fake client for test-source-env.sh: logs its arguments, the password variables and its stdin
@@ -94,36 +93,6 @@ done
 check "sqlserver: the database is an argument (-d mydb), the server and port in -S" grep -q 'ARGV sqlcmd .*-S 203.0.113.10,1433 .*-d mydb' "$T/log.sqlserver"
 check "postgres: -p 5432 and -d mydb" grep -q 'ARGV psql .*-p 5432 .*-d mydb' "$T/log.postgres"
 check "oracle: the password is in the SQL (CONNECT on stdin)" grep -q 'CONNECT lfc_user/' "$T/log.oracle"
-
-# ---- a slot's contract: slot-source.sh -> source-env.sh -> slot-sql.sh -> ssh ------------------------------------------
-UP='{"contract":1,"name":"pg1","engine":"postgres","host":"203.0.113.10","port":30000,"user":"lfc_user","password":"Lfc1secretpw","container":"lfc-slot-me-pg1","state":"running"}'
-slot_with_connection() {   # no password in the file, mode 600, the connection and facts in it
-  printf '%s\n' "$UP" | SLOT_HOST=203.0.113.10 SLOT_KEY="$T/key" "$SLOT/slot-source.sh" --connection me_pg1 --facts "$FX/facts.json" --out "$T/slot.json" > /dev/null || return 1
-  ! grep -q Lfc1secretpw "$T/slot.json" && find "$T/slot.json" -perm 600 | grep -q . && grep -q '"connection":"me_pg1"' "$T/slot.json" && grep -q '"facts":' "$T/slot.json"
-}
-check "slot-source with a connection: no password in the file, mode 600, connection and facts in it" slot_with_connection
-check "slot-source's contract validates with source-env.sh" "$SE" "$T/slot.json"
-slot_sql_cmd() {   # the sql_cmd names the database and the key, and runs slot-sql.sh
-  eval "$(exports_of_path "$T/slot.json")"
-  case $SRC_SQL in *"SLOT_NAME=pg1"*"SLOT_KEY=$T/key"*"/slot-sql.sh") ;; *) return 1 ;; esac
-}
-exports_of_path() { "$SE" "$1" 2> /dev/null; }
-check "slot-source: the sql_cmd is slot-sql.sh with the database's name and the key" slot_sql_cmd
-slot_without_connection() {   # the password goes to --out's file, and only the file's path is printed
-  printf '%s\n' "$UP" | SLOT_HOST=203.0.113.10 "$SLOT/slot-source.sh" --out "$T/slot-pw.json" > "$T/printed" || return 1
-  [ "$(cat "$T/printed")" = "$T/slot-pw.json" ] && grep -q Lfc1secretpw "$T/slot-pw.json" && ! grep -q Lfc1secretpw "$T/printed"
-}
-check "slot-source without a connection: the password is in --out's file, not printed" slot_without_connection
-slot_refused() {   # without --out, a contract that holds the password is refused: nothing is printed
-  printf '%s\n' "$UP" | SLOT_HOST=203.0.113.10 "$SLOT/slot-source.sh" > "$T/out2" 2> /dev/null; [ $? = 2 ] && [ ! -s "$T/out2" ]
-}
-check "slot-source without --out or --connection: refused, nothing printed" slot_refused
-slot_through_ssh() {   # the contract's SRC_SQL reaches the database through the forced command (fake ssh)
-  : > "$T/log.slot"; export PATH=$FB:$PATH FAKE_LOG=$T/log.slot; eval "$(exports_of_path "$T/slot.json")"
-  printf 'SELECT 1;\n' | $SRC_SQL mydb > /dev/null 2>&1
-  grep -q '^ARGV ssh .*slot@203.0.113.10 sql pg1 mydb' "$T/log.slot" && grep -q 'SELECT 1' "$T/log.slot"
-}
-check "slot-source: SRC_SQL reaches the database through ssh (slot-sql.sh, fake ssh)" slot_through_ssh
 
 rm -rf "${T:?}"
 echo; [ $fails -eq 0 ] && echo "all passed" || echo "$fails failed"; exit $((fails > 0))

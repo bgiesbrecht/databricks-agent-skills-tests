@@ -69,8 +69,8 @@ Without `sql_cmd`, `sql-client.sh` is the default client. It connects as `user` 
 
 - [scripts/source-env.sh](scripts/source-env.sh) `<source.json>`: validates the file and prints the exports. Use `eval "$(scripts/source-env.sh source.json)"`.
 - [scripts/sql-client.sh](scripts/sql-client.sh) `[database]`: the default client; `source-env.sh` sets `SRC_SQL` to it. It reads `SRC_CONTRACT`.
-- [scripts/test-source-env.sh](scripts/test-source-env.sh): offline checks on [scripts/fixtures/](scripts/fixtures/) (each engine, the refusals, the default clients on fake clients) and a slot's contract end to end through a fake ssh.
-- **lfc-source-cloud-vm** `scripts/slot-source.sh`: writes the contract for a slot database from `slot.sh up`'s JSON. Its `sql_cmd` runs `slot-sql.sh` for that database and key.
+- [scripts/test-source-env.sh](scripts/test-source-env.sh): offline checks on [scripts/fixtures/](scripts/fixtures/) (each engine, the refusals, the default clients on fake clients).
+- **lfc-source-cloud-vm** `scripts/slot-source.sh`: writes the contract for a slot database from `slot.sh up`'s JSON. Its `sql_cmd` runs `slot-sql.sh` for that database and key; that skill's `test-slot-source.sh` checks it end to end through a fake ssh.
 
 ## Use
 
@@ -79,7 +79,7 @@ cat > source.json <<'EOF'
 {"contract": 1, "engine": "sqlserver", "host": "203.0.113.10", "port": 1433, "user": "lfc_user",
  "sql_cmd": "env SLOT_HOST=203.0.113.10 SLOT_NAME=ss1 /abs/path/slot-sql.sh"}
 EOF
-SOURCE_JSON="$PWD/source.json" PROFILE=<cli-profile> CATALOG=<catalog> bash skills/lfc-schema-change-test/scripts/sqlserver-add-column.sh
+SOURCE_JSON="$PWD/source.json" PROFILE=<cli-profile> CATALOG=<catalog> bash sqlserver-add-column.sh   # a test script of lfc-schema-change-test
 ```
 
 Check a file before a run, and what it exports, without printing a password:
