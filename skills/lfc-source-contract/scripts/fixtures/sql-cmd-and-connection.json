@@ -1,0 +1,1 @@
+{"contract": 1, "engine": "postgres", "host": "203.0.113.10", "port": 30000, "user": "lfc_user", "database": "postgres", "connection": "me_pg1", "facts": "facts.json", "sql_cmd": "env SLOT_HOST=203.0.113.10 SLOT_NAME=pg1 /usr/bin/true"}

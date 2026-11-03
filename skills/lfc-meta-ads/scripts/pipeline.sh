@@ -48,7 +48,7 @@ opts() {   # meta_ads_options for an insights table, plus custom_report_options 
 }
 objects='[]'
 IFS=, read -ra TL <<<"$TABLES"
-for t in "${TL[@]}"; do
+for t in ${TL[@]+"${TL[@]}"}; do
   [[ $t =~ ^[a-z0-9_]+$ ]] || { echo "bad table name: $t" >&2; exit 2; }
   src=$ACCT; [ "$t" = ad_accounts ] && src=default   # the accounts the Meta user sees: source schema "default"
   o=$(jq -n --arg a "$src" --arg t "$t" --arg c "$CAT" --arg s "$SCH" \
@@ -59,7 +59,7 @@ for t in "${TL[@]}"; do
   fi
   objects=$(jq --argjson o "$o" '. + [$o]' <<<"$objects")
 done
-for cr in "${CUSTOM[@]}"; do
+for cr in ${CUSTOM[@]+"${CUSTOM[@]}"}; do
   dest=${cr%%=*} file=${cr#*=}
   [[ $dest =~ ^[a-z0-9_]+$ && -f $file ]] || { echo "--custom-report wants <dest_table>=<file.json>: $cr" >&2; exit 2; }
   jq -e 'type == "object"' "$file" >/dev/null || { echo "$file: not a JSON object" >&2; exit 2; }
@@ -87,6 +87,7 @@ if [ -n "$id" ]; then
 else
   id=$(dbx pipelines create --json "$spec" -o json | jq -r .pipeline_id)
   echo "created pipeline $NAME ($n objects)" >&2
+  bash "$(dirname "$0")/../../lfc-pipeline-diagram/scripts/show-diagram.sh" "$id"   # stderr only: stdout is the id
 fi
 link pipeline "/pipelines/$id"
 echo "$id"

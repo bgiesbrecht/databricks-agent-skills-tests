@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # slot.sh [--owner <owner>] <command> [args]: test databases for several people on one VM, one container each, with the
 # data on JuiceFS (object storage) so a stopped database costs no disk or CPU. Run as root on the VM.
+# bash32: exempt (runs on the Linux VM)
 #   masters                                   the masters a database can start from ($ROOT/masters)
 #   ls [--all]                                your databases (--all: everyone's): engine, state, port, created, last up
-#   up <engine> <name> [--from <master> | --empty]
+#   up <engine> <name> [--from <master> | --empty] [--park]
 #                                             start <name>: resume it if it exists, else clone a master (fs_clone:
 #                                             juicefs clone or an XFS reflink) or start empty. Engines: postgres, mysql,
 #                                             sqlserver, oracle, mariadb, db2, informix, cockroachdb, yugabytedb.
-#                                             Parks your other running database first when you're at MAX_PER_OWNER.
+#                                             At your limit of running databases (limits), it stops and names them;
+#                                             --park parks the ones that started first, to make room.
 #                                             Prints one JSON line: name, engine, host, port, user, password, container,
 #                                             state, and service (oracle: the PDB lfc_user lives in) and database (the
 #                                             database a test uses, where the engine has one)
+#                                             A database cloned from a master gets a new admin password at its first start
+#                                             (its env file and the database's admin account; cockroachdb, yugabytedb: insecure, none)
 #   park <name>                               stop it; the data stays on JuiceFS
 #   clone <name> <new name>                   copy your database <name> to a new parked database <new name> (up starts
 #                                             it, with its own port and lfc_user password). JuiceFS: juicefs clone;
@@ -18,19 +22,29 @@
 #                                             running <name> is stopped for the copy and started again after
 #   rm <name>                                 stop it and delete its data
 #   usage [--days <n>] [--all]                hours running per owner in the last n days (default 7), from the ledger
+#   limits                                    your limits on this VM, one JSON line: max_running (0 = none) and
+#                                             hours_per_week (empty: not set here; the client's default applies)
 #   sql <name> [database] [--wide]            run SQL from stdin as the engine's admin in your running database <name>
 #                                             (CDC, change tracking, test tables): tab-separated rows, no headers; the
 #                                             exit status is the SQL's. --wide: SQL Server prints long values whole
 #                                             (sqlcmd -y 0). Oracle and Db2 take no database (Oracle: ALTER SESSION SET
 #                                             CONTAINER in the SQL; Db2: LFCDB)
 #   info <name>                               the host OS, Podman, the image and digest, and the VM (size, region, zone)
+#   facts <name>                              one JSON line for a pipeline diagram (lfc-pipeline-diagram --source-facts):
+#                                             the VM (cloud, type, vCPU, RAM, disks, from the instance metadata), the
+#                                             database container (CPU and memory limits, SQL Server's memory cap, data
+#                                             size and whether it is on JuiceFS) and the JuiceFS mounts
 # --owner: who the database belongs to. A forced SSH command sets it per key (see the skill), so a user can't pick
 # another owner; as root without --owner the owner is "admin".
 # Settings, from /etc/lfc-slot.env if present: HOST (address printed for connections; set it on Azure, see host()),
 # ROOT (/mnt/jfs), STATE (/var/lib/lfc/slots), PORT_MIN/PORT_MAX (30000/30063), MAX_RUNNING (vCPUs / CPUS_PER_DB, at least 1), CPUS_PER_DB (2; 1 on a personal VM),
-# MAX_PER_OWNER (1; 0 = no limit, for a personal VM), SECRETS (/root/lfc-src: the admin env files tpc-master.sh used),
+# MAX_PER_OWNER (1; 0 = no limit, for a personal VM; the default when LIMITS doesn't set max_running), SECRETS (/root/lfc-src: the admin env files tpc-master.sh used),
 # LOCK_WAIT (600 s: how long a command waits for another to finish), LOCK (the lock file for one command at a time; default $STATE/.lock: keep it on a local disk when STATE is on a
 # JuiceFS volume, where flock isn't checked here). STATE on /mnt/jfs needs that volume mounted, or the command stops.
+# LIMITS (/etc/lfc-slot.limits): per-owner limits, read on every command, so changing one needs no new slot.sh. One
+# line per owner, and a line "default" for everyone not listed; a key missing from both falls back to the settings:
+#   default max_running=1 hours_per_week=29
+#   alice max_running=4 hours_per_week=60
 set -euo pipefail
 [ -r /etc/lfc-slot.env ] && . /etc/lfc-slot.env
 ROOT=${ROOT:-/mnt/jfs} STATE=${STATE:-/var/lib/lfc/slots} SECRETS=${SECRETS:-/root/lfc-src}
@@ -38,6 +52,16 @@ PORT_MIN=${PORT_MIN:-30000} PORT_MAX=${PORT_MAX:-30063} MAX_PER_OWNER=${MAX_PER_
 CPUS_PER_DB=${CPUS_PER_DB:-2}
 MAX_RUNNING=${MAX_RUNNING:-$(( $(nproc) / CPUS_PER_DB ))}; [ "$MAX_RUNNING" -ge 1 ] || MAX_RUNNING=1
 LOCK=${LOCK:-$STATE/.lock}
+LIMITS=${LIMITS:-/etc/lfc-slot.limits}
+limit() {   # limit <key> <fallback>: <key>=<value> on the owner's line in LIMITS, else on the default line, else <fallback>
+  local who v
+  for who in "$OWNER" default; do
+    v=$(awk -v w="$who" -v k="$1" '$1 == w { for (i = 2; i <= NF; i++) if (index($i, k "=") == 1) v = substr($i, length(k) + 2) }
+                                   END { print v }' "$LIMITS" 2>/dev/null || true)
+    [ -n "$v" ] && { echo "$v"; return; }
+  done
+  echo "$2"
+}
 lock() {   # one command at a time; LOCK_WAIT (600 s) bounds the wait behind another command instead of hanging with it
   flock -w "${LOCK_WAIT:-600}" 9 || die "another slot command still holds $LOCK after ${LOCK_WAIT:-600} s: see it with pgrep -af lfc-slot"
 }
@@ -85,7 +109,7 @@ engine() {
     mariadb)  IMAGE=docker.io/library/mariadb:11.4 MNT=/var/lib/mysql CPORT=3306
               ARGS=(--log-bin --server-id=1 --binlog-format=ROW --binlog-row-image=FULL --binlog-expire-logs-seconds=604800)
               RUNOPTS=() ;;
-    # Db2 Community: --privileged; the image makes LFCDB at its first start; lfc_user is an OS user (Db2 checks the OS password)
+    # Db2 Community: --privileged; db2_db makes LFCDB after the image's setup; lfc_user is an OS user (Db2 checks the OS password)
     db2)      IMAGE=icr.io/db2_community/db2:11.5.9.0 MNT=/database CPORT=50000 DBNAME=LFCDB WAIT=900
               ARGS=() RUNOPTS=(--privileged) ;;
     # Informix Developer: the server writes its data and config volumes as informix (:U), the config one a folder under the
@@ -130,26 +154,129 @@ probe() {   # the query that says the engine answers (Oracle: once its PDB is op
     *) echo "SELECT 1;" ;;
   esac
 }
+# db2_db <container>: LFCDB with 4 KB-aligned I/O. A data disk with 4096-byte logical sectors (Azure Premium SSD v2's
+# default) refuses Db2's 512-byte direct-I/O writes (pwrite EINVAL: SQL0293N on CREATE DATABASE), so the image doesn't
+# make the database (no DBNAME). Every start: DB2_4K_DEVICE_SUPPORT=ON if it isn't (kept in the instance home; the
+# instance restarts once to read it), so a clone of a master built without it gets it too; then LFCDB if it's missing.
+db2_db() {
+  podman exec "$1" su - db2inst1 -c 'db2set -all 2>/dev/null | grep -q "DB2_4K_DEVICE_SUPPORT=ON" ||
+      { db2set DB2_4K_DEVICE_SUPPORT=ON && { db2stop force; db2start; } >/dev/null 2>&1; } || exit 1
+    db2 list db directory 2>/dev/null | grep -q "= LFCDB$" || db2 create database LFCDB >/dev/null' 9>&-
+}
 ready() {
   # grep -c reads all of the log: with pipefail, grep -q's early exit would make podman logs fail (SIGPIPE)
   if [ "$2" = oracle ]; then   # the image restarts the database after its first-start setup and then prints this line
     [ "$(podman logs "$1" 2>&1 | grep -c 'DATABASE IS READY TO USE')" -gt 0 ] || return 1
   elif [ "$2" = db2 ]; then    # Db2's setup (instance, then the database) runs after the start; the image logs its end
     [ "$(podman logs "$1" 2>&1 | grep -cF '(*) Setup has completed')" -gt 0 ] || return 1
+    db2_db "$1" >/dev/null 2>&1 || return 1
   fi
   probe "$2" | PROBE_TIMEOUT=30 sql "$1" "$2" >/dev/null 2>&1
 }
+# informix_os <container> <env file>: the Informix admin's OS password (user informix) from its env file
+informix_os() { sed -n 's/^INFORMIX_PASSWORD=//p' "$2" | sed 's/^/informix:/' | podman exec -i -u root "$1" chpasswd; }
 # prep <engine> <container> <password> <env file>: what a start needs before lfc_user's login: OS users (Db2, Informix),
 # the Informix admin's OS password from its env file, the Informix test database. Every start runs it again (idempotent)
 prep() {
   case $1 in
     db2) printf 'lfc_user:%s\n' "$3" | podman exec -i -u root "$2" sh -c 'read l; id -u lfc_user >/dev/null 2>&1 || useradd -m lfc_user; echo "$l" | chpasswd' ;;
     informix)   # the container's default user is informix: the OS accounts need root
-      sed -n 's/^INFORMIX_PASSWORD=//p' "$4" | sed 's/^/informix:/' | podman exec -i -u root "$2" chpasswd || return 1
+      informix_os "$2" "$4" || return 1
       printf 'lfc_user:%s\n' "$3" | podman exec -i -u root "$2" sh -c 'read l; id -u lfc_user >/dev/null 2>&1 || useradd -m lfc_user; echo "$l" | chpasswd' || return 1
       [ "$(echo "SELECT name FROM sysmaster:sysdatabases WHERE name = 'lfcdb';" | sql "$2" "$1" 2>/dev/null | grep -c lfcdb)" -gt 0 ] \
         || echo "CREATE DATABASE lfcdb WITH LOG;" | sql "$2" "$1" >/dev/null 2>&1 ;;   # dbaccess's messages stay off the JSON line
   esac
+}
+# admin_key <engine>: the env file's key for the admin password (empty: insecure, no password)
+admin_key() {
+  case $1 in
+    postgres) echo POSTGRES_PASSWORD ;; mysql) echo MYSQL_ROOT_PASSWORD ;; mariadb) echo MARIADB_ROOT_PASSWORD ;;
+    sqlserver) echo MSSQL_SA_PASSWORD ;; oracle) echo ORACLE_PASSWORD ;; db2) echo DB2INST1_PASSWORD ;; informix) echo INFORMIX_PASSWORD ;;
+    *) echo "" ;;
+  esac
+}
+# rotate_change <engine> <container> <old> <new>: the admin's password changed inside the database. The old one logs in first,
+# from stdin (never on a command line): Postgres and MySQL over TCP, SQL Server with SQLCMDPASSWORD, Oracle as SYS, Db2 as the
+# instance owner's connect, Informix's OS password checked by unix_chkpwd (the image must have it)
+rotate_change() {
+  local e=$1 c=$2 old=$3 new=$4 cli h hosts out sep
+  case $e in
+    postgres) { printf '%s\n' "$old"; printf "ALTER USER postgres WITH PASSWORD '%s';\n" "$new"; } \
+      | podman exec -i "$c" sh -c 'read -r p; PGPASSWORD=$p exec psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -q' >/dev/null || return 1 ;;
+    mysql|mariadb) cli=mysql; [ "$e" = mariadb ] && cli=mariadb
+      # every root account gets the password (the image makes root@% and root@localhost, or only one of them), in one
+      # statement, so a failure leaves no account with the new one
+      hosts=$({ printf '%s\n' "$old"; echo "SELECT host FROM mysql.user WHERE user = 'root';"; } \
+        | podman exec -i "$c" sh -c "read -r p; MYSQL_PWD=\$p exec $cli -h127.0.0.1 -uroot -N -B") || return 1
+      [ -n "$hosts" ] || return 1
+      { printf '%s\n' "$old"; printf 'ALTER USER'; sep=' '; for h in $hosts; do printf "%s'root'@'%s' IDENTIFIED BY '%s'" "$sep" "$h" "$new"; sep=', '; done; echo ';'; } \
+        | podman exec -i "$c" sh -c "read -r p; MYSQL_PWD=\$p exec $cli -h127.0.0.1 -uroot" >/dev/null || return 1 ;;
+    sqlserver) { printf '%s\n' "$old"; printf "ALTER LOGIN sa WITH PASSWORD = N'%s';\n" "$new"; } \
+      | podman exec -i "$c" sh -c 'read -r p; f=$(mktemp); cat > $f; SQLCMDPASSWORD=$p /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -b -i $f; r=$?; rm -f $f; exit $r' >/dev/null || return 1 ;;
+    oracle) out=$({ printf 'whenever sqlerror exit failure\nCONNECT sys/"%s"@//localhost:1521/FREE AS SYSDBA\n' "$old"
+              printf 'ALTER USER sys IDENTIFIED BY "%s";\nALTER USER system IDENTIFIED BY "%s";\nexit\n' "$new" "$new"; } \
+      | podman exec -i "$c" sqlplus -s -L /nolog 2>&1) || return 1
+            # whenever sqlerror misses a failed CONNECT (an SQL*Plus command) and the "not connected" errors after it
+            case $out in *ORA-*|*SP2-*) return 1 ;; esac ;;
+    db2) printf '%s\n' "$old" | podman exec -i "$c" bash -c 'read -r p; f=$(mktemp); printf "connect to LFCDB user db2inst1 using %s;\n" "$p" > $f; chown db2inst1 $f; su - db2inst1 -c "db2 -x -t -s -f $f" >/dev/null 2>&1; r=$?; rm -f $f; exit $r' || return 1
+         printf 'db2inst1:%s\n' "$new" | podman exec -i -u root "$c" sh -c 'read -r l; echo "$l" | chpasswd' >/dev/null || return 1 ;;
+    # prep() re-applies INFORMIX_PASSWORD from the database's own env file at every start (up applies it before this check too), so a re-created container gets the new value back
+    informix) printf '%s\0' "$old" | podman exec -i -u root "$c" unix_chkpwd informix nullok >/dev/null || return 1
+              printf 'informix:%s\n' "$new" | podman exec -i -u root "$c" chpasswd >/dev/null || return 1 ;;
+    *) return 1 ;;
+  esac
+}
+# rotate_admin <engine> <container> <env file>: the clone's admin password becomes a new one. The new value is prepared in a
+# file beside the env file first; the env file is replaced only after the change succeeded. Returns 1 when the change failed:
+# the marker stays, so the next up tries again. The tried value is kept as <env file>.pending and is never replaced by another:
+# Oracle changes sys and then system, so a failure after the first leaves sys with it. A retry tries that same value again,
+# logging in with the old password or, when the database already has the pending one, with that.
+rotate_admin() {
+  local e=$1 c=$2 f=$3 k old new t pend=$3.pending
+  k=$(admin_key "$e"); [ -n "$k" ] || return 0
+  old=$(sed -n "s/^$k=//p" "$f" | head -1); [ -n "$old" ] || return 1
+  new=$(sed -n "s/^$k=//p" "$pend" 2>/dev/null | head -1); [ -n "$new" ] || new=$(pw)
+  t=$(mktemp "$f.XXXXXX") || return 1
+  if ! sed "s|^$k=.*|$k=$new|" "$f" > "$t" || ! chmod 600 "$t"; then rm -f "$t"; return 1; fi
+  if ! rotate_change "$e" "$c" "$old" "$new" && ! { [ -e "$pend" ] && rotate_change "$e" "$c" "$new" "$new"; }; then
+    if [ -e "$pend" ]; then rm -f "$t"; else mv -f "$t" "$pend" 2>/dev/null || rm -f "$t"; fi
+    [ ! -e "$pend" ] || echo "slot: if part of the change went through, the tried admin password is in $pend" >&2
+    return 1
+  fi
+  mv -f "$t" "$f" || { echo "slot: the new admin password is in $t: move it over $f" >&2; return 1; }
+  rm -f "$pend"
+  return 0
+}
+# the container from the record and the env file: every start, so the env file's current values apply (P: the port)
+start_db() {
+  podman rm -f "$C" >/dev/null 2>&1 || true
+  VOLS=(-v "$D:$MNT:$VOLOPT")
+  [ "$E" = informix ] && VOLS+=(-v "$D/cfg:/opt/ibm/config:U,Z")
+  podman run -d -q --name "$C" --label lfc-slot.owner="$OWNER" --label lfc-slot.name="$N" --label lfc.engine="$E" --label lfc.purpose=slot "${RUNOPTS[@]}" \
+    --env-file "$STATE/$OWNER/$N.env" -p "$P:$CPORT" "${VOLS[@]}" "$IMAGE" "${ARGS[@]}" >/dev/null 9>&-   # the container must not inherit the lock
+}
+# wait until the engine answers (WAIT seconds); it stopped, or didn't answer in time: say so and stop
+await_db() {
+  local deadline=$((SECONDS + WAIT))   # wall time: a probe that hangs counts against the wait (each probe gives up after 30 s)
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    ready "$C" "$E" && return 0
+    [ "$(podman inspect -f '{{.State.Running}}' "$C" 2>/dev/null)" = true ] || die "$E in $C stopped: podman logs $C"
+    sleep 2
+  done
+  ready "$C" "$E" || die "$E in $C didn't answer in $((WAIT / 60)) minutes: podman logs $C"
+}
+# the first start of a database cloned from a master (or a clone of one): its admin password changes once, here. The engines
+# whose admin helpers read the container's env (MYSQL_ROOT_PASSWORD, MARIADB_ROOT_PASSWORD, MSSQL_SA_PASSWORD) and Db2 (its
+# image reads DB2INST1_PASSWORD at start) get the container started again from the new env file, as every later start does.
+rotate_now() {
+  local mk=$STATE/$OWNER/$N.rotate
+  if [ -z "$(admin_key "$E")" ]; then rm -f "$mk"; echo "slot: $E is insecure: no admin password to change" >&2; return 0; fi
+  if rotate_admin "$E" "$C" "$STATE/$OWNER/$N.env"; then
+    rm -f "$mk"; echo "slot: $N: its admin password is a new one (the master's is no longer valid for it)" >&2
+    case $E in mysql|mariadb|sqlserver|db2) start_db; await_db ;; esac
+  else
+    echo "slot: $N: its admin password is still the master's (the change failed): up again to retry" >&2
+  fi
 }
 login_sql() {   # engine, password: the Lakeflow Connect login with replication rights; databases and CDC are per test
   local p=${2//\'/\'\'}
@@ -216,8 +343,8 @@ park_one() {   # owner name
 }
 
 case $CMD in
-  masters)
-    for d in "$ROOT"/masters/*/; do [ -d "$d" ] && echo "$(basename "$d")"; done ;;
+  masters)   # none (a VM made without masters): no lines, exit 0
+    for d in "$ROOT"/masters/*/; do if [ -d "$d" ]; then basename "$d"; fi; done ;;
 
   ls)
     all=0; [ "${1:-}" = --all ] && all=1
@@ -231,20 +358,23 @@ case $CMD in
 
   up)
     E=${1:-}; N=${2:-}; shift 2 || usage; name_ok "$N"; engine "$E"
-    FROM="" EMPTY=0
-    while [ $# -gt 0 ]; do case $1 in --from) FROM=${2:-}; shift 2 ;; --empty) EMPTY=1; shift ;; *) usage ;; esac; done
+    FROM="" EMPTY=0 PARK=0
+    while [ $# -gt 0 ]; do case $1 in --from) FROM=${2:-}; shift 2 ;; --empty) EMPTY=1; shift ;; --park) PARK=1; shift ;; *) usage ;; esac; done
     exec 9>"$LOCK"; lock
     M=$(meta "$OWNER" "$N"); D=$ROOT/dbs/$OWNER/$N; C=$(cname "$OWNER" "$N")
     if [ -f "$M" ]; then
       [ "$(field "$M" engine)" = "$E" ] || die "$N is a $(field "$M" engine) database"
     fi
     if running "$OWNER" "$N"; then :; else
-      # one running database per owner (MAX_PER_OWNER), then the VM's limit (MAX_RUNNING)
-      if [ "$MAX_PER_OWNER" -gt 0 ]; then
-        mine=$(for m in $(all_metas); do o=$(basename "$(dirname "$m")"); n=$(basename "$m" .json); [ "$o" = "$OWNER" ] && [ "$n" != "$N" ] && running "$o" "$n" && echo "$n"; done || true)
+      # the owner's limit of running databases (LIMITS, else MAX_PER_OWNER), then the VM's limit (MAX_RUNNING)
+      PER=$(limit max_running "$MAX_PER_OWNER"); [[ $PER =~ ^[0-9]+$ ]] || die "max_running for $OWNER in $LIMITS isn't a number: $PER"
+      if [ "$PER" -gt 0 ]; then
+        # yours, the one that started first first (the container's start time)
+        mine=$(for m in $(all_metas); do o=$(basename "$(dirname "$m")"); n=$(basename "$m" .json); [ "$o" = "$OWNER" ] && [ "$n" != "$N" ] && running "$o" "$n" && echo "$(podman inspect -f '{{.State.StartedAt}}' "$(cname "$o" "$n")" 2>/dev/null) $n"; done | sort | awk '{print $NF}' || true)
         cnt=$(grep -c . <<<"$mine" || true)
-        if [ "$cnt" -ge "$MAX_PER_OWNER" ]; then
-          for n in $mine; do echo "slot: parking your running database $n first (one at a time on this VM)" >&2; park_one "$OWNER" "$n"; done
+        if [ "$cnt" -ge "$PER" ]; then
+          [ $PARK = 1 ] || die "you have $cnt of $PER running databases on this VM ($(tr '\n' ' ' <<<"$mine" | sed 's/ $//')): park one first (park <name>), or up again with --park to park the one that started first"
+          for n in $(head -n $(( cnt - PER + 1 )) <<<"$mine"); do echo "slot: parking your running database $n first ($PER at a time for you on this VM)" >&2; park_one "$OWNER" "$n"; done
         fi
       fi
       run_now=$(podman ps --format '{{.Names}}' | grep -c '^lfc-slot-' || true)
@@ -262,6 +392,7 @@ case $CMD in
           [ -f "$SECRETS/$E.env" ] || die "no admin env $SECRETS/$E.env for the $E masters"
           fs_clone "$ROOT/masters/$FROM" "$D"
           cp "$SECRETS/$E.env" "$STATE/$OWNER/$N.env"
+          : > "$STATE/$OWNER/$N.rotate"   # the admin password is the master's: rotate_now changes it at the first start
         else
           install -d "$D"
           [ "$E" = sqlserver ] && chown 10001:0 "$D"   # SQL Server runs as mssql (uid 10001)
@@ -274,7 +405,7 @@ case $CMD in
             sqlserver) printf 'ACCEPT_EULA=Y\nMSSQL_SA_PASSWORD=%s\n' "$(pw)" ;;
             oracle) printf 'ORACLE_PASSWORD=%s\n' "$(pw)" ;;
             mariadb) printf 'MARIADB_ROOT_PASSWORD=%s\n' "$(pw)" ;;
-            db2) printf 'LICENSE=accept\nDB2INSTANCE=db2inst1\nDB2INST1_PASSWORD=%s\nDBNAME=LFCDB\nBLU=false\nENABLE_ORACLE_COMPATIBILITY=false\nPERSISTENT_HOME=true\nARCHIVE_LOGS=false\nAUTOCONFIG=false\nSAMPLEDB=false\n' "$(pw)" ;;
+            db2) printf 'LICENSE=accept\nDB2INSTANCE=db2inst1\nDB2INST1_PASSWORD=%s\nBLU=false\nENABLE_ORACLE_COMPATIBILITY=false\nPERSISTENT_HOME=true\nARCHIVE_LOGS=false\nAUTOCONFIG=false\nSAMPLEDB=false\n' "$(pw)" ;;
             informix) printf 'LICENSE=accept\nINFORMIX_PASSWORD=%s\n' "$(pw)" ;;
             cockroachdb|yugabytedb) ;;   # insecure: no password
           esac > "$STATE/$OWNER/$N.env"
@@ -286,28 +417,23 @@ case $CMD in
         umask 022
       fi
       P=$(field "$M" port)
-      podman rm -f "$C" >/dev/null 2>&1 || true
-      VOLS=(-v "$D:$MNT:$VOLOPT")
-      [ "$E" = informix ] && VOLS+=(-v "$D/cfg:/opt/ibm/config:U,Z")
-      podman run -d -q --name "$C" --label lfc-slot.owner="$OWNER" --label lfc-slot.name="$N" --label lfc.engine="$E" --label lfc.purpose=slot "${RUNOPTS[@]}" \
-        --env-file "$STATE/$OWNER/$N.env" -p "$P:$CPORT" "${VOLS[@]}" "$IMAGE" "${ARGS[@]}" >/dev/null 9>&-   # the container must not inherit the lock
+      start_db
     fi
     # every up, started or already running: an up cut short (its ssh dropped during a first start) leaves a running
     # container without lfc_user, so the login runs again here (it's idempotent)
-    deadline=$((SECONDS + WAIT))   # wall time: a probe that hangs counts against the wait (each probe gives up after 30 s)
-    while [ "$SECONDS" -lt "$deadline" ]; do
-      ready "$C" "$E" && break
-      [ "$(podman inspect -f '{{.State.Running}}' "$C" 2>/dev/null)" = true ] || die "$E in $C stopped: podman logs $C"
-      sleep 2
-    done
-    ready "$C" "$E" || die "$E in $C didn't answer in $((WAIT / 60)) minutes: podman logs $C"
+    P=$(field "$M" port)
+    await_db
+    if [ -f "$STATE/$OWNER/$N.rotate" ]; then   # the change's check reads the OS password the env file gives (Informix: prep sets it after)
+      [ "$E" != informix ] || informix_os "$C" "$STATE/$OWNER/$N.env" || { podman rm -f "$C" >/dev/null 2>&1; die "the Informix admin's OS password in $C failed; run up again"; }
+      rotate_now
+    fi
     prep "$E" "$C" "$(cat "$STATE/$OWNER/$N.login")" "$STATE/$OWNER/$N.env" || { podman rm -f "$C" >/dev/null 2>&1; die "preparing $E in $C failed; run up again"; }
     # a failed login stops the container, so the next up tries again instead of resuming without lfc_user
     login_sql "$E" "$(cat "$STATE/$OWNER/$N.login")" | sql "$C" "$E" >/dev/null || { podman rm -f "$C" >/dev/null 2>&1; die "creating lfc_user in $C failed; run up again"; }
     log "$N" up
     P=$(field "$M" port)
     jq -cn --arg n "$N" --arg e "$E" --arg h "$(host)" --arg p "$P" --rawfile pw "$STATE/$OWNER/$N.login" --arg c "$C" --arg s "$SERVICE" --arg d "$DBNAME" \
-      '{name: $n, engine: $e, host: $h, port: ($p | tonumber), user: "lfc_user", password: ($pw | rtrimstr("\n")), container: $c, state: "running"} + (if $s == "" then {} else {service: $s} end) + (if $d == "" then {} else {database: $d} end)' ;;
+      '{contract: 1, name: $n, engine: $e, host: $h, port: ($p | tonumber), user: "lfc_user", password: ($pw | rtrimstr("\n")), container: $c, state: "running"} + (if $s == "" then {} else {service: $s} end) + (if $d == "" then {} else {database: $d} end)' ;;
 
   park)
     N=${1:-}; name_ok "$N"; [ -f "$(meta "$OWNER" "$N")" ] || die "no database $N"
@@ -327,6 +453,7 @@ case $CMD in
     umask 077
     fs_clone "$D" "$DT"
     cp "$STATE/$OWNER/$N.env" "$STATE/$OWNER/$T.env"   # the admin password is inside the copied data
+    : > "$STATE/$OWNER/$T.rotate"                      # ... and the clone gets a new one at its first start (rotate_now)
     pw > "$STATE/$OWNER/$T.login"                      # up sets lfc_user's password to it
     PT=$(free_port)
     jq --arg p "$PT" --arg c "$(now)" --arg f "clone:$N" '.port = ($p | tonumber) | .created = $c | .from = $f' "$M" > "$MT"
@@ -344,8 +471,13 @@ case $CMD in
     running "$OWNER" "$N" && park_one "$OWNER" "$N"
     D=$ROOT/dbs/$OWNER/$N
     if [ -d "$D" ]; then juicefs rmr "$D" >/dev/null 2>&1 || rm -rf "${D:?}"; fi
-    rm -f "$M" "$STATE/$OWNER/$N.env" "$STATE/$OWNER/$N.login"
+    rm -f "$M" "$STATE/$OWNER/$N.env" "$STATE/$OWNER/$N.env.pending" "$STATE/$OWNER/$N.login" "$STATE/$OWNER/$N.rotate"
     log "$N" rm; echo "removed $N" ;;
+
+  limits)
+    PER=$(limit max_running "$MAX_PER_OWNER") H=$(limit hours_per_week "")
+    jq -cn --arg o "$OWNER" --arg m "$PER" --arg h "$H" \
+      '{owner: $o, max_running: ($m | tonumber), hours_per_week: (if $h == "" then null else ($h | tonumber) end)}' ;;
 
   usage)
     DAYS=7 all=0
@@ -381,6 +513,48 @@ case $CMD in
     echo "Data: JuiceFS volume at $ROOT (object storage), database $(field "$M" engine) $N, port $(field "$M" port)"
     curl -fs -m 5 -H Metadata:true "http://169.254.169.254/metadata/instance/compute?api-version=2021-12-13" \
       | jq -r '"VM: Azure \(.vmSize), region \(.location), zone \(if .zone == "" then "none" else .zone end)"' 2>/dev/null || true ;;
+
+  facts)
+    N=${1:-}; name_ok "$N"; M=$(meta "$OWNER" "$N"); [ -f "$M" ] || die "no database $N"
+    C=$(cname "$OWNER" "$N"); D=$ROOT/dbs/$OWNER/$N
+    cpu=$(nproc); ram=$(awk '/^MemTotal:/ {printf "%d", $2 / 1048576 + 0.5}' /proc/meminfo)
+    az=$(curl -fs -m 5 -H Metadata:true "http://169.254.169.254/metadata/instance/compute?api-version=2021-12-13" 2>/dev/null || true)
+    if [ -n "$az" ]; then
+      vm=$(jq -c --argjson c "$cpu" --argjson r "$ram" '{cloud: "azure", type: .vmSize, region: .location, cpu: $c, ram_gb: $r,
+        disks: ([{role: "os", gb: (.storageProfile.osDisk.diskSizeGB | tonumber? // null),
+                  type: .storageProfile.osDisk.managedDisk.storageAccountType}]
+              + [.storageProfile.dataDisks[]? | {role: "data", gb: (.diskSizeGB | tonumber? // null), type: .managedDisk.storageAccountType}])}' <<<"$az")
+      backend="Azure Blob"
+    else
+      tok=$(curl -fs -m 5 -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 60" http://169.254.169.254/latest/api/token 2>/dev/null || true)
+      it=$(curl -fs -m 5 ${tok:+-H "X-aws-ec2-metadata-token: $tok"} http://169.254.169.254/latest/meta-data/instance-type 2>/dev/null || true)
+      rg=$(curl -fs -m 5 ${tok:+-H "X-aws-ec2-metadata-token: $tok"} http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null || true)
+      # disks from the kernel: whole disks, their size (GB) and whether they spin
+      dk=$(lsblk -b -d -n -o NAME,SIZE,ROTA,TYPE 2>/dev/null | awk '$4 == "disk" {printf "%s %d %s\n", $1, $2 / 1e9 + 0.5, $3}' \
+        | jq -Rcs 'split("\n") | map(select(. != "") | split(" ") | {role: "disk", name: .[0], gb: (.[1] | tonumber), type: (if .[2] == "1" then "HDD" else "SSD" end)})')
+      vm=$(jq -nc --arg t "${it:-unknown}" --arg r "$rg" --argjson c "$cpu" --argjson m "$ram" --argjson d "${dk:-[]}" \
+        '{cloud: (if $t == "unknown" then "" else "aws" end), type: $t, region: $r, cpu: $c, ram_gb: $m, disks: $d}')
+      backend="Amazon S3"
+    fi
+    jfs=$(findmnt -n -t fuse.juicefs -o SOURCE,TARGET 2>/dev/null | jq -Rcs --arg b "$backend" 'split("\n") | map(select(. != "")
+      | split(" ") | {name: (.[0] | sub("^JuiceFS:"; "")), mount: .[1], backend: $b})')
+    lim=""; mem=""; state=parked
+    if running "$OWNER" "$N"; then
+      state=running
+      lim=$(podman inspect -f '{{.HostConfig.NanoCpus}} {{.HostConfig.CpuQuota}} {{.HostConfig.CpuPeriod}} {{.HostConfig.Memory}}' "$C")
+      mem=$(podman inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$C" | sed -n 's/^MSSQL_MEMORY_LIMIT_MB=//p' | head -1)
+    fi
+    dmb=$(du -sm "$D" 2>/dev/null | cut -f1)
+    onj=disk; [ -n "$(findmnt -n -t fuse.juicefs -T "$D" 2>/dev/null)" ] && onj=juicefs
+    db=$(jq -nc --arg c "$C" --arg e "$(field "$M" engine)" --arg s "$state" --arg l "$lim" --arg m "$mem" --arg d "${dmb:-}" --arg o "$onj" '
+      ($l | split(" ")) as $L |
+      {container: $c, engine: $e, state: $s,
+       cpu: (if ($L[0] // "0") != "0" then (($L[0] | tonumber) / 1e9)
+             elif ($L[1] // "0") != "0" and ($L[1] | tonumber) > 0 then (($L[1] | tonumber) / ($L[2] | tonumber)) else null end),
+       ram_gb: (if ($L[3] // "0") != "0" then (($L[3] | tonumber) / 1073741824 * 10 | round / 10) else null end),
+       engine_ram_gb: (if $m != "" then (($m | tonumber) / 1024 * 10 | round / 10) else null end),
+       data_mb: (if $d != "" then ($d | tonumber) else null end), data_on: $o}')
+    jq -nc --argjson vm "$vm" --argjson db "$db" --argjson j "${jfs:-[]}" '{source_host: "VM + Podman", vm: $vm, db: $db, juicefs: $j}' ;;
 
   *) usage ;;
 esac

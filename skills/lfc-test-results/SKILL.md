@@ -13,6 +13,8 @@ Every test run leaves two things in this repo's `results/`, so the next person (
 | `results/runs/<run>.jsonl` | One JSON record per test cell (engine × mode × host × setup), one file per run, append-only | `recall.py`, `jq`, DuckDB, agents |
 | `results/<date>-<topic>.md` | The write-up of one run: setup, a results table, what broke, which skill fixes came out of it | people |
 
+Installed as a plugin (`lfc-tests`), the copy is replaced on every update, so new records and findings go to `~/.lfc/tests/results/` (or `$LFC_TESTS_RESULTS`) instead, and `recall.py`, `finding.py` and `ddl-matrix.py render` read the shipped results plus those ([scripts/results_dir.py](scripts/results_dir.py)).
+
 The repo is **public**: records and write-ups hold outcomes, counts, versions and error text, never IPs, hostnames, IDs, emails, catalog or workspace names, or credentials. `record.py` refuses a record that looks like it holds any of these.
 
 ## Before testing: recall
@@ -45,7 +47,7 @@ duckdb -c "SELECT test, subject.engine, outcome, count(*) FROM read_json('result
 - **Read every page of events.** The events API returns at most 250 per page, newest first; follow `next_page_token` before concluding an event never came.
 - **Integrated CDC on MySQL: the extractor's snapshot flow is the signal.** The per-table operation event "Snapshot of <table> has COMPLETED" doesn't come (it stays at IN_PROGRESS), and the applier's snapshot flows report COMPLETED only when the update ends. A `flow_progress` COMPLETED on `extractor_..._<table>_snapshot_flow` means the table's snapshot is read. Tested 2026-10-26, MySQL 8.4.13.
 - **Change tracking keeps one change per key between reads.** Updating the same row again and again shows one staged change per read, not one per update. To measure how often a table is read, or whether changes are lost, write a new key per change.
-- **Give every wait a deadline.** A loop that waits for an update or an event gives up after 20 minutes and records "timed out"; a batch with a hard stop sets `LFC_DEADLINE_MIN` (lfc-schema-change-test `lib.sh`), so `update` stops the pipeline at the deadline and reports it.
+- **Give every wait a deadline.** A loop that waits for an update or an event gives up after 20 minutes and records "timed out"; a batch with a hard stop sets `LFC_DEADLINE_MIN` (`skills/lfc-schema-change-test/scripts/lib.sh`), so `update` stops the pipeline at the deadline and reports it.
 - **Read the gateway's events as well as the ingestion pipeline's.** Source-side errors (archive logs gone, slot invalidated, capture instance missing) appear on the gateway; the ingestion update can show none.
 - **Record the build:** `bin/lfc-runtime.sh --summary <profile> <pipeline-id>` for the gateway and the ingestion pipeline goes in `subject` or `setup.runtime`. A result without it can't be compared with the next release.
 - **Check each setup step took effect before reading the result.** A grant, revoke or source change that failed silently makes the case invalid, not a finding. Read the state back: effective permissions, the capture instance, the slot.

@@ -10,7 +10,7 @@
 set -euo pipefail
 FROM=${1:?from-nsg}; TO=${2:?to-nsg}; PORT=${3:?port}; APPLY=${4:-}
 : "${RG:?}" "${SUBSCRIPTION:?the subscription_id from the NSG IDENTITY line (the az default is not used)}"
-. "$(dirname "$0")/../../lfc-source-setup/scripts/cloud-identity.sh"; az_require "$SUBSCRIPTION" "${TENANT_ID:-}" || exit 1
+. "$(dirname "$0")/../../cli-setup/scripts/cloud-identity.sh"; az_require "$SUBSCRIPTION" "${TENANT_ID:-}" || exit 1
 A=(--resource-group "$RG" --subscription "$SUBSCRIPTION")
 T=$(mktemp -d); trap 'rm -rf "${T:?}"' EXIT
 az network nsg rule list "${A[@]}" --nsg-name "$FROM" -o json > "$T/from.json"

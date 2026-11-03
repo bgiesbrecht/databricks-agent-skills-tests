@@ -4,7 +4,8 @@
 # 2 more, B adds a nullable column and inserts 2. After each, it prints destination rows, s2ct's ids and the changes in
 # the CDC staging table per table. Seen 2026-10-20: s2ct got none of A's or A2's rows until B's ADD COLUMN released
 # them, and then held B's; no error. SCD_TYPE_2 needs CDC on SQL Server.
-# Needs PROFILE, CONNECTION, CATALOG, CONN_USER, SRC_SQL (as sqlserver-add-column.sh).
+# Needs PROFILE, CONNECTION, CATALOG, CONN_USER, SRC_SQL (as sqlserver-add-column.sh), or SOURCE_JSON (a source contract,
+# lfc-source-contract) for the last three.
 # PIPELINE_CONF (a JSON object) sets pipeline settings, e.g. a knob under test.
 # SERVER_STATE=1 grants the connection's login VIEW SERVER STATE for the run (revoked at the end): on change tracking,
 # SCD type 2 reads each change's commit time from sys.dm_tran_commit_table, which shows a login without it no rows.
@@ -12,6 +13,10 @@ set -uo pipefail
 export PATH=/opt/homebrew/bin:$PATH
 dbx() { databricks "$@" --profile "$PROFILE"; }
 HERE=$(cd "$(dirname "$0")" && pwd)
+if [ -n "${SOURCE_JSON:-}" ]; then
+  SE=$("${LFC_SOURCE_ENV:-$HERE/../../lfc-source-contract/scripts/source-env.sh}" "$SOURCE_JSON") || exit 2
+  eval "$SE"
+fi
 PREFIX=${PREFIX:-$(dbx current-user me -o json | yq '.userName' | cut -d@ -f1 | tr -d '.-' | tr 'A-Z' 'a-z')}
 E=$(date +%s); DB=${PREFIX}_scd2ct_$E; S=${PREFIX}_scd2ct_$E; W=$(mktemp -d); T="\`$CATALOG\`.$S"
 WAREHOUSE=$(dbx warehouses list -o json | yq '[.[] | select(.enable_serverless_compute)][0].id'); export WAREHOUSE
@@ -64,6 +69,7 @@ PC=${PIPELINE_CONF:-'{}'}
 AP=$(dbx pipelines create -o json --json "{\"name\":\"${PREFIX}_scd2ct_$E\",\"catalog\":\"$CATALOG\",\"schema\":\"$S\",\"serverless\":true,\"configuration\":$PC,
   \"ingestion_definition\":{\"connection_name\":\"$CONNECTION\",\"connector_type\":\"CDC\",\"objects\":[$(obj s1ct SCD_TYPE_1),$(obj s2ct SCD_TYPE_2),$(obj s2cdc SCD_TYPE_2)]}}" | yq '.pipeline_id')
 echo "pipeline $AP"
+bash "$(dirname "$0")/../../lfc-pipeline-diagram/scripts/show-diagram.sh" "$AP"   # what was created (DIAGRAM=0 skips it)
 STG="$T.__${AP//-/_}_cdc_staging_table"
 fp() { q "SELECT (SELECT COUNT(*) FROM $T.s1ct), (SELECT COUNT(*) FROM $T.s2ct), (SELECT COUNT(*) FROM $T.s2cdc), (SELECT COUNT(*) FROM $STG)" 2>/dev/null | tr '\t' ' '; }
 # run: one update, stopped once it has run 3 minutes and fp() is unchanged for 3 polls

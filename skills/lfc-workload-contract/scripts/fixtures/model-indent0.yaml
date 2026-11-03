@@ -1,0 +1,20 @@
+# tables at indent 0 and columns in flow style (tpcds.yaml's layout); one value list over two lines
+version: "1.0"
+tables:
+- name: region
+  description: "fixed size"
+  row_count: 5
+  columns:
+    - {name: r_regionkey, type: integer, not_null: true, primary_key: true}
+    - {name: r_name, type: varchar, length: 25}
+- name: item
+  row_count_per_sf: 100
+  columns:
+    - name: i_id
+      type: integer
+      primary_key: true
+    - name: i_code
+      type: string
+      generation:
+        values: ["a", "b",
+                 "c"]

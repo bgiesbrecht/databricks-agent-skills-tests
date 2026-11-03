@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # bin/test_scripts.sh: regression tests for the skills' scripts.
-#   Offline (always): shell syntax, every markdown link, the script rules (bin/lint_scripts.py) and SCRIPTS.md, the six TPC schemas through shape.py and ddl.py for seven
+#   Offline (always): shell syntax (also under bash 3.2 when /bin/bash is 3.2, or BASH32=<path>), every markdown link, the script rules (bin/lint_scripts.py), SCRIPTS.md, the layers (bin/check_layers.py: layers.yaml and layers-baseline.txt), the six TPC schemas through shape.py and ddl.py for seven
 #   dialects, every TPC workload from tpc-schema.sh through ddl-to-schema.py and ddl.py for seven dialects, a DDL import
-#   round trip, the Python fill planner compiles, and the shared DuckDB runners.
+#   round trip, the Python fill planner compiles, the shared DuckDB runners, and the workload contract (model format 1 on
+#   every schema, workload-env.sh on its fixtures, one workload.sh run).
 #   With databases (PSQL and/or MYSQL set, e.g. PSQL="podman exec -i dg-pg psql -U postgres",
 #   MYSQL="podman exec -i dg-my mysql -uroot"): fill each of the six workloads from tpc-schema.sh at a small scale (TPC-C 1
 #   warehouse, TPC-H SF 0.1, TPC-B SF 1 (its smallest), TPC-DS, TPC-E, TPC-DI SF 0.01) on each, and check every table is at its
@@ -21,9 +22,19 @@ check() { local name=$1; shift; if "$@" > "$T/out" 2>&1; then ok "$name"; else n
 
 echo "== offline"
 for f in $(find "$SK" -name '*.sh'); do check "bash -n ${f#$SK/}" bash -n "$f"; done
+# and with bash 3.2 (macOS /bin/bash, or BASH32=<path>): the scripts run on it unchanged (lint_scripts.py rule bash32)
+B32=${BASH32:-$( /bin/bash -c '[ "${BASH_VERSINFO[0]}" -lt 4 ] && echo /bin/bash' 2>/dev/null )}
+if [ -n "$B32" ]; then
+  for f in $(find "$SK" "$R/bin" -name '*.sh'); do check "bash 3.2 -n ${f#$R/}" "$B32" -n "$f"; done
+fi
 check "links in every skill" python3 "$R/bin/check_links.py" "$SK"
+check "links in the contributor skills" python3 "$R/bin/check_links.py" "$R/.claude/skills"
 check "script rules: headers, SKILL.md size, rm guards, first-argument flags, jq for one value" python3 "$R/bin/lint_scripts.py"
+check "lint rule bash32 on fixed bad and good lines" python3 -m unittest -q "$R/bin/test_lint_bash32.py"
+check "results dir: checkout, LFC_TESTS_RESULTS, an installed plugin copy" python3 -m unittest -q "$R/bin/test_results_dir.py"
 check "SCRIPTS.md is current" python3 "$R/bin/scripts_index.py" --check
+check "layers: every skill and bin script is in layers.yaml, every cross-skill reference is allowed or in layers-baseline.txt" python3 "$R/bin/check_layers.py"
+check "check_layers: unit tests on a fixture tree" python3 -m unittest -q "$R/bin/test_check_layers.py"
 for w in tpcb tpcc tpch tpcdi tpcds tpce; do
   check "shape.py $w" sh -c "uv run -q '$SS/shape.py' '$SK/lfc-source-statschema/schemas/$w.yaml' --sf 0.1 --expected '$T/$w.exp.json' > '$T/$w.yaml'"
   for d in postgres mysql tsql oracle db2 informix databricks; do
@@ -37,7 +48,7 @@ tpc_dialects() {                              # tpc_dialects <workload>: its DDL
   uv run -q "$SS/validate.py" "$T/t-$1.yaml"
 }
 for w in tpcb tpcc tpch tpcds tpce tpcdi; do
-  n=$(case $w in tpcb) echo 4;; tpcc) echo 9;; tpch) echo 8;; tpcds) echo 24;; tpce) echo 32;; tpcdi) echo 18;; esac)
+  n=$(case $w in (tpcb) echo 4;; (tpcc) echo 9;; (tpch) echo 8;; (tpcds) echo 24;; (tpce) echo 32;; (tpcdi) echo 18;; esac)
   check "tpc-schema.sh $w (SF 1): $n tables, through ddl-to-schema and ddl.py to seven dialects" tpc_dialects $w
   check "tpc-schema.sh $w (SF 1): $n tables in the schema" test "$(grep -c '^- name:' "$T/t-$w.yaml")" -eq $n
 done
@@ -50,9 +61,30 @@ check "results/*.md: nothing internal" python3 -c "import sys, glob, re; sys.pat
 check "recall.py runs" sh -c "python3 '$SK/lfc-test-results/scripts/recall.py' > /dev/null"
 check "secret-handling scripts on a fake secret" sh -c "'$SK/secret-handling/scripts/test-secret-scripts.sh' > /dev/null"
 check "keep-catalogs.sh on a fake CLI" sh -c "'$SK/lfc-workspace-setup/scripts/test-keep-catalogs.sh' > /dev/null"
+check "slot.sh limits and --park on a fake podman" sh -c "'$SK/lfc-source-cloud-vm/scripts/test-slot-limits.sh' > /dev/null"
+check "source contract: source-env.sh on the fixtures and the default clients" sh -c "'$SK/lfc-source-contract/scripts/test-source-env.sh' > /dev/null"
+WC=$SK/lfc-workload-contract/scripts
+check "workload contract: every statschema schema is model format 1 (validate-model.py)" python3 "$WC/validate-model.py" "$SK"/lfc-source-statschema/schemas/*.yaml
+check "workload contract: workload-env.sh and validate-model.py on their fixtures" sh -c "'$WC/test-workload-env.sh' > /dev/null"
+wl_offline() {   # workload.sh writes a tpcb workload that workload-env.sh accepts (4 tables); a postgres dialect is refused
+  bash "$DG/workload.sh" --model tpcb --sf 0.01 --dialect tsql --out "$T/wl" > /dev/null 2>&1 || return 1
+  ( eval "$(bash "$WC/workload-env.sh" "$T/wl/workload.json")" && [ "$WL_NTABLES" = 4 ] && [ "$WL_MODEL" = tpcb ] && [ -f "$WL_DDL" ] ) || return 1
+  bash "$DG/workload.sh" --model tpcb --sf 1 --dialect postgres --out "$T/wl2" > /dev/null 2>&1 && return 1
+  return 0
+}
+check "workload.sh: a tpcb workload at SF 0.01 that workload-env.sh accepts; a postgres dialect refused" wl_offline
+check "slot-source.sh: a slot's contract, and its SRC_SQL through slot-sql.sh and a fake ssh" sh -c "'$SK/lfc-source-cloud-vm/scripts/test-slot-source.sh' > /dev/null"
+check "masters-export, slot-vm-setup masters, and the clone admin password change (fake podman, local Blob server)" sh -c "'$SK/lfc-source-cloud-vm/scripts/test-slot-masters.sh' > /dev/null"
+check "moved-lines.py on a throwaway repo" sh -c "'$R/.claude/skills/public-skill-conventions/scripts/test-moved-lines.sh' > /dev/null"
+check "ws-token.sh: TO (perl alarm timeout)" sh -c "'$SK/account-token-fallback/scripts/test-ws-token.sh' > /dev/null"
+check "options-first: ranking, pick, check, index" sh -c "'$SK/options-first/scripts/test-options.sh' > /dev/null"
+check "options-first: every options.yaml in the skills is valid" sh -c "files=\$(find '$SK' -name options.yaml); [ -z \"\$files\" ] || uv run -q '$SK/options-first/scripts/options.py' check \$files"
 export WANT="10.0.0.0/24 10.9.0.0/24" HAVE="10.0.0.0/16"
 check "q.sh missing.sql" sh -c "'$SK/shell-json-scripting/scripts/q.sh' '$SK/lfc-source-firewall/scripts/missing.sql' | grep -qE \"^MISSING='?10.9.0.0/24'?$\""
 check "q.py missing.sql" sh -c "uv run -q '$SK/shell-json-scripting/scripts/q.py' '$SK/lfc-source-firewall/scripts/missing.sql' | grep -qE \"^MISSING='?10.9.0.0/24'?$\""
+check "pipeline-diagram.py on saved pipeline JSON (gateway on an AG, integrated)" python3 -m unittest -q "$SK/lfc-pipeline-diagram/tests/test_pipeline_diagram.py"
+check "medallion.py: layer counts, how each table is written; the medallion box and the Zerobus drawing" python3 -m unittest -q "$SK/lfc-pipeline-diagram/tests/test_medallion.py"
+check "pipeline-diagram.py's model table counts match the statschema schemas" python3 "$R/bin/check_model_counts.py"
 
 # the schema-change matrix: the results validate and render to the committed table; the commands run offline
 DM=$SK/lfc-schema-change-test/scripts

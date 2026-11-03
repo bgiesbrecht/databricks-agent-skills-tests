@@ -25,7 +25,7 @@ Never point these at a shared source: the DDL forces a full refresh on everyone'
 | [scripts/sqlserver-cii-deny.sh](scripts/sqlserver-cii-deny.sh) | On a CDC table, does a column added after the first load need the login's UPDATE on the utility objects' `lakeflowCaptureInstanceInfo`? A row, then ADD COLUMN and a row, with the info table's row and the capture instances printed; `CII_DENY=0` is the control | About 30 minutes |
 | [scripts/sqlserver-ct-net-changes.sh](scripts/sqlserver-ct-net-changes.sh) | With a gateway that runs all the time, does a change-tracking table get every update of a row, and is every table read on every poll? `TABLES_N` change-tracking SCD type 2 tables and a CDC control, one row updated every `BURST_GAP` seconds for `BURST_N` rounds on `BUSY_PCT`% of the tables, then 5 updates back to back; the kept versions and the gateway's staging files show how often each table was read | About 25 minutes for 22 tables, longer for 200 |
 | [scripts/sqlserver-same-name.sh](scripts/sqlserver-same-name.sh) | Two source tables with the same name in different source schemas (`lfcddemo.orders`, `lfcdb.orders`) in one pipeline: `CASE` maps them to two destination schemas, schema objects, one schema renamed, the legacy publishing mode, one destination table, or two names that are equal once `.` becomes `_`; `TRACK=ct\|cdc`. Each destination must keep only its own source's rows and changes | About 10 minutes a case |
-| [scripts/sqlserver-scale.sh](scripts/sqlserver-scale.sh) | Many tables in one pipeline: `COPIES` copies of a TPC model, one schema each, kept and reused between runs; `MODE`, `OBJECTS=schema\|table`, `SF`. With [scripts/vm-throttle.sh](scripts/vm-throttle.sh) `<MiB/s> --cold` before (and `off` after) and `DISK_MBPS`, the same run on a slow source disk | 10 minutes to over an hour, by table count |
+| [scripts/sqlserver-scale.sh](scripts/sqlserver-scale.sh) | Many tables in one pipeline: `COPIES` copies of a model, one schema each, kept and reused between runs; the model, scale, DDL and fill come from `WORKLOAD_JSON` (a workload file, lfc-workload-contract; lfc-source-datagen's `workload.sh` writes one); `MODE`, `OBJECTS=schema\|table`. With [scripts/vm-throttle.sh](scripts/vm-throttle.sh) `<MiB/s> --cold` before (and `off` after) and `DISK_MBPS`, the same run on a slow source disk | 10 minutes to over an hour, by table count |
 | [scripts/postgres-ddl.sh](scripts/postgres-ddl.sh) | PostgreSQL DDL (`ENGINE=postgres`): nullable and default ADD COLUMN, TOAST-able columns and replica identity, DROP, type changes, rename, primary key, TRUNCATE, parse failures, with and without `auto_full_refresh_policy` | About 40 minutes |
 
 ## Before running
@@ -33,7 +33,7 @@ Never point these at a shared source: the DDL forces a full refresh on everyone'
 1. **A SQL Server source you can run DDL on**, reachable from serverless. The tested one is the SQL Server 2022 Podman container on the cloud VM from **lfc-source-cloud-vm**: start the VM and the container, and open the firewall with **lfc-source-firewall** if serverless can't reach it. Stop the VM afterwards.
 2. **A UC `SQLSERVER` connection** to that source (**lfc-connection-sync** or **lfc-source-setup**), and the login it uses on the source.
 3. **A catalog with its own storage.** CDC refuses Default Storage, and a catalog whose storage credential is broken fails at create ("Azure storage credential was not found"). The script checks for Default Storage before it creates anything.
-4. **A command that runs T-SQL on the source as an admin**, reading stdin, first argument the database. For the VM container, [scripts/vm-mssql.sh](scripts/vm-mssql.sh) does it over SSH and keeps the `sa` password on the VM.
+4. **A command that runs T-SQL on the source as an admin**, reading stdin, first argument the database. For the VM container, [scripts/vm-mssql.sh](scripts/vm-mssql.sh) does it over SSH and keeps the `sa` password on the VM. Or set `SOURCE_JSON=<contract file>` in place of `SRC_SQL`, `CONN_USER` and `CONNECTION`: the source contract, [lfc-source-contract](../lfc-source-contract/SKILL.md).
 
 ## Run
 
@@ -62,7 +62,7 @@ EOF2
 RUNS=/tmp/ct-runs scripts/parallel.sh slots jobs     # PROFILE, CATALOG, CONN_USER, VM_IP exported as above
 ```
 
-[scripts/parallel.sh](scripts/parallel.sh) starts each job on the next free source, from its own copy of the scripts, with that source's `CONNECTION`, `MSSQL_CONTAINER` and `SRC_SQL`, and prints a line as each starts and ends. It needs bash 4 or later.
+[scripts/parallel.sh](scripts/parallel.sh) starts each job on the next free source, from its own copy of the scripts, with that source's `CONNECTION`, `MSSQL_CONTAINER` and `SRC_SQL`, and prints a line as each starts and ends. It needs bash 4 or later. A slot line `- json:<contract file>` takes the source from a source contract ([lfc-source-contract](../lfc-source-contract/SKILL.md)).
 
 It exits 0 when every claim passed, 1 when one failed, 2 when a prerequisite is missing (nothing is left behind in either case).
 

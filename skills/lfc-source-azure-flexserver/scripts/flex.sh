@@ -13,12 +13,12 @@
 #   TLS stays required (require_secure_transport); the UC connection uses TLS.
 #   stop/start: a stopped server costs storage only; Azure starts it again by itself after 7 days.
 set -euo pipefail
-. "$(dirname "${BASH_SOURCE[0]}")/../../lfc-source-setup/scripts/pw.sh"   # pw/pw_check: a password file or keyring:<name>
+. "$(dirname "${BASH_SOURCE[0]}")/../../secret-handling/scripts/pw.sh"   # pw/pw_check: a password file or keyring:<name>
 E=${1:?pg|mysql}; CMD=${2:?plan|create|status|stop|start|delete}
 : "${RG:?}" "${SERVER:?}" "${DB:?}"
 # public access with no firewall rules: postgres calls that Enabled (its None turns public access off); mysql None
 case $E in pg) S=postgres; V=${VERSION:-16}; DBF=-n; PUBLIC=Enabled;; mysql) S=mysql; V=${VERSION:-8.0.21}; DBF=-d; PUBLIC=None;; *) echo "pg or mysql"; exit 2;; esac
-. "$(dirname "$0")/../../lfc-source-setup/scripts/cloud-identity.sh"
+. "$(dirname "$0")/../../cli-setup/scripts/cloud-identity.sh"
 case $CMD in   # plan/create take az's current subscription and pin it; the other commands need the one the server was made in
 plan|create) SUBSCRIPTION=${SUBSCRIPTION:-$(az account show --query id -o tsv)} ;;
 *) : "${SUBSCRIPTION:?the subscription_id from the create IDENTITY line (the az default is not used)}" ;;

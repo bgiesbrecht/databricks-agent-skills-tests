@@ -23,8 +23,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from record import leaks   # the same public-repo check as the run records
 
-REPO = Path(__file__).resolve().parents[3]
-DIR = REPO / "results" / "findings"
+from results_dir import read_dirs, show, write_dir
+DIR = write_dir("findings")   # results_dir.py: the repo's results/ in a checkout, ~/.lfc/tests/results as a plugin
 
 KINDS = {"source-behavior", "connector-behavior", "databricks-limit", "databricks-bug", "pattern", "tooling"}
 STATUSES = {"fixed", "workaround", "by-design", "documented-limit", "open"}
@@ -70,7 +70,8 @@ def load(text):
 
 
 def all_findings():
-    return [json.loads(p.read_text()) for p in sorted(DIR.glob("*.json"))] if DIR.exists() else []
+    files = {p.name: p for d in read_dirs("findings") if d.exists() for p in sorted(d.glob("*.json"))}   # the user's copy wins
+    return [json.loads(files[n].read_text()) for n in sorted(files)]
 
 
 def arg(name):
@@ -126,7 +127,7 @@ def main():
         for f in fs:
             p = DIR / f"{f['id']}.json"
             if p.exists() and "--update" not in sys.argv: print(f"{p.name} exists: --update to replace it", file=sys.stderr); sys.exit(1)
-            p.write_text(json.dumps(f, indent=2, ensure_ascii=False) + "\n"); print(f"wrote {p.relative_to(REPO)}")
+            p.write_text(json.dumps(f, indent=2, ensure_ascii=False) + "\n"); print(f"wrote {show(p)}")
         return
     fs = [f for f in all_findings() if matches(f)]
     if "--md" in sys.argv: md(fs); return

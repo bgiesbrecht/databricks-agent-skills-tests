@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # parallel.sh <slots file> <jobs file>: run test scripts in parallel, one job per source at a time.
-#   slots: one line per source, "CONNECTION slot:<name>" (a database of yours from slot.sh up on your source VM: SRC_SQL is
-#          slot-sql.sh with SLOT_NAME=<name>; SLOT_HOST from the environment) or "CONNECTION MSSQL_CONTAINER" (a SQL Server
-#          container on the test VM, through vm-mssql.sh and the VM admin login). At most half as many as the VM's vCPUs.
+#   slots: one line per source, "- json:<contract file>" (any source with a source contract, lfc-source-contract: its
+#          connection and SRC_SQL come from the file; a database of yours on a source VM: the file lfc-source-cloud-vm
+#          slot-source.sh writes) or "CONNECTION MSSQL_CONTAINER" (a SQL Server container on the test VM, through
+#          vm-mssql.sh and the VM admin login). At most half as many as the VM's vCPUs.
 #   jobs:  one line per run, "<name> <script> [VAR=value ...]", e.g. "ct200 sqlserver-ct-net-changes.sh TABLES_N=200".
 #   Each job runs from its own copy of the scripts in $RUNS/<name>/ (bash reads a script while it runs), with the slot's
 #   CONNECTION, MSSQL_CONTAINER and SRC_SQL, OUT=$RUNS/<name>/result.md, SCENARIO, LFC_RECORD and LFC_RUNTIME set; the
@@ -12,7 +13,9 @@ set -uo pipefail
 : "${1:?slots file}" "${2:?jobs file}"
 HERE=$(cd "$(dirname "$0")" && pwd); REPO=$(cd "$HERE/../../.." && pwd)
 RUNS=${RUNS:-$PWD/runs-$(date +%s)}; mkdir -p "$RUNS"
-mapfile -t SLOTS < <(grep -v -E '^\s*(#|$)' "$1"); mapfile -t JOBS < <(grep -v -E '^\s*(#|$)' "$2")
+SLOTS=() JOBS=()   # bash 3.2: no mapfile
+while IFS= read -r l; do SLOTS+=("$l"); done < <(grep -v -E '^\s*(#|$)' "$1")
+while IFS= read -r l; do JOBS+=("$l"); done < <(grep -v -E '^\s*(#|$)' "$2")
 [ ${#SLOTS[@]} -gt 0 ] || { echo "no slots in $1"; exit 2; }
 declare -a PID NAMEOF; FAILED=0
 reap() {   # free the slots whose job ended; report each
@@ -25,7 +28,7 @@ reap() {   # free the slots whose job ended; report each
     PID[$i]=""
   done
 }
-for job in "${JOBS[@]}"; do
+for job in ${JOBS[@]+"${JOBS[@]}"}; do
   read -r name script vars <<< "$job"
   [ -f "$HERE/$script" ] || { echo "$name: no script $script"; FAILED=1; continue; }
   while :; do
@@ -34,8 +37,10 @@ for job in "${JOBS[@]}"; do
     [ -n "$slot" ] && break; sleep 15
   done
   read -r conn container <<< "${SLOTS[$slot]}"
-  d=$RUNS/$name; mkdir -p "$d"; cp "$HERE"/lib.sh "$HERE"/vm-*.sh "$HERE"/slot-sql.sh "$HERE/$script" "$d/"
-  if [[ $container == slot:* ]]; then src=(SLOT_NAME="${container#slot:}" SRC_SQL="$d/slot-sql.sh" SRC_ENV="$d/slot-sql.sh --env")
+  [ "$conn" = - ] && conn=""   # a contract's connection comes from the file
+  if [[ $container == json:* ]]; then f=${container#json:}; case $f in /*) ;; *) f=$PWD/$f ;; esac; container=json:$f; fi   # the runs cd
+  d=$RUNS/$name; mkdir -p "$d"; cp "$HERE"/lib.sh "$HERE"/vm-*.sh "$HERE/$script" "$d/"
+  if [[ $container == json:* ]]; then src=(SOURCE_JSON="${container#json:}" LFC_SOURCE_ENV="$REPO/skills/lfc-source-contract/scripts/source-env.sh")
   else src=(MSSQL_CONTAINER="$container" SRC_SQL="$d/vm-mssql.sh" SRC_ENV="$d/vm-mssql.sh --env"); fi
   # shellcheck disable=SC2086
   ( cd "$d" && env CONNECTION="$conn" "${src[@]}" \

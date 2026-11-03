@@ -1,0 +1,92 @@
+# layers.yaml: the layers of this repo, the skills and bin scripts in each, and the layers each may reference.
+# bin/check_layers.py reads it. The rule (docs/layers.md): a reference from one layer to another is allowed only when
+# the target's layer is in may_use of the source's layer (the same layer is always allowed). repo is the tooling
+# (bin/ and the contributor skills): it may use every layer, and no layer may use it.
+#
+#   shape: uses contract, common        contract: use common        sources: use shape, contract, common        lakeflow: uses contract, common
+#
+# skills: skill folders in skills/ (contributor skills: .claude/skills/) in this layer.
+# pending: names that an open branch adds; classified here whether or not they're on main yet.
+# bin: scripts in bin/ in this layer. A new skill or bin script fails the check until it is listed.
+
+layers:
+  common:
+    may_use: []
+    skills:
+      - account-token-fallback
+      - options-first
+      - podman-desktop-remove
+      - secret-handling
+      - cli-setup
+      - shell-json-scripting
+      - watch-progress
+      - skill-token-budget
+      - git-topic-branches
+
+  shape:
+    may_use: [contract, common]
+    skills:
+      - lfc-source-statschema
+      - lfc-source-datagen
+
+  contract:
+    may_use: [common]
+    skills:
+      - lfc-source-contract
+      - lfc-workload-contract
+
+  sources:
+    may_use: [shape, contract, common]
+    skills:
+      - lfc-source-podman
+      - lfc-source-cloud-vm
+      - lfc-source-azure-sql
+      - lfc-source-azure-flexserver
+      - lfc-source-gcp-cloudsql
+      - lfc-source-aws-rds
+      - lfc-source-aws-aurora
+      - lfc-source-firewall
+
+  lakeflow:
+    may_use: [contract, common]
+    skills:
+      - lfc-source-setup
+      - lfc-source-log-state
+      - lfc-source-sizing
+      - lfc-schema-change-test
+      - lfc-downstream-history
+      - lfc-connection-sync
+      - lfc-workspace-setup
+      - lfc-meta-ads
+      - lfc-saas-answer
+      - lfc-test-results
+      - lfc-ui-capture
+      - cdc-table-plan
+      - zerobus-workspace-setup
+      - zerobus-debezium-test
+      - mautic-source
+      - lfc-pipeline-diagram
+      - lfc-sqlserver-secondary
+    bin:
+      - lfc-events.sh
+      - lfc-runtime.sh
+      - compute_report.sh
+      - stop_after.sh
+
+  repo:
+    may_use: [all]
+    skills:
+      - public-skill-conventions
+    bin:
+      - check_links.py
+      - check_layers.py
+      - check_model_counts.py
+      - lint_scripts.py
+      - plugin-session.sh
+      - run_batch.sh
+      - run_matrix.sh
+      - scripts_index.py
+      - test_check_layers.py
+      - test_lint_bash32.py
+      - test_results_dir.py
+      - test_scripts.sh

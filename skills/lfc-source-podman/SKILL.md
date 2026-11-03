@@ -16,7 +16,7 @@ If you need SQL Server Always On Availability Groups, Db2, Informix, or specific
 
 ### macOS
 
-**Tools:** Podman, Lima, and the SQL clients; see **lfc-source-setup** "Tools" (`bash scripts/check-tools.sh local` and `clients` there). In short:
+**Tools:** Podman, Lima, and the SQL clients; see **lfc-source-setup** "Tools" (`bash skills/cli-setup/scripts/check-tools.sh local`, and `clients` for the SQL clients). In short:
 
 ```bash
 brew install podman lima libpq mysql-client sqlcmd mongosh
@@ -142,6 +142,10 @@ For per-engine startup commands, environment variables, readiness timing, and me
 
 Reusable master database on local storage (load once, clone for each test): [references/master.md](references/master.md).
 
+## SQL Server availability group
+
+[`scripts/ag-up.sh <utility_script.sql>`](scripts/ag-up.sh) runs two SQL Server 2022 containers as an Always On availability group with a readable secondary (`CLUSTER_TYPE = NONE`, synchronous commit), CDC and the utility objects on the primary, the same login and SID on both nodes, and an Extended Events session per node for the gateway's statements and errors. [`scripts/ag-sql.sh p|s [db] [--xe ...]`](scripts/ag-sql.sh) runs T-SQL on a node; [`scripts/ag-down.sh`](scripts/ag-down.sh) removes it. Each script prints its usage with no arguments. The Lakeflow test that uses it is the lfc-sqlserver-secondary skill.
+
 ## Configure the database for LFC
 
 LFC requires:
@@ -149,7 +153,7 @@ LFC requires:
 - Replication settings (binlog/WAL/CT/CDC) per engine
 - Optional audit tables
 
-**See the Lakeflow Connect reference guide (2-database-connectors.md) for engine-specific configuration details.** The guides cover binlog setup (MySQL/MariaDB), logical replication (PostgreSQL), change tracking (SQL Server), and read-only user setup for query-based connectors (Oracle, Db2, Informix, MongoDB).
+**See `references/2-database-connectors.md` in the public `databricks-lakeflow-connect` skill (the databricks plugin) for engine-specific configuration details.** The guides cover binlog setup (MySQL/MariaDB), logical replication (PostgreSQL), change tracking (SQL Server), and read-only user setup for query-based connectors (Oracle, Db2, Informix, MongoDB).
 
 **Podman-specific notes:**
 
