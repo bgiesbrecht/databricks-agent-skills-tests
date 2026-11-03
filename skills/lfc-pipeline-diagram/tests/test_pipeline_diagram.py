@@ -8,8 +8,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "..", "scripts", "pipeline-diagram.py")
 
 
+# the files the script reads from this machine by default (~/.config/lfc) point at nothing, so the tests don't depend on them
+HERMETIC = {**os.environ, "LFC_SAAS_TABLES": os.devnull + ".none", "LFC_FACTS_DIR": os.devnull + ".none"}
+
+
 def run(*args):
-    return subprocess.run([sys.executable, SCRIPT, *args], check=True, capture_output=True, text=True).stdout
+    return subprocess.run([sys.executable, SCRIPT, *args], check=True, capture_output=True, text=True, env=HERMETIC).stdout
 
 
 def f(name):
@@ -61,14 +65,16 @@ class Facts(unittest.TestCase):
         self.assertIn('HW["VM Standard_D16s_v5<br/>16 vCPU, 64 GB RAM<br/>disk 256 GB PremiumV2_LRS, 3000 IOPS', out)
 
     def test_facts_found_by_connection_name(self):
-        import json, shutil, tempfile
+        import json
+        import shutil
+        import tempfile
         d = tempfile.mkdtemp()
         try:
             facts = json.load(open(f("vm-facts.json"))); facts["source_host"] = "VM + Podman"
             json.dump(facts, open(os.path.join(d, "my_sqlserver_conn.json"), "w"))
             out = subprocess.run([sys.executable, SCRIPT, "--pipeline-json", f("integrated-pipeline.json"),
                                   "--connection-json", f("integrated-connection.json"), "--format", "text"],
-                                 check=True, capture_output=True, text=True, env={**os.environ, "LFC_FACTS_DIR": d}).stdout
+                                 check=True, capture_output=True, text=True, env={**HERMETIC, "LFC_FACTS_DIR": d}).stdout
         finally:
             shutil.rmtree(d)
         self.assertIn("Azure: VM + Podman, SQL Server", out)   # cloud and host from the facts
@@ -99,7 +105,8 @@ class Model(unittest.TestCase):
         self.assertIn("model orders_app: tables: ? (the test's own tables)", self.out("--model", "orders_app", fmt="text"))
 
     def test_from_facts_and_absent(self):
-        import json, tempfile
+        import json
+        import tempfile
         facts = json.load(open(f("vm-facts.json"))); facts["workload"] = {"model": "tpcds", "scale": "SF 0.1"}
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as t:
             json.dump(facts, t)
@@ -114,7 +121,8 @@ class Capture(unittest.TestCase):
     """The change-capture line per engine, from a connection type (and events or spec where it depends on them)."""
 
     def variant(self, ctype, pipeline_edit=None, extra=()):
-        import json, tempfile
+        import json
+        import tempfile
         conn = json.load(open(f("integrated-connection.json"))); conn["connection_type"] = ctype
         ap = json.load(open(f("integrated-pipeline.json")))
         if pipeline_edit:
@@ -125,7 +133,8 @@ class Capture(unittest.TestCase):
             return run("--pipeline-json", aj, "--connection-json", cj, "--format", "text", *extra)
 
     def test_sqlserver_events(self):
-        import json, tempfile
+        import json
+        import tempfile
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as e:
             json.dump({"events": [{"message": "Replication tables: 2 CT tables, 3 CDC tables"}]}, e)
         try:
@@ -146,8 +155,80 @@ class Capture(unittest.TestCase):
     def test_query_based_and_saas(self):
         self.assertIn("change capture: query-based", self.variant("SQLSERVER", lambda d: d.update(connector_type="QUERY_BASED")))
         saas = self.variant("SALESFORCE")
-        self.assertIn("Salesforce API (SaaS)", saas)
+        self.assertIn("SaaS: Salesforce REST API", saas)
         self.assertIn("API reads -> apply", saas)
+
+
+class Saas(unittest.TestCase):
+    """SaaS: the REST host from the connection's options or the connector's public API host; the rest is shared."""
+
+    def draw(self, ctype, options, *extra):
+        import json
+        import tempfile
+        conn = {"name": "my_saas_conn", "connection_type": ctype, "options": options}
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as c:
+            json.dump(conn, c)
+        try:
+            return run("--pipeline-json", f("integrated-pipeline.json"), "--connection-json", c.name, *extra)
+        finally:
+            os.unlink(c.name)
+
+    def test_host_from_options(self):
+        out = self.draw("SALESFORCE", {"instance_url": "https://example.my.salesforce.com", "client_id": "x"})
+        self.assertIn("SaaS: Salesforce REST API at example.my.salesforce.com", out)
+        self.assertIn('N0["Salesforce REST API<br/>example.my.salesforce.com"]', out)
+        self.assertIn("change capture: API reads:", out)
+        self.assertNotIn("[database*]", out)
+        self.assertNotIn("-> db.example.com", out)
+
+    def test_public_api_host(self):
+        self.assertIn("SaaS: Google Ads REST API at googleads.googleapis.com", self.draw("GOOGLE_ADS", {"client_id": "x"}, "--format", "text"))
+
+    def test_connector_tables_file(self):
+        import json
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as t:
+            json.dump({"version": 1, "connectors": {"JIRA": {"tables": 29, "incremental": 6, "full": 23, "inventory": "finite"},
+                                                    "SALESFORCE": {"inventory": "runtime"}}}, t)
+        env = {**HERMETIC, "LFC_SAAS_TABLES": t.name}
+        try:
+            for ctype, want in (("JIRA", "connector tables: 29 tables: 6 incremental, 23 full refresh"),
+                                ("SALESFORCE", "connector tables: objects discovered from the source")):
+                import json as j
+                with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as c:
+                    j.dump({"name": "c", "connection_type": ctype, "options": {}}, c)
+                out = subprocess.run([sys.executable, SCRIPT, "--pipeline-json", f("integrated-pipeline.json"),
+                                      "--connection-json", c.name, "--format", "text"],
+                                     check=True, capture_output=True, text=True, env=env).stdout
+                os.unlink(c.name)
+                self.assertIn(want, out)
+        finally:
+            os.unlink(t.name)
+
+    def test_managed_host_names_the_service_flags_override(self):
+        conn = {"name": "c", "connection_type": "SQLSERVER", "options": {"host": "srv.database.windows.net", "port": "1433"}}
+        import json, tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as c:
+            json.dump(conn, c)
+        try:
+            base = ("--pipeline-json", f("integrated-pipeline.json"), "--connection-json", c.name, "--format", "text")
+            self.assertTrue(run(*base).startswith("Azure: Azure SQL Database, SQL Server"))
+            self.assertTrue(run(*base, "--source-cloud", "aws", "--source-host", "X").startswith("AWS: X, SQL Server"))
+        finally:
+            os.unlink(c.name)
+
+    def test_mermaid_keeps_placeholders(self):
+        out = Capture().variant("POSTGRESQL", extra=("--format", "mermaid"))   # no slot in the spec
+        self.assertIn("slot &lt;slot&gt; / publication &lt;publication&gt;", out)
+        self.assertIn("<br/>", out)
+
+    def test_load_tool_and_medallion(self):
+        out = self.draw("JIRA", {}, "--model", "jira-test-data-generator", "--model-scale", "Small, 5000 issues",
+                        "--model-tables", "12", "--reverse-etl", "PostgreSQL:synced tables:2", "--format", "text")
+        self.assertTrue(out.startswith("model jira-test-data-generator: 12 tables, Small, 5000 issues"))
+        self.assertIn("SaaS: Jira REST API at <site>.atlassian.net", out)
+        self.assertIn("    L1 landing", out)
+        self.assertIn("reverse ETL -> PostgreSQL (synced tables): 2 tables", out)
 
 
 if __name__ == "__main__":
