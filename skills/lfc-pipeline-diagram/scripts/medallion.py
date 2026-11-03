@@ -37,20 +37,36 @@ def cli(args, profile):
     return json.loads(subprocess.run(cmd, check=True, capture_output=True, text=True).stdout or "null")
 
 
-def flow_types(pipeline_id, profile, cache):
-    """{output table: flow_type} from the pipeline's newest flow_definition events."""
-    if pipeline_id not in cache:
-        out = {}
+def flow_types(pipeline_id, profile, cache, max_pages=20):
+    """{output table: flow_type} from the flow_definition events of the pipeline's newest update that has them.
+
+    The events API can't filter by event type, and an update writes its flow_definition events when it starts, so a
+    busy pipeline's are many pages back: page back (newest first) to the first flow_definition, then read the rest of
+    that update's events, and stop at the first event of an older update (or after max_pages pages of 500)."""
+    if pipeline_id in cache:
+        return cache[pipeline_id]
+    out, update, token = {}, None, None
+    for _ in range(max_pages):
+        q = f"/api/2.0/pipelines/{pipeline_id}/events?max_results=500" + (f"&page_token={token}" if token else "")
         try:
-            ev = cli(["api", "get", f"/api/2.0/pipelines/{pipeline_id}/events?max_results=500"], profile) or {}
+            ev = cli(["api", "get", q], profile) or {}
         except subprocess.CalledProcessError:
-            ev = {}
-        for e in ev.get("events", []):                     # newest first: keep the first seen per output
+            break
+        done = False
+        for e in ev.get("events", []):
+            uid = (e.get("origin") or {}).get("update_id")
+            if update is not None and uid and uid != update:
+                done = True                                 # an older update: the newest one's definitions are read
+                break
             fd = (e.get("details") or {}).get("flow_definition")
-            if fd and fd.get("output_dataset") and fd["output_dataset"] not in out:
-                out[fd["output_dataset"]] = fd.get("flow_type")
-        cache[pipeline_id] = out
-    return cache[pipeline_id]
+            if fd and fd.get("output_dataset"):
+                update = update or uid
+                out.setdefault(fd["output_dataset"], fd.get("flow_type"))
+        token = ev.get("next_page_token")
+        if done or not token:
+            break
+    cache[pipeline_id] = out
+    return out
 
 
 def kind_of(t, flows, written):

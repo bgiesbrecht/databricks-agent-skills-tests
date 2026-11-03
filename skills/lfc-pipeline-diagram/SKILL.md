@@ -59,6 +59,10 @@ The connector's table count (incremental and full-refresh tables, or "objects di
 
 `--ingest zerobus --engine <mysql|postgresql|sqlserver|oracle|db2|informix|cockroachdb|mariadb> --bronze CATALOG.SCHEMA.TABLE[,...]` draws the same source half (model, VM, database, change capture) with Debezium Server (`--producer`) on the source host pushing to the Zerobus ingest endpoint (a service principal, OAuth) and the append-only bronze change log, which is layer 1 of the medallion. No pipeline is read; the layers after bronze come from `--layer` as above.
 
+## Managed databases
+
+A connection whose host is a managed service's names the service and its cloud in the source box, with no VM or container: Azure SQL Database (`*.database.windows.net`), Azure SQL Managed Instance (`<name>.<zone>.database.windows.net`, public endpoint `<name>.public.<zone>.database.windows.net`, port 3342), Azure Database for PostgreSQL or MySQL flexible server, Amazon RDS and Aurora, CockroachDB Cloud (cloud from the host's region), Lakebase. `--source-cloud` and `--source-host` override it.
+
 ## Change capture per source
 
 | Source | Shown as | Where it comes from |

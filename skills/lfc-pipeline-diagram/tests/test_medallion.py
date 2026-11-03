@@ -85,6 +85,29 @@ class Workspace(unittest.TestCase):
         self.fake([(["api", "get"], subprocess.CalledProcessError(1, "databricks"))])
         self.assertEqual(med.flow_types("p2", None, {}), {})                       # an API error: no flow types
 
+    def test_flow_types_pages_back_and_stops_at_an_older_update(self):
+        fd = lambda out, ft, u: {"origin": {"update_id": u}, "details": {"flow_definition": {"output_dataset": out, "flow_type": ft}}}
+        other = lambda u: {"origin": {"update_id": u}, "details": {"flow_progress": {}}}
+        pages = {None: {"events": [other("u2")] * 3, "next_page_token": "t1"},           # the newest update's progress
+                 "t1": {"events": [fd("c.s.a", "CHANGE", "u2"), fd("c.s.b", "APPEND", "u2"), other("u1"),
+                                   fd("c.s.a", "MATERIALIZED_VIEW", "u1")], "next_page_token": "t2"},
+                 "t2": {"events": [fd("c.s.z", "APPEND", "u0")]}}
+        def cli(args, profile):
+            self.calls.append(args)
+            tok = args[2].split("page_token=")[1] if "page_token=" in args[2] else None
+            return pages[tok]
+        med.cli = cli
+        self.assertEqual(med.flow_types("p", None, {}), {"c.s.a": "CHANGE", "c.s.b": "APPEND"})
+        self.assertEqual(len(self.calls), 2)                                       # stopped at update u1, no page t2
+
+    def test_parse_layer_and_written(self):
+        self.assertEqual(med.parse_layer("silver=c.a,c.b:only=t1,t2"), ("silver", ["c.a", "c.b"], {"t1", "t2"}))
+        self.assertEqual(med.parse_layer("gold=c.g"), ("gold", ["c.g"], None))
+        self.fake([(["tables", "list"], [{"name": "cdc_log", "table_type": "MANAGED", "columns": [{"name": "v"}]}])])
+        import argparse
+        a = argparse.Namespace(layers_json=None, layer=["bronze=c.s"], written=["bronze=append"], profile=None)
+        self.assertEqual(med.collect(a)[0]["by_kind"], {"append": 1})
+
     def test_count_layer(self):
         cols = lambda *n: [{"name": x} for x in n]
         tables = [
@@ -162,5 +185,23 @@ class Drawing(unittest.TestCase):
         self.assertIn("needs --engine and --bronze", r.stderr)
 
 
+
+class ManagedHosts(unittest.TestCase):
+    def test_service_and_cloud_from_the_host(self):
+        spec = importlib.util.spec_from_file_location("diagram", os.path.join(SCRIPTS, "pipeline-diagram.py"))
+        d = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(d)
+        for host, want in (("srv.database.windows.net", ("azure", "Azure SQL Database")),
+                           ("mi.public.abc123.database.windows.net", ("azure", "Azure SQL Managed Instance (public endpoint)")),
+                           ("mi.abc123.database.windows.net", ("azure", "Azure SQL Managed Instance")),
+                           ("pg.postgres.database.azure.com", ("azure", "Azure Database for PostgreSQL flexible server")),
+                           ("db.cluster-abc.us-east-2.rds.amazonaws.com", ("aws", "Amazon Aurora")),
+                           ("db.abc.us-east-2.rds.amazonaws.com", ("aws", "Amazon RDS")),
+                           ("x.j77.aws-us-east-2.cockroachlabs.cloud", ("aws", "CockroachDB Cloud")),
+                           ("203.0.113.10", None)):
+            self.assertEqual(d.managed_source(host), want, host)
+
+
 if __name__ == "__main__":
     unittest.main()
+

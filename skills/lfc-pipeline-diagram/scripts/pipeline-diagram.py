@@ -177,6 +177,32 @@ def load(path):
         return json.load(f)
 
 
+# a managed database service, from its host name: (cloud, service). No VM or container is drawn for one.
+MANAGED_HOSTS = (
+    (r"\.public\.[^.]+\.database\.windows\.net$", "azure", "Azure SQL Managed Instance (public endpoint)"),
+    (r"^[^.]+\.[^.]+\.database\.windows\.net$", "azure", "Azure SQL Managed Instance"),
+    (r"\.database\.windows\.net$", "azure", "Azure SQL Database"),
+    (r"\.postgres\.database\.azure\.com$", "azure", "Azure Database for PostgreSQL flexible server"),
+    (r"\.mysql\.database\.azure\.com$", "azure", "Azure Database for MySQL flexible server"),
+    (r"\.cluster-[^.]+\.[^.]+\.rds\.amazonaws\.com$", "aws", "Amazon Aurora"),
+    (r"\.rds\.amazonaws\.com$", "aws", "Amazon RDS"),
+    (r"\.cockroachlabs\.cloud$", "", "CockroachDB Cloud"),
+    (r"\.database\.[^.]+\.cloud\.databricks\.com$", "", "Lakebase"),
+)
+
+
+def managed_source(host):
+    """(cloud, service) for a managed database's host name, else None."""
+    import re
+    h = (host or "").lower()
+    for pat, cloud, service in MANAGED_HOSTS:
+        if re.search(pat, h):
+            if not cloud:   # a service on several clouds: its host names the region (aws-us-east-2, gcp-...)
+                cloud = next((c for c in ("aws", "azure", "gcp") if re.search(rf"(^|[.-]){c}[.-]", h)), "")
+            return cloud, service
+    return None
+
+
 def workspace_cloud(host):
     h = (host or "").lower()
     return "Azure" if "azuredatabricks" in h else "Google Cloud" if "gcp.databricks" in h else "AWS" if h else ""
@@ -196,8 +222,9 @@ def model(a, ap, gw, conn, host, events=()):
     if a.facts is None:
         a.facts = facts_for((conn or {}).get("name"))
     fv = (a.facts or {}).get("vm") or {}
-    a.source_cloud = a.source_cloud or fv.get("cloud") or None
-    a.source_host = a.source_host or (a.facts or {}).get("source_host")
+    managed = managed_source(((conn or {}).get("options") or {}).get("host"))
+    a.source_cloud = a.source_cloud or fv.get("cloud") or (managed[0] if managed else None) or None
+    a.source_host = a.source_host or (a.facts or {}).get("source_host") or (managed[1] if managed else None)
     spec = ap.get("spec", ap)
     idef = spec.get("ingestion_definition") or {}
     gspec = (gw or {}).get("spec", gw or {})
