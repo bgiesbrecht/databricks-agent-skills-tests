@@ -63,9 +63,34 @@ def zerobus_modules():
     shared.StreamConfigurationOptions = lambda **k: k
     shared.TableProperties = lambda t: t
     sync = types.ModuleType("zerobus.sdk.sync")
-    sync.ZerobusSdk = object
+    sync.ZerobusSdk = FakeZerobus
     return {"zerobus": types.ModuleType("zerobus"), "zerobus.sdk": types.ModuleType("zerobus.sdk"),
             "zerobus.sdk.shared": shared, "zerobus.sdk.sync": sync}
+
+
+class FakeStream:
+    flush_fails = False
+
+    def ingest_records_nowait(self, records):
+        pass
+
+    def get_unacked_records(self):
+        return []
+
+    def flush(self):
+        if FakeStream.flush_fails:
+            raise RuntimeError("flush: records not acknowledged")
+
+    def close(self):
+        pass
+
+
+class FakeZerobus:
+    def __init__(self, endpoint, url):
+        pass
+
+    def create_stream(self, *a):
+        return FakeStream()
 
 
 class FakeKafka:
@@ -118,6 +143,16 @@ class Producer(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(self.run_json()["kafka_errors"], 14)   # 7 per stream, 2 streams
 
+    def test_a_failed_final_flush_fails_the_run(self):
+        FakeStream.flush_fails = True
+        self.addCleanup(setattr, FakeStream, "flush_fails", False)
+        secret = os.path.join(self.d, "secret"); put(secret, "s")
+        argv = ["producer.py", "--endpoint", "e", "--workspace-url", "https://w", "--table", "c.s.t", "--client-id", "id",
+                "--secret-file", secret, "--assets", "2", "--tags", "2", "--minutes", "0.01", "--streams", "1", "--out", self.out]
+        code, _ = run_main(self.m, argv, self.mods)
+        self.assertEqual(code, 1)
+        self.assertEqual(self.run_json()["worker_failures"], 1)
+
     def test_a_stream_thread_that_dies_fails_the_run(self):
         FakeKafka.fail_open = True
         code, _ = run_main(self.m, self.argv, self.mods)
@@ -125,9 +160,9 @@ class Producer(unittest.TestCase):
         self.assertEqual(self.run_json()["worker_failures"], 2)
 
 
-# --- report.py: a fake databricks.sdk whose SQL answers come from the statement text
+# --- report.py and freshness_probe.py: a fake databricks.sdk whose SQL answers come from the statement text
 
-def databricks_modules(answers):
+def databricks_modules(answers, state="SUCCEEDED", cancelled=None):
     import enum
     sqlmod = types.ModuleType("databricks.sdk.service.sql")
     sqlmod.StatementState = enum.Enum("StatementState", "PENDING RUNNING SUCCEEDED FAILED")
@@ -136,9 +171,15 @@ def databricks_modules(answers):
 
     class Exec:
         def execute_statement(self, statement, **k):
-            rows = next(v for key, v in answers if key in statement)
-            return types.SimpleNamespace(status=types.SimpleNamespace(state=sqlmod.StatementState.SUCCEEDED, error=None),
+            rows = next((v for key, v in answers if key in statement), [])
+            return types.SimpleNamespace(status=types.SimpleNamespace(state=sqlmod.StatementState[state], error=None),
                                          result=types.SimpleNamespace(data_array=rows), statement_id="s")
+
+        def get_statement(self, sid):
+            return self.execute_statement("")
+
+        def cancel_execution(self, sid):
+            cancelled.append(sid)
 
     sdk = types.ModuleType("databricks.sdk")
     sdk.WorkspaceClient = lambda profile=None: types.SimpleNamespace(statement_execution=Exec())
@@ -181,6 +222,20 @@ class Report(unittest.TestCase):
         put(run, {"start": 1000, "end": 1001, "burst": None, "sent": 5})
         code, out = run_main(m, ["report.py", "prof", "--warehouse", "w", "--table", "c.s.t", "--run", run, "--json"], mods)
         self.assertEqual(json.loads(out)["events"], None)
+
+
+class Probe(unittest.TestCase):
+    def test_a_stuck_statement_is_cancelled_and_the_file_written(self):
+        cancelled = []
+        mods = databricks_modules([], state="RUNNING", cancelled=cancelled)
+        m = load("freshness_probe", mods)
+        out = os.path.join(tmpdir(self), "probe.json")
+        code, _ = run_main(m, ["freshness_probe.py", "prof", "--path", "p|w|c.s.t", "--seconds", "1", "--out", out], mods)
+        self.assertEqual(code, 0)
+        samples = get(out)["samples"]
+        self.assertTrue(samples)
+        self.assertTrue(all(x["ms"] is None for x in samples))
+        self.assertIn("s", cancelled)
 
 
 if __name__ == "__main__":

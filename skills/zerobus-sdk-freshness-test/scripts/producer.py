@@ -199,6 +199,7 @@ def main():
         kafka = open_kafka() if use_kafka else None
         r, slices = random.Random(idx), [group[i::10] for i in range(min(10, len(group)))]
         next_t = time.monotonic()
+        clean = False                                                         # the loop ended without an error
         try:
             while not stop.is_set() and time.time() < deadline:
                 period = 1.0 / (a.hz * rate_x(time.time()))
@@ -252,6 +253,7 @@ def main():
                         time.sleep(delay)
                     elif delay < -5 * period:
                         next_t = time.monotonic()                             # far behind: don't try to catch up
+            clean = True
         finally:
             if kafka is not None:
                 left = kafka.flush(60)                                        # still queued: never delivered
@@ -263,8 +265,10 @@ def main():
                 try:
                     stream.flush()
                     stream.close()
-                except Exception as e:                                        # a broken stream: report the first error, not this one
-                    print(f"stream {idx}: close failed: {e}", file=sys.stderr, flush=True)
+                except Exception as e:
+                    if clean:                                                 # records not made durable: a failed run (worker counts it)
+                        raise
+                    print(f"stream {idx}: close failed: {e}", file=sys.stderr, flush=True)   # after an earlier error: report that one
 
     groups = [assets[i::a.streams] for i in range(a.streams)]
     threads = [threading.Thread(target=worker, args=(i, g), daemon=True) for i, g in enumerate(groups) if g]
