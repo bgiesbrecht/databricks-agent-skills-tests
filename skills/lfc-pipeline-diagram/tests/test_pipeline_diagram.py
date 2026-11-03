@@ -80,6 +80,36 @@ class Facts(unittest.TestCase):
         self.assertIn("VM Standard_D2s_v5, 2 vCPU, 8 GB RAM, 64 GB Premium SSD", out)
 
 
+class Model(unittest.TestCase):
+    """The data model drawn above the source: statschema models, mautic, an override, the facts' workload."""
+
+    def out(self, *extra, fmt="both"):
+        return run("--pipeline-json", f("integrated-pipeline.json"), "--connection-json", f("integrated-connection.json"),
+                   "--format", fmt, *extra)
+
+    def test_statschema_model(self):
+        out = self.out("--model", "tpcc", "--model-scale", "SF 1")
+        self.assertTrue(out.startswith("model tpcc: 9 tables, SF 1 (statschema + datagen)\n        | loads the source"))
+        self.assertIn('WL[/"model tpcc<br/>9 tables, SF 1<br/>statschema + datagen"/]', out)
+        self.assertIn("  WL --> N0", out)
+
+    def test_mautic_and_override(self):
+        self.assertIn("model mautic: 128 tables (the application: its own install and traffic)", self.out("--model", "mautic", fmt="text"))
+        self.assertIn("model tpch: 3 tables", self.out("--model", "tpch", "--model-tables", "3", fmt="text"))
+        self.assertIn("model orders_app: tables: ? (the test's own tables)", self.out("--model", "orders_app", fmt="text"))
+
+    def test_from_facts_and_absent(self):
+        import json, tempfile
+        facts = json.load(open(f("vm-facts.json"))); facts["workload"] = {"model": "tpcds", "scale": "SF 0.1"}
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as t:
+            json.dump(facts, t)
+        try:
+            self.assertIn("model tpcds: 24 tables, SF 0.1", self.out("--source-facts", t.name, fmt="text"))
+        finally:
+            os.unlink(t.name)
+        self.assertNotIn("WL", self.out(fmt="mermaid"))   # no model: no box
+
+
 class Capture(unittest.TestCase):
     """The change-capture line per engine, from a connection type (and events or spec where it depends on them)."""
 
