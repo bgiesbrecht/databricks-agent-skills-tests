@@ -17,13 +17,16 @@ usage: pipeline-diagram.py --pipeline <ingestion pipeline id> [--profile P] [opt
   --secret-kind uc|workspace|inline         where the connection's password comes from (default inline)
   --capture cdc|ct|cdc+ct        SQL Server: how the tables are captured (default: from the pipeline's events after
                                  its first run, "Replication tables: <n> CT tables, <m> CDC tables")
-  --source-facts FILE            VM type, vCPU, RAM, disks, JuiceFS, container limits: the JSON from vm-facts.sh
+  --source-facts FILE            VM type, vCPU, RAM, disks, JuiceFS, container limits: the JSON from vm-facts.sh or
+                                 slot.sh facts (default: $LFC_FACTS_DIR/<connection>.json, ~/.config/lfc/source-facts,
+                                 which lfc db up writes)
   --vm TEXT                      or the VM line as text, e.g. "Standard_D2s_v5, 2 vCPU, 8 GB RAM, 64 GB Premium SSD"
   --hide-host                    don't print host names or ports
   -o FILE                        write there instead of stdout (a .md file gets the Mermaid in a fenced block)
 """
 import argparse
 import json
+import os
 import subprocess
 import sys
 
@@ -86,8 +89,22 @@ def workspace_cloud(host):
     return "Azure" if "azuredatabricks" in h else "Google Cloud" if "gcp.databricks" in h else "AWS" if h else ""
 
 
+FACTS_DIR = os.environ.get("LFC_FACTS_DIR") or os.path.expanduser("~/.config/lfc/source-facts")
+
+
+def facts_for(conn_name):
+    """The facts file a database tool saved for this connection, if any."""
+    p = os.path.join(FACTS_DIR, f"{conn_name}.json") if conn_name else ""
+    return load(p) if p and os.path.isfile(p) else None
+
+
 def model(a, ap, gw, conn, host, events=()):
     """Everything the two renderers need, as plain values."""
+    if a.facts is None:
+        a.facts = facts_for((conn or {}).get("name"))
+    fv = (a.facts or {}).get("vm") or {}
+    a.source_cloud = a.source_cloud or fv.get("cloud") or None
+    a.source_host = a.source_host or (a.facts or {}).get("source_host")
     spec = ap.get("spec", ap)
     idef = spec.get("ingestion_definition") or {}
     gspec = (gw or {}).get("spec", gw or {})

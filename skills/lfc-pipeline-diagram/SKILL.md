@@ -26,7 +26,9 @@ scripts/pipeline-diagram.py --pipeline <id> --source-cloud azure --source-host "
 
 ## Source VM, container and object storage
 
-`scripts/vm-facts.sh azure <resource-group> <vm> [--subscription S]` or `vm-facts.sh aws <instance-id> [--region R] [--aws-profile P]` prints one JSON line: VM type, vCPU, RAM and each disk (size, type, IOPS, MB/s) from the cloud CLI. With `--ssh <user@host> [--key <file>] [--container <name>]` it also reads the VM: JuiceFS mounts (object storage behind them: Azure Blob or Amazon S3) and the database container's CPU and memory limits, SQL Server's memory cap and the data directory's size and whether it is on JuiceFS. Pass the file with `--source-facts` (or `SRC_FACTS` to `show-diagram.sh`); the diagram adds a VM, a container and a JuiceFS line under the source. Tested on Azure; the AWS path is written from the EC2 API and not run yet.
+`scripts/vm-facts.sh azure <resource-group> <vm> [--subscription S]` or `vm-facts.sh aws <instance-id> [--region R] [--aws-profile P]` prints one JSON line: VM type, vCPU, RAM and each disk (size, type, IOPS, MB/s) from the cloud CLI. With `--ssh <user@host> [--key <file>] [--container <name>]` it also reads the VM: JuiceFS mounts (object storage behind them: Azure Blob or Amazon S3) and the database container's CPU and memory limits, SQL Server's memory cap and the data directory's size and whether it is on JuiceFS. Pass the file with `--source-facts` (or `SRC_FACTS` to `show-diagram.sh`); the diagram adds a VM, a container and a JuiceFS line under the source.
+
+On a slot VM (`lfc-source-cloud-vm`), `slot.sh facts <name>` prints the same JSON from inside the VM (instance metadata, `/proc`, `findmnt`, the container), so it needs no cloud login; `lfc db up --workspace` saves it as `~/.config/lfc/source-facts/<connection>.json`. Without `--source-facts`, the diagram looks for `$LFC_FACTS_DIR/<connection>.json` (default that folder) and takes the source cloud and host from it, so a pipeline on an `lfc db up` connection shows its VM with no flags. Tested on Azure; the AWS path is written from the EC2 API and not run yet.
 
 ## Change capture per source
 

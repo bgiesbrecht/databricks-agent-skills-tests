@@ -60,6 +60,20 @@ class Facts(unittest.TestCase):
         self.assertIn("JuiceFS demo-jfs at /mnt/jfs (object storage: Azure Blob)", out)
         self.assertIn('HW["VM Standard_D16s_v5<br/>16 vCPU, 64 GB RAM<br/>disk 256 GB PremiumV2_LRS, 3000 IOPS', out)
 
+    def test_facts_found_by_connection_name(self):
+        import json, shutil, tempfile
+        d = tempfile.mkdtemp()
+        try:
+            facts = json.load(open(f("vm-facts.json"))); facts["source_host"] = "VM + Podman"
+            json.dump(facts, open(os.path.join(d, "my_sqlserver_conn.json"), "w"))
+            out = subprocess.run([sys.executable, SCRIPT, "--pipeline-json", f("integrated-pipeline.json"),
+                                  "--connection-json", f("integrated-connection.json"), "--format", "text"],
+                                 check=True, capture_output=True, text=True, env={**os.environ, "LFC_FACTS_DIR": d}).stdout
+        finally:
+            shutil.rmtree(d)
+        self.assertIn("Azure: VM + Podman, SQL Server", out)   # cloud and host from the facts
+        self.assertIn("VM Standard_D16s_v5: 16 vCPU", out)
+
     def test_vm_text(self):
         out = run("--pipeline-json", f("integrated-pipeline.json"), "--connection-json", f("integrated-connection.json"),
                   "--vm", "Standard_D2s_v5, 2 vCPU, 8 GB RAM, 64 GB Premium SSD", "--format", "text")

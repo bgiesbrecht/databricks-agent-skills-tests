@@ -30,6 +30,10 @@
 #                                             (sqlcmd -y 0). Oracle and Db2 take no database (Oracle: ALTER SESSION SET
 #                                             CONTAINER in the SQL; Db2: LFCDB)
 #   info <name>                               the host OS, Podman, the image and digest, and the VM (size, region, zone)
+#   facts <name>                              one JSON line for a pipeline diagram (lfc-pipeline-diagram --source-facts):
+#                                             the VM (cloud, type, vCPU, RAM, disks, from the instance metadata), the
+#                                             database container (CPU and memory limits, SQL Server's memory cap, data
+#                                             size and whether it is on JuiceFS) and the JuiceFS mounts
 # --owner: who the database belongs to. A forced SSH command sets it per key (see the skill), so a user can't pick
 # another owner; as root without --owner the owner is "admin".
 # Settings, from /etc/lfc-slot.env if present: HOST (address printed for connections; set it on Azure, see host()),
@@ -509,6 +513,48 @@ case $CMD in
     echo "Data: JuiceFS volume at $ROOT (object storage), database $(field "$M" engine) $N, port $(field "$M" port)"
     curl -fs -m 5 -H Metadata:true "http://169.254.169.254/metadata/instance/compute?api-version=2021-12-13" \
       | jq -r '"VM: Azure \(.vmSize), region \(.location), zone \(if .zone == "" then "none" else .zone end)"' 2>/dev/null || true ;;
+
+  facts)
+    N=${1:-}; name_ok "$N"; M=$(meta "$OWNER" "$N"); [ -f "$M" ] || die "no database $N"
+    C=$(cname "$OWNER" "$N"); D=$ROOT/dbs/$OWNER/$N
+    cpu=$(nproc); ram=$(awk '/^MemTotal:/ {printf "%d", $2 / 1048576 + 0.5}' /proc/meminfo)
+    az=$(curl -fs -m 5 -H Metadata:true "http://169.254.169.254/metadata/instance/compute?api-version=2021-12-13" 2>/dev/null || true)
+    if [ -n "$az" ]; then
+      vm=$(jq -c --argjson c "$cpu" --argjson r "$ram" '{cloud: "azure", type: .vmSize, region: .location, cpu: $c, ram_gb: $r,
+        disks: ([{role: "os", gb: (.storageProfile.osDisk.diskSizeGB | tonumber? // null),
+                  type: .storageProfile.osDisk.managedDisk.storageAccountType}]
+              + [.storageProfile.dataDisks[]? | {role: "data", gb: (.diskSizeGB | tonumber? // null), type: .managedDisk.storageAccountType}])}' <<<"$az")
+      backend="Azure Blob"
+    else
+      tok=$(curl -fs -m 5 -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 60" http://169.254.169.254/latest/api/token 2>/dev/null || true)
+      it=$(curl -fs -m 5 ${tok:+-H "X-aws-ec2-metadata-token: $tok"} http://169.254.169.254/latest/meta-data/instance-type 2>/dev/null || true)
+      rg=$(curl -fs -m 5 ${tok:+-H "X-aws-ec2-metadata-token: $tok"} http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null || true)
+      # disks from the kernel: whole disks, their size (GB) and whether they spin
+      dk=$(lsblk -b -d -n -o NAME,SIZE,ROTA,TYPE 2>/dev/null | awk '$4 == "disk" {printf "%s %d %s\n", $1, $2 / 1e9 + 0.5, $3}' \
+        | jq -Rcs 'split("\n") | map(select(. != "") | split(" ") | {role: "disk", name: .[0], gb: (.[1] | tonumber), type: (if .[2] == "1" then "HDD" else "SSD" end)})')
+      vm=$(jq -nc --arg t "${it:-unknown}" --arg r "$rg" --argjson c "$cpu" --argjson m "$ram" --argjson d "${dk:-[]}" \
+        '{cloud: (if $t == "unknown" then "" else "aws" end), type: $t, region: $r, cpu: $c, ram_gb: $m, disks: $d}')
+      backend="Amazon S3"
+    fi
+    jfs=$(findmnt -n -t fuse.juicefs -o SOURCE,TARGET 2>/dev/null | jq -Rcs --arg b "$backend" 'split("\n") | map(select(. != "")
+      | split(" ") | {name: (.[0] | sub("^JuiceFS:"; "")), mount: .[1], backend: $b})')
+    lim=""; mem=""; state=parked
+    if running "$OWNER" "$N"; then
+      state=running
+      lim=$(podman inspect -f '{{.HostConfig.NanoCpus}} {{.HostConfig.CpuQuota}} {{.HostConfig.CpuPeriod}} {{.HostConfig.Memory}}' "$C")
+      mem=$(podman inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$C" | sed -n 's/^MSSQL_MEMORY_LIMIT_MB=//p' | head -1)
+    fi
+    dmb=$(du -sm "$D" 2>/dev/null | cut -f1)
+    onj=disk; [ -n "$(findmnt -n -t fuse.juicefs -T "$D" 2>/dev/null)" ] && onj=juicefs
+    db=$(jq -nc --arg c "$C" --arg e "$(field "$M" engine)" --arg s "$state" --arg l "$lim" --arg m "$mem" --arg d "${dmb:-}" --arg o "$onj" '
+      ($l | split(" ")) as $L |
+      {container: $c, engine: $e, state: $s,
+       cpu: (if ($L[0] // "0") != "0" then (($L[0] | tonumber) / 1e9)
+             elif ($L[1] // "0") != "0" and ($L[1] | tonumber) > 0 then (($L[1] | tonumber) / ($L[2] | tonumber)) else null end),
+       ram_gb: (if ($L[3] // "0") != "0" then (($L[3] | tonumber) / 1073741824 * 10 | round / 10) else null end),
+       engine_ram_gb: (if $m != "" then (($m | tonumber) / 1024 * 10 | round / 10) else null end),
+       data_mb: (if $d != "" then ($d | tonumber) else null end), data_on: $o}')
+    jq -nc --argjson vm "$vm" --argjson db "$db" --argjson j "${jfs:-[]}" '{source_host: "VM + Podman", vm: $vm, db: $db, juicefs: $j}' ;;
 
   *) usage ;;
 esac
