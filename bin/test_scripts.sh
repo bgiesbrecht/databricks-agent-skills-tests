@@ -59,6 +59,8 @@ check "recall.py runs" sh -c "python3 '$SK/lfc-test-results/scripts/recall.py' >
 check "secret-handling scripts on a fake secret" sh -c "'$SK/secret-handling/scripts/test-secret-scripts.sh' > /dev/null"
 check "keep-catalogs.sh on a fake CLI" sh -c "'$SK/lfc-workspace-setup/scripts/test-keep-catalogs.sh' > /dev/null"
 check "slot.sh limits and --park on a fake podman" sh -c "'$SK/lfc-source-cloud-vm/scripts/test-slot-limits.sh' > /dev/null"
+check "source contract: source-env.sh on the fixtures and the default clients" sh -c "'$SK/lfc-source-contract/scripts/test-source-env.sh' > /dev/null"
+check "slot-source.sh: a slot's contract, and its SRC_SQL through slot-sql.sh and a fake ssh" sh -c "'$SK/lfc-source-cloud-vm/scripts/test-slot-source.sh' > /dev/null"
 check "masters-export, slot-vm-setup masters, and the clone admin password change (fake podman, local Blob server)" sh -c "'$SK/lfc-source-cloud-vm/scripts/test-slot-masters.sh' > /dev/null"
 check "moved-lines.py on a throwaway repo" sh -c "'$R/.claude/skills/public-skill-conventions/scripts/test-moved-lines.sh' > /dev/null"
 check "ws-token.sh: TO (perl alarm timeout)" sh -c "'$SK/account-token-fallback/scripts/test-ws-token.sh' > /dev/null"

@@ -5,7 +5,8 @@
 # history runs while the refresh is applied, the next sync, a run with nothing new. Same table, changes and expected
 # history as that script, so the two routes compare row for row.
 #
-#   Needs: as lfc-schema-change-test lib.sh (PROFILE CONNECTION CATALOG SRC_SQL CONN_USER), and HISTORY_NB: the
+#   Needs: as lfc-schema-change-test lib.sh (PROFILE CONNECTION CATALOG SRC_SQL CONN_USER, or SOURCE_JSON: a source
+#   contract, lfc-source-contract), and HISTORY_NB: the
 #   workspace path of history-snapshot.py imported as a notebook (databricks workspace import <path> --file
 #   history-snapshot.py --format SOURCE --language PYTHON). SRC_DB: an existing source database for the test table
 #   instead of a fresh one (the table is dropped at the end). MODE=integrated for a source without a gateway route.
