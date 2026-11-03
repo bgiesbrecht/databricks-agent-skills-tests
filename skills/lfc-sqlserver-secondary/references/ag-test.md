@@ -30,5 +30,9 @@ Each case: the input, then where the gateway's sessions ran (`secondary.sh where
 | Full refresh, stopped mid-reset | full refresh on the primary, stop the gateway before `wait-ci` passes | the next start runs the reset again |
 | Full refresh, snapshot on the secondary | `secondary.sh refresh <table> <destination table>` | no reset writes on the secondary after the switch back; snapshot sessions on the secondary only |
 | Host change | any switch | cursor kept: no full refresh, no gap, no duplicate |
+| Integrated: continuous full refresh | `secondary.sh full-refresh <table>` on a continuous pipeline | refused (`Refresh selection is not supported for the continuous mode`) |
+| Integrated: refresh, snapshot on the secondary | `secondary.sh refresh <table> <destination table>`, `GATEWAY_ID` unset, triggered pipeline | reset on the primary only; snapshot read on the secondary; the destination reset in the next update (`... has been successfully reset`) |
+| SCD type 2: stop window | stop the reader, several UPDATEs per key and deletes on the primary, start | every version arrives once; no key open twice |
+| SCD type 2: full refresh | `refresh` on an SCD type 2 table | the table holds the current snapshot only: older versions and deleted keys are gone |
 
 A lock on the table blocks the reset (it needs a schema-modification lock), so to stop a gateway mid-reset, stop it right after the `Reinitializing` event rather than holding locks.

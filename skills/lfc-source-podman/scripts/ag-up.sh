@@ -36,13 +36,19 @@ $PM unshare chown -R 10001:0 "$D/p" "$D/s" "$D/certs" 2>/dev/null || chown -R 10
 $PM network inspect "$N-net" >/dev/null 2>&1 || $PM network create "$N-net" >/dev/null
 for r in p s; do
   port=$PP; [ $r = s ] && port=$PS
+  # a container left "Created" by an earlier failed start (port taken) is removed and started again
+  if $PM container inspect "$N-$r" >/dev/null 2>&1 \
+     && [ "$($PM container inspect -f '{{.State.Status}}' "$N-$r")" != running ]; then
+    $PM rm -f "$N-$r" >/dev/null
+  fi
   if ! $PM container inspect "$N-$r" >/dev/null 2>&1; then
     log "starting $N-$r on port $port"
     $PM run -d --name "$N-$r" --hostname "${N//-/}$r" --network "$N-net" -p "$port:1433" \
       --label lfc.purpose=ag-test --label lfc.ag="$N" \
       -e ACCEPT_EULA=Y -e MSSQL_PID=Developer -e MSSQL_ENABLE_HADR=1 -e MSSQL_AGENT_ENABLED=true \
       -e MSSQL_MEMORY_LIMIT_MB="$MEM" -e MSSQL_SA_PASSWORD="$SA_PW" \
-      -v "$D/$r:/var/opt/mssql" -v "$D/certs:/var/opt/mssql/certs" "$IMAGE" >/dev/null
+      -v "$D/$r:/var/opt/mssql" -v "$D/certs:/var/opt/mssql/certs" "$IMAGE" >/dev/null \
+      || { $PM rm -f "$N-$r" >/dev/null 2>&1; echo "could not start $N-$r: is port $port free? (PORT_P / PORT_S)" >&2; exit 1; }
   fi
 done
 sq(){ # sq p|s [db]: T-SQL on stdin as sa
@@ -119,6 +125,10 @@ sq p "$DB" >/dev/null <<SQL
 IF USER_ID('$U') IS NULL CREATE USER [$U] FOR LOGIN [$U];
 SQL
 
+# a user for the login in master first, so lakeflowFixPermissions can make its server-scoped grants on the primary
+sq p >/dev/null <<SQL
+IF USER_ID('$U') IS NULL CREATE USER [$U] FOR LOGIN [$U];
+SQL
 log "utility objects and CDC on the primary"
 # -x: the utility script is run as is (no sqlcmd $(var) substitution)
 $PM exec -i -e SQLCMDPASSWORD="$SA_PW" "$N-p" /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -d "$DB" -b -x \
@@ -136,7 +146,7 @@ GRANT EXECUTE ON sys.sp_tables TO [$U]; GRANT EXECUTE ON sys.sp_columns_100 TO [
 GRANT EXECUTE ON sys.sp_pkeys TO [$U]; GRANT EXECUTE ON sys.sp_statistics_100 TO [$U];
 SQL
 done
-log "server-scoped grants for $U added in master on both nodes (the warnings above are from before this step)"
+log "server-scoped grants for $U in master on both nodes (the availability group doesn't copy master)"
 
 log "Extended Events session lfc_watch on both nodes (gateway statements and errors)"
 for r in p s; do sq $r >/dev/null <<'SQL'
@@ -155,6 +165,7 @@ SQL
 done
 
 host=$(hostname -I 2>/dev/null | awk '{print $1}'); host=${host:-<this host>}
+echo "addresses as seen on this host; the UC connection needs the address the workspace reaches (public IP or DNS name)"
 echo "primary   $host,$PP  (container $N-p)"
 echo "secondary $host,$PS  (container $N-s, readable)"
 echo "login     $U; passwords in $D/ag.env; SQL:  AG_NAME=$N $here/ag-sql.sh p|s [db] < file.sql"

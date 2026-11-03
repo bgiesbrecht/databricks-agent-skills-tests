@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
-# ag-sql.sh p|s [db] [--xe [since] [errors|writes|all]]: T-SQL on stdin as sa in the ag-up.sh node <AG_NAME>-<p|s>;
+# ag-sql.sh p|s [db] [--xe [since] [errors|writes|all]] | p|s --sqlcmd <flags>: T-SQL on stdin as sa in the ag-up.sh
+# node <AG_NAME>-<p|s>; --sqlcmd passes the flags to sqlcmd as given (for secondary.sh PRIMARY_SQL_CMD / SECONDARY_SQL_CMD);
 # --xe prints the gateway's statements and errors recorded by the lfc_watch Extended Events session instead
 # (since: 'yyyy-mm-ddThh:mm:ss' UTC, default all; default kind errors). Environment: AG_NAME, AG_DIR, PODMAN as in ag-up.sh.
 set -euo pipefail
 R=${1:?usage: ag-sql.sh p|s [db] [--xe [since] [errors|writes|all]]}; shift
 N=${AG_NAME:-lfc-ag}; D=${AG_DIR:-$HOME/$N}; PM=${PODMAN:-podman}
 case $R in (p|s) ;; (*) echo "node: p or s" >&2; exit 2;; esac
+if [ "${1:-}" = --sqlcmd ]; then shift
+  # shellcheck disable=SC1091
+  . "$D/ag.env"
+  exec $PM exec -i -e SQLCMDPASSWORD="$SA_PW" "$N-$R" /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa "$@"
+fi
 DB=master; if [ $# -gt 0 ] && [ "$1" != --xe ]; then DB=$1; shift; fi
 # shellcheck disable=SC1091
 . "$D/ag.env"

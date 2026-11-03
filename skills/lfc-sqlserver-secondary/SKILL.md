@@ -1,6 +1,6 @@
 ---
 name: lfc-sqlserver-secondary
-description: Run a Lakeflow Connect SQL Server CDC gateway against an Always On readable secondary to keep the snapshot and change reads off the primary, and move it to the primary only for the steps that write to the source (a schema change, a full refresh), then back. Use when a customer wants ingestion to read from a secondary replica, when a table stopped updating after a schema change on a secondary, or to script the switch, the "reset done" check and the cluster log delivery to a UC volume without opening the UI.
+description: Run a Lakeflow Connect SQL Server CDC reader (a gateway, or an integrated CDC pipeline) against an Always On readable secondary to keep the snapshot and change reads off the primary, and move it to the primary only for the steps that write to the source (a schema change, a full refresh), then back. Use when a customer wants ingestion to read from a secondary replica, when a table stopped updating after a schema change on a secondary, or to script the switch, the "reset done" check and the cluster log delivery to a UC volume without opening the UI.
 ---
 
 # SQL Server CDC from an Always On readable secondary
@@ -33,6 +33,15 @@ Point the UC connection at the primary, restart the gateway, let it do its write
 - Stopping the gateway is safe while CDC cleanup retention still holds its position: every version arrives at the next start. Past retention the table fails with `INGESTION_GATEWAY_CDC_LOG_TRUNCATED` and needs a full refresh; the other tables keep going.
 
 The trade-off: each switch restarts the gateway twice, and changes wait until it runs again. Changes made on the primary meanwhile arrive once the gateway runs, none lost.
+
+## Integrated CDC (one serverless pipeline)
+
+The same steps read and write the same way when the reader is an integrated CDC pipeline: reads work on the secondary, the ADD COLUMN merge, the reset and the cursor update fail with 3906, and the switch to the primary and back recovers without a full refresh. Set `PIPELINE_ID` and leave `GATEWAY_ID` unset; `secondary.sh` then stops and starts the pipeline itself. What differs:
+
+- A continuous pipeline refuses a selected-table full refresh (`Refresh selection is not supported for the continuous mode`): set the pipeline to triggered for the refresh, or refresh the whole pipeline.
+- The snapshot lands in staging in the refresh update, but the destination table is reset by the next update that starts after the snapshot finished (events `Snapshot completed ... dataset will be full refreshed in this update`, then `STREAMING_TABLE ... has been successfully reset`). `refresh` waits for that event and restarts the pipeline once if needed.
+- No driver log: serverless takes no cluster settings (`You cannot provide cluster settings when using serverless compute`), so `log-delivery` and `wait-reset` are gateway-only. Use the tracking table (`wait-ci`).
+- A triggered pipeline on the secondary can take a long time to stop on its own: it waits for the lag to settle, and the failing cursor update keeps the lag moving.
 
 ## How to know the reset is done (no UI)
 
