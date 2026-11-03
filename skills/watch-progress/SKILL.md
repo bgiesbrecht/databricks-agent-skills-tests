@@ -1,6 +1,6 @@
 ---
 name: watch-progress
-description: "Wait on a long-running job (benchmark, data load, database fill, build, migration) by checking for progress on a backoff schedule — often at the start, rarely once it's known to work — instead of a fixed timeout that kills a slow but healthy job or a blind wait that sits on a dead one. Covers jobs with no log, where progress has to be read from the system (row counts, database sessions, CPU and disk). Triggers on "run this benchmark", "load the data", "wait for it to finish", "why is this taking so long", or any command expected to take more than a few minutes."
+description: "Wait on a long-running job (benchmark, data load, database fill, build, migration) by checking for progress on a backoff schedule — often at the start, rarely once it's known to work — instead of a fixed timeout that kills a slow but healthy job or a blind wait that sits on a dead one. Covers jobs with no log, where progress has to be read from the system (row counts, database sessions, CPU and disk). Triggers on 'run this benchmark', 'load the data', 'wait for it to finish', 'why is this taking so long', or any command expected to take more than a few minutes."
 ---
 
 # watch-progress

@@ -5,7 +5,7 @@
 #   record). Azure: SUBSCRIPTION or --subscription (else every enabled subscription, by id). AWS: AWS_PROFILE or
 #   --aws-profile, and AWS_REGION or --region. GCP: GCP_ACCOUNT or --gcp-account, and GCP_PROJECT or --gcp-project. A cloud
 #   with no identity is skipped with the flag to give. One line per resource: "LINK <what>: <url>". Where the VM is found,
-#   one "IDENTITY <cloud> ..." line: the record to keep for later calls (see lfc-source-setup cloud-identity.sh).
+#   one "IDENTITY <cloud> ..." line: the record to keep for later calls (see cli-setup cloud-identity.sh).
 #     Azure: the VM, its NIC, the network security group (on the NIC or its subnet), the public IP, the OS and data disks
 #     AWS:   the instance, its security groups, its EBS volumes
 #     GCP:   the instance, its disks, and the VPC firewall rules
@@ -25,15 +25,15 @@ while [ $# -gt 0 ]; do case $1 in
   *) echo "unknown $1" >&2; exit 2;;
 esac; done
 export AZURE_DEFAULTS_GROUP=
-. "$(dirname "$0")/../../lfc-source-setup/scripts/cloud-identity.sh"
+. "$(dirname "$0")/../../cli-setup/scripts/cloud-identity.sh"
 found=0
 link() { echo "LINK $1: $2"; found=1; }
 skip() { echo "skip $1: $2" >&2; }
 
 # --- Azure: portal links are https://portal.azure.com/#@<tenant>/resource<resource id>
 if command -v az >/dev/null && az account list >/dev/null 2>&1; then
-  for id in "${EXTRA[@]}"; do link "Azure $(basename "$id")" "https://portal.azure.com/#@$(az account show --subscription "$(echo "$id" | awk -F/ '{print $3}')" --query tenantId -o tsv 2>/dev/null)/resource$id"; done
-  for id in "${EXTRA[@]}"; do SUBS="$SUBS $(echo "$id" | awk -F/ '{print $3}')"; done
+  for id in ${EXTRA[@]+"${EXTRA[@]}"}; do link "Azure $(basename "$id")" "https://portal.azure.com/#@$(az account show --subscription "$(echo "$id" | awk -F/ '{print $3}')" --query tenantId -o tsv 2>/dev/null)/resource$id"; done
+  for id in ${EXTRA[@]+"${EXTRA[@]}"}; do SUBS="$SUBS $(echo "$id" | awk -F/ '{print $3}')"; done
   # the given subscriptions; with none, every enabled one (a search by IP, each named by its id)
   [ -n "${SUBS// /}" ] || { echo "note: no SUBSCRIPTION given, searching every enabled subscription" >&2; SUBS=$(az account list --query "[?state=='Enabled'].id" -o tsv); }
   pipid=; cfg=; sub=

@@ -1,0 +1,10 @@
+Copyright (2026) Databricks, Inc.
+
+This Software includes software developed at Databricks (https://www.databricks.com/) and its use is subject to the included LICENSE file.
+
+The files under `skills/lfc-source-statschema/scripts/statschema/` and `skills/lfc-source-statschema/schemas/` are derived from
+statschema (https://github.com/rsleedbx/statschema), which is under the same Databricks License.
+
+The schemas under `skills/lfc-source-statschema/schemas/` follow the TPC benchmark specifications (https://www.tpc.org/).
+TPC Benchmark is a trademark of the Transaction Processing Performance Council. They are used for testing and
+development only; no results in this repository are TPC-certified benchmark results.

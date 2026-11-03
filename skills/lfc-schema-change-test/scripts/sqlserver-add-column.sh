@@ -9,12 +9,18 @@
 #   Optional: SRC_ENV     command that prints the source environment (host, Podman, image), one fact per line
 #                         (for a VM container: scripts/vm-mssql.sh)
 #             CONN_USER   the connection's login on the source
-#   Optional: PREFIX (default: the CLI user's firstnamelastname), WAREHOUSE (default: first serverless one),
+#   Optional: SOURCE_JSON (a source contract, lfc-source-contract: gives SRC_SQL, CONN_USER, CONNECTION
+#             instead of the variables above), PREFIX (default: the CLI user's firstnamelastname), WAREHOUSE (default: first serverless one),
 #             GATEWAY_WAIT seconds after each source change (default 90), KEEP=1 to keep everything, OUT=<file.md>
 #
 # Prints one row per claim (PASS / FAIL with what was seen) and exits 1 if any claim failed.
 set -uo pipefail
 export PATH=/opt/homebrew/bin:$PATH
+# SOURCE_JSON=<contract file> (lfc-source-contract) gives the source instead of SRC_SQL, CONN_USER and CONNECTION
+if [ -n "${SOURCE_JSON:-}" ]; then
+  SE=$("${LFC_SOURCE_ENV:-$(dirname "$0")/../../lfc-source-contract/scripts/source-env.sh}" "$SOURCE_JSON") || exit 2
+  eval "$SE"
+fi
 : "${PROFILE:?}" "${CONNECTION:?}" "${CATALOG:?}" "${SRC_SQL:?}" "${CONN_USER:?}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 WAIT=${GATEWAY_WAIT:-90}
@@ -117,7 +123,7 @@ update() {
     tok=$(yq '.next_page_token // ""' "$W/ev_page.json"); [ -z "$tok" ] && break
     IDS="${ids[0]}" yq -e '[.events[] | select(.origin.update_id == strenv(IDS))] | length > 0' "$W/ev_page.json" >/dev/null 2>&1 && break
   done
-  for p in "${ids[@]}"; do U=$p yq -p json -o json -I0 'select(.origin.update_id == strenv(U))' "$W/ev_chain.json"; done > "$W/ev_sel.json"
+  for p in ${ids[@]+"${ids[@]}"}; do U=$p yq -p json -o json -I0 'select(.origin.update_id == strenv(U))' "$W/ev_chain.json"; done > "$W/ev_sel.json"
   if [ -s "$W/ev_sel.json" ]; then yq -p json -o json ea '[.]' "$W/ev_sel.json" > "$W/ev_last.json"; else echo '[]' > "$W/ev_last.json"; fi
   ERRS=$(yq -r '.[] | .error.exceptions[]?.error_class // ""' "$W/ev_last.json" | grep -v '^$' | sort -u | tr '\n' ' ')
   echo "update ${1:+(full refresh $1) }$STATE ${ERRS}[$CHAIN]"
@@ -220,6 +226,7 @@ fi
 AP=$(dbx pipelines create -o json --json "{\"name\":\"$APN\",\"catalog\":\"$CATALOG\",\"schema\":\"$S\",\"serverless\":true,
   \"ingestion_definition\":{$SRCDEF,\"objects\":[$OBJS]}}" | yq '.pipeline_id')
 [ -n "$AP" ] && [ "$AP" != null ] || { echo "ingestion pipeline create failed"; exit 2; }
+bash "$(dirname "$0")/../../lfc-pipeline-diagram/scripts/show-diagram.sh" "$AP"   # what was created (DIAGRAM=0 skips it)
 T="\`$CATALOG\`.$S"
 
 DT=dtix; [ "${EXCLUDE_DTIX:-0}" = 1 ] && DT=intpk   # stands in for dtix in shared queries
@@ -340,6 +347,6 @@ RUNTIME="- Ingestion pipeline: $("$RT" --summary "$PROFILE" "$AP" 2>/dev/null | 
   echo
   echo "| Claim | Result | Observation |"
   echo "|---|---|---|"
-  printf '%s\n' "${RESULTS[@]}"
+  printf '%s\n' ${RESULTS[@]+"${RESULTS[@]}"}
 } | tee "${OUT:-/dev/null}"
 exit $FAILED

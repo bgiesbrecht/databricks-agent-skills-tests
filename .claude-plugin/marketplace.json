@@ -1,0 +1,13 @@
+{
+  "name": "lfc-tests",
+  "owner": {
+    "name": "Robert Lee"
+  },
+  "plugins": [
+    {
+      "name": "lfc-tests",
+      "source": "./",
+      "description": "Lakeflow Connect test skills: source databases, test data, firewalls, workspace setup, ingestion tests and results."
+    }
+  ]
+}

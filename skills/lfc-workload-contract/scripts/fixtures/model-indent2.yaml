@@ -1,0 +1,14 @@
+# tables at indent 2 and block columns (most schemas' layout)
+version: '1.0'
+tables:
+  - name: branch   # a comment after a value
+    row_count: 1
+    columns:
+      - name: bid
+        type: integer
+        primary_key: true
+  - name: history
+    row_count: 1000
+    columns:
+      - name: mtime
+        type: timestamp

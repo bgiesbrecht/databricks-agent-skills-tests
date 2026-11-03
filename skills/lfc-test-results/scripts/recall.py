@@ -17,9 +17,9 @@
 Filters combine. --all lists every matching record instead of the latest per cell. --json prints records.
 """
 import argparse, json
-from pathlib import Path
 
-RUNS = Path(__file__).resolve().parents[3] / "results" / "runs"
+from results_dir import read_dirs   # the repo's results, plus the user's own when installed as a plugin
+
 ICON = {"pass": "✅", "fail": "❌", "blocked": "⛔", "expected-stop": "✅ stop", "partial": "⚠️"}
 
 def comp(r):                                         # "unset->classic, source not reached (firewall)", "; gw ..." for a gateway
@@ -41,7 +41,7 @@ def main():
     ap.add_argument("--all", action="store_true"); ap.add_argument("--json", action="store_true"); ap.add_argument("--coverage", action="store_true")
     ap.add_argument("--combos", action="store_true")
     a = ap.parse_args()
-    lines = [l for f in sorted(RUNS.glob("*.jsonl")) for l in f.read_text().splitlines() if l.strip()] if RUNS.exists() else []
+    lines = [l for d in read_dirs("runs") if d.exists() for f in sorted(d.glob("*.jsonl")) for l in f.read_text().splitlines() if l.strip()]
     recs = [dict(json.loads(l), _line=i) for i, l in enumerate(lines)]
     def keep(r):
         s = r.get("subject", {})

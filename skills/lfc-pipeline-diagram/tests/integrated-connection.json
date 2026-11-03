@@ -1,0 +1,9 @@
+{
+  "name": "my_sqlserver_conn",
+  "connection_type": "SQLSERVER",
+  "options": {
+    "host": "db.example.com",
+    "port": "1433",
+    "trustServerCertificate": "true"
+  }
+}

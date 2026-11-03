@@ -1,5 +1,6 @@
 # lib.sh: shared steps of the SQL Server Lakeflow Connect scenario tests. Source it from a test script after setting
-# PROFILE, CONNECTION, CATALOG, SRC_SQL, CONN_USER (see sqlserver-add-column.sh for what each is), then:
+# PROFILE, CONNECTION, CATALOG, SRC_SQL, CONN_USER (see sqlserver-add-column.sh for what each is), or SOURCE_JSON=<contract
+# file> for the source (lfc-source-contract), then:
 # (ENGINE=postgres for a PostgreSQL source: SRC_SQL is then scripts/vm-psql.sh or alike, src_util and track are not
 # used, and each pipeline gets its own publication and slot, both named $SLOT)
 #
@@ -18,6 +19,12 @@
 # FP_TABLES (space-separated destination tables) drives the integrated-CDC early stop. The EXIT trap deletes the
 # pipelines, the schemas and the source database (KEEP=1 keeps them).
 export PATH=/opt/homebrew/bin:$PATH
+# SOURCE_JSON=<contract file> (lfc-source-contract): the source comes from it (SRC_SQL, CONN_USER, CONNECTION, ...); the
+# variables it doesn't give stay as they are in the environment. LFC_SOURCE_ENV: where source-env.sh is (parallel.sh sets it)
+if [ -n "${SOURCE_JSON:-}" ]; then
+  SE=$("${LFC_SOURCE_ENV:-$(dirname "${BASH_SOURCE[0]}")/../../lfc-source-contract/scripts/source-env.sh}" "$SOURCE_JSON") || exit 2
+  eval "$SE"
+fi
 : "${PROFILE:?}" "${CONNECTION:?}" "${CATALOG:?}" "${SRC_SQL:?}" "${CONN_USER:?}"
 LIB=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 WAIT=${GATEWAY_WAIT:-90}
@@ -162,6 +169,12 @@ pipelines_create() {
   # Postgres: the slot after the pipelines exist, so a refused create leaves none holding WAL
   [ "$ENGINE" = postgres ] && { echo "SELECT pg_create_logical_replication_slot('$SLOT', 'pgoutput');" | src >/dev/null || { echo "slot create failed"; exit 2; }; }
   echo "LINK pipeline $(dbx auth describe -o json 2>/dev/null | yq -r '.details.host // ""')/pipelines/$AP"
+  # the pipeline as a diagram (lfc-pipeline-diagram): text on stderr, text + Mermaid in $W/diagram.md; DIAGRAM=0 skips it
+  [ "${DIAGRAM:-1}" = 1 ] && pipeline_diagram
+  return 0
+}
+pipeline_diagram() {
+  DIAGRAM_MD="$W/diagram.md" bash "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../lfc-pipeline-diagram/scripts" && pwd)/show-diagram.sh" "$AP"
 }
 # set_objects <objs>: replace the ingestion pipeline's table list (pipelines update needs the whole spec)
 set_objects() {

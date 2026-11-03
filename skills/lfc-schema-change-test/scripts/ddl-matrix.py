@@ -31,7 +31,10 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
-RESULTS = REPO / "results" / "ddl-matrix"
+# the repo's results, plus the user's own when installed as a plugin (lfc-test-results results_dir.py)
+sys.path.insert(0, str(HERE.parents[1] / "lfc-test-results" / "scripts"))
+from results_dir import read_dirs
+
 CAT = yaml.safe_load((HERE / "ddl-cases.yaml").read_text())
 CASES = {c["id"]: c for c in CAT["cases"]}
 ALIAS: dict[str, str] = {}
@@ -794,7 +797,7 @@ def render_md(files: list[tuple[str, dict]], detail: bool) -> str:
 
 
 def cmd_render(a: argparse.Namespace) -> int:
-    paths = a.files or sorted(str(p) for p in RESULTS.glob("*.yaml"))
+    paths = a.files or [str(p) for d in read_dirs("ddl-matrix") if d.exists() for p in sorted(d.glob("*.yaml"))]
     if not paths:
         sys.exit("no result files")
     files = []

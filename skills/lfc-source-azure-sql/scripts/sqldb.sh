@@ -12,10 +12,10 @@
 #   currently available") until it's online, about a minute. wake: logs in until it answers (needs sqlcmd, ADMIN_PW_FILE).
 #   status: the database's state (Online, Paused, Resuming) and its pause settings. delete: the server and its databases.
 set -euo pipefail
-. "$(dirname "${BASH_SOURCE[0]}")/../../lfc-source-setup/scripts/pw.sh"   # pw/pw_check: a password file or keyring:<name>
+. "$(dirname "${BASH_SOURCE[0]}")/../../secret-handling/scripts/pw.sh"   # pw/pw_check: a password file or keyring:<name>
 CMD=${1:?plan|create|status|wake|delete}
 : "${RG:?}" "${SERVER:?}" "${DB:?}"
-. "$(dirname "$0")/../../lfc-source-setup/scripts/cloud-identity.sh"
+. "$(dirname "$0")/../../cli-setup/scripts/cloud-identity.sh"
 case $CMD in
 plan|create) SUBSCRIPTION=${SUBSCRIPTION:-$(az account show --query id -o tsv)} ;;
 *) : "${SUBSCRIPTION:?the subscription_id from the create IDENTITY line (the az default is not used)}" ;;
@@ -43,7 +43,7 @@ plan|create)
     F=(); [ "${FREE:-}" = 1 ] && F=(--use-free-limit --free-limit-exhaustion-behavior AutoPause)
     az sql db create "${A[@]}" -s "$SERVER" -n "$DB" --edition GeneralPurpose --compute-model Serverless --family Gen5 \
       --capacity "${VCORES:-1}" --min-capacity "${MIN_CAPACITY:-0.5}" --auto-pause-delay "${AUTO_PAUSE:-60}" \
-      --backup-storage-redundancy Local "${F[@]}" --tags "${TAGS[@]}" -o none
+      --backup-storage-redundancy Local ${F[@]+"${F[@]}"} --tags "${TAGS[@]}" -o none
   fi
   az_record "$SUBSCRIPTION"
   echo "ready: $HOST,1433 database $DB. Next: lfc-source-firewall scripts/server-fw.py sql $SERVER" ;;

@@ -9,6 +9,11 @@ Prints one line per problem (path:line rule: text) and exits 1 if there is any. 
   rm-guard   rm -r on a variable path needs ${VAR:?} (an empty variable must stop the command, not remove from /)
   first-arg  a script that reads a flag only as its first argument ([ "${1:-}" = --flag ]) is called with it first
   jq-one     one value from JSON is `jq -r '<path>'`, not `yq -p json -oy` (yq + -o shell is for several values)
+  bash32     .sh files run on stock macOS bash 3.2 and on bash 5: no bash-4 builtins or expansions (declare -A,
+             mapfile, ${x,,}, ...), no date -d/-v/-j (date math in jq: now, fromdate, strftime, strflocaltime), no
+             bare timeout (not on macOS), and an array that can be empty (X=(), read -a X) expands as
+             ${X[@]+"${X[@]}"} under set -u. A script that runs only on Linux says `# bash32: exempt` in its
+             first 15 lines.
 The shell rules run on every .sh file and on every ```bash / ```sh block in the skills' markdown, parsed with
 ast-grep (tree-sitter bash): AST_GREP names the binary, else `uvx --from ast-grep-cli==0.51.0 ast-grep`.
 """
@@ -28,6 +33,19 @@ R = Path(__file__).resolve().parent.parent
 MAX_CHARS, MAX_LINES = 20_000, 500
 RULE = "id: cmd\nlanguage: bash\nrule: {kind: command}\n"
 PLAIN_PATH = re.compile(r"""^\.[\w.\[\]"-]*( // "[^"]*")?$""")
+BASH4 = [   # (regex, what to do instead): bash 4+ only, or GNU/BSD-only commands
+    (r"\b(declare|local|typeset) -[a-zA-Z]*A", "declare -A is bash 4: one variable per key, or a file"),
+    (r"\b(declare|local|typeset) -[a-zA-Z]*n\b", "namerefs are bash 4.3: pass the name and use ${!name}"),
+    (r"\b(mapfile|readarray)\b", "mapfile is bash 4: while IFS= read -r l; do A+=(\"$l\"); done"),
+    (r"\$\{[A-Za-z_]\w*(\[[^]]*\])?(,,?|\^\^?)\}", "case conversion is bash 4: tr '[:upper:]' '[:lower:]'"),
+    (r"\$\{[A-Za-z_]\w*(\[[^]]*\])?@[QEPAKa]\}", "${x@Q} is bash 4.4"),
+    (r"\[-[0-9]+\]\}", "negative indexes are bash 4.3: ${a[${#a[@]}-1]}"),
+    (r"&>>|\|&", "&>> and |& are bash 4: >>f 2>&1, 2>&1 |"),
+    (r"\bwait -n\b|\bcoproc\b|\bglobstar\b|\bEPOCH(SECONDS|REALTIME)\b", "bash 4+ only"),
+    (r"\bdate\b[^|;&#]*\s-[a-zA-Z]*[dvj]\b", "date -d is GNU, -v/-j BSD: do the date math in jq"),
+]
+SINGLE_QUOTED = re.compile(r"'[^'\n]*'")
+EMPTYABLE = re.compile(r"(?:^|[\s;(])(?:local\s+)?([A-Za-z_]\w*)=\(\s*\)|read\s+-[a-zA-Z]*a\s+([A-Za-z_]\w*)")
 
 
 def files(*globs: str) -> list[Path]:
@@ -97,17 +115,38 @@ def words(text: str) -> list[str]:
 def first_arg_flags() -> dict[str, set[str]]:
     """{script name: flags it reads only as $1}: the script tests "${1:-}" (or "$1") against --flag."""
     out: dict[str, set[str]] = {}
-    for f in files("skills/*.sh", "bin/*.sh"):
+    for f in files("skills/*.sh", ".claude/skills/*.sh", "bin/*.sh"):
         flags = set(re.findall(r'\[\s*"\$\{?1(?::-)?\}?"\s*=\s*(--[\w-]+)\s*\]', f.read_text()))
         if flags and not re.search(r'case\s+"?\$\{?1', f.read_text()):
             out[f.name] = flags
     return out
 
 
+def bash32(f: Path, rel) -> list[str]:
+    """The bash32 rule for one .sh file (see the docstring)."""
+    lines = f.read_text(errors="replace").splitlines()
+    if any("bash32: exempt" in h for h in lines[:15]):
+        return []
+    # comments and single-quoted text (sed, jq and awk programs) aren't shell
+    out, code = [], [SINGLE_QUOTED.sub("''", re.sub(r"(^|\s)#.*", "", l)) if not l.startswith("#!") else "" for l in lines]
+    for n, l in enumerate(code, 1):
+        for rx, fix in BASH4:
+            if re.search(rx, l):
+                out.append(f"{rel(f)}:{n} bash32: {fix}: {lines[n - 1].strip()[:100]}")
+    if re.search(r"^\s*set\s+(-[a-zA-Z]*u|-o\s+nounset)", "\n".join(code), re.MULTILINE):
+        arrays = {a or b for a, b in EMPTYABLE.findall("\n".join(code))}
+        for n, l in enumerate(code, 1):
+            for a in arrays:
+                if re.search(r'(?<!\+)"\$\{' + a + r'\[@\]\}"', l):
+                    out.append(f"{rel(f)}:{n} bash32: {a} can be empty: ${{{a}[@]+\"${{{a}[@]}}\"}} (bash 3.2 + set -u): "
+                               f"{lines[n - 1].strip()[:80]}")
+    return out
+
+
 def main() -> int:
     problems: list[str] = []
     rel = lambda p: str(p.relative_to(R)) if p.is_relative_to(R) else str(p)   # noqa: E731
-    for f in files("skills/*/SKILL.md"):
+    for f in files("skills/*/SKILL.md", ".claude/skills/*/SKILL.md"):
         t = f.read_text()
         if len(t) > MAX_CHARS or t.count("\n") > MAX_LINES:
             problems.append(f"{rel(f)}:1 size: {len(t):,} chars, {t.count(chr(10))} lines (max {MAX_CHARS:,}, {MAX_LINES}): "
@@ -115,17 +154,19 @@ def main() -> int:
     if "--sizes-only" in sys.argv:
         print("\n".join(problems))
         return 1 if problems else 0
-    for f in files("skills/*.sh", "bin/*.sh", "skills/*.py", "bin/*.py"):
+    for f in files("skills/*.sh", ".claude/skills/*.sh", "bin/*.sh", "skills/*.py", ".claude/skills/*.py", "bin/*.py"):
         head = f.read_text(errors="replace").splitlines()[:15]
         if head and head[0].startswith("#!") and not any(f.name in h for h in head):
             problems.append(f"{rel(f)}:1 header: no usage line naming {f.name} in the first 15 lines")
+    for f in files("skills/*.sh", ".claude/skills/*.sh", "bin/*.sh"):
+        problems += bash32(f, rel)
     with tempfile.TemporaryDirectory() as tmp:
         where: dict[Path, tuple[Path, int]] = {}
-        for k, md in enumerate(files("skills/*.md", "skills/**/*.md", "*.md")):
+        for k, md in enumerate(files("skills/*.md", "skills/**/*.md", ".claude/skills/**/*.md", "*.md")):
             d = Path(tmp) / str(k)
             d.mkdir()
             where.update(md_blocks(md, d))
-        cmds = commands(files("skills/*.sh", "bin/*.sh") + list(where), where)
+        cmds = commands(files("skills/*.sh", ".claude/skills/*.sh", "bin/*.sh") + list(where), where)
     first = first_arg_flags()
     for src, line, text in cmds:
         w = words(text)
@@ -142,6 +183,8 @@ def main() -> int:
             if later:
                 problems.append(f"{rel(src)}:{line} first-arg: {name} reads {later[0]} only as its first argument: "
                                 f"{text.strip()[:120]}")
+        if name == "timeout" and src.suffix == ".sh":
+            problems.append(f"{rel(src)}:{line} bash32: timeout is not on macOS: {text.strip()[:100]}")
         if name == "yq" and "json" in " ".join(w[1:3]) and any(a in ("-oy", "-o=yaml", "-oyaml") or a == "y" for a in w):
             expr = next((a for a in w[1:] if a.startswith(".")), "")
             if PLAIN_PATH.match(expr):

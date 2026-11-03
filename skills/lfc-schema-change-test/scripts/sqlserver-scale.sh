@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # sqlserver-scale.sh: many tables in one pipeline. Answers a field question (INGESTION_GATEWAY_OPERATION_TIMEOUT.REINITIALIZATION:
-# when does a pipeline with many tables hit it?). COPIES copies of a TPC model (MODEL, default tpcc: 9 tables) in source
-# schemas <model>_0001 .. <model>_NNNN, generated inside SQL Server by lfc-source-statschema (shape.py, ddl.py) and
-# lfc-source-datagen (fill.sh); change tracking on keyed tables and CDC on keyless ones; then one pipeline over all of it.
+# when does a pipeline with many tables hit it?). COPIES copies of a model in source schemas <model>_0001 .. <model>_NNNN,
+# generated inside SQL Server from a workload file (WORKLOAD_JSON, lfc-workload-contract); change tracking on keyed tables and
+# CDC on keyless ones; then one pipeline over all of it.
 #
-#   COPIES=10  SF=0.01  MODEL=tpcc  FILLS=4 (copies filled at once; at 8 the VM's sshd started refusing connections)
+#   WORKLOAD_JSON  required: the workload file (contract 1). It sets the model, the scale (SF), the DDL, the tables and the fill and
+#                  bundle commands; MODEL and SF are the file's. Its producer is the workload.sh of lfc-source-datagen (the shape
+#                  layer), which writes the file and prints its path. LFC_WORKLOAD_ENV: where workload-env.sh is (optional)
+#   COPIES=10  FILLS=4 (copies filled at once; at 8 the VM's sshd started refusing connections)
 #   OBJECTS=schema  one `schema` object per source schema, each into its own destination schema <S>_<model>_NNNN
 #                   (a schema object can't rename tables, and every copy has the same table names)
 #   OBJECTS=table   one `table` object per table, all into the destination schema <S>, named <table>_NNNN
@@ -13,27 +16,25 @@
 #   the backup the first build wrote (/var/opt/mssql/backup/<db>.bak in the container), else builds it.
 #   DISK_MBPS  the source disk limit the run is under, in MiB/s (vm-throttle.sh <MiB/s> --cold before, off after): recorded only
 #   Needs and options: as sqlserver-add-column.sh (PROFILE CONNECTION CATALOG SRC_SQL CONN_USER; SRC_ENV, MODE, KEEP, OUT),
-#   and uv (for the statschema scripts).
+#   and a workload file. BUILD_HERE=1 builds from this machine; else the bundle goes to the VM (VM_IP, MSSQL_CONTAINER).
 #
 # Records: pipeline create accepted or refused; time from the first update's start until every table has its source row
 # count; errors (REINITIALIZATION timeouts among them); then one change per copy and whether each arrives.
 set -uo pipefail
 . "$(dirname "$0")/lib.sh"
-COPIES=${COPIES:-10}; SF=${SF:-0.01}; MODEL=${MODEL:-tpcc}; OBJECTS=${OBJECTS:-schema}; FILLS=${FILLS:-4}
-SK=${SK:-$LIB/../..}   # the skills folder (set SK when running a copy of this script)
+COPIES=${COPIES:-10}; OBJECTS=${OBJECTS:-schema}; FILLS=${FILLS:-4}
+: "${WORKLOAD_JSON:?set WORKLOAD_JSON to a workload file (the workload.sh of lfc-source-datagen writes one)}"
+WE=$("${LFC_WORKLOAD_ENV:-$LIB/../../lfc-workload-contract/scripts/workload-env.sh}" "$WORKLOAD_JSON") || exit 2
+eval "$WE"
+MODEL=$WL_MODEL; SF=$WL_SCALE
 lfc_init scale
 copy() { printf '%s_%04d' "$MODEL" "$1"; }
 DB=${SOURCE_DB:-${PREFIX}_scale_${MODEL}_x${COPIES}_sf${SF//./p}}; export KEEP_SOURCE=${KEEP_SOURCE:-1}
 BAK=/var/opt/mssql/backup/$DB.bak
 echo "source database $DB (kept after the run: $( [ "$KEEP_SOURCE" = 1 ] && echo yes || echo no))"
 
-# --- the model's DDL, once ---------------------------------------------------------------------------------------------
-uv run "$SK/lfc-source-statschema/scripts/shape.py" "$SK/lfc-source-statschema/schemas/$MODEL.yaml" --sf "$SF" > "$W/model.yaml" 2>"$W/shape.err" \
-  || { echo "shape.py failed: $(tail -2 "$W/shape.err")"; exit 2; }
-uv run "$SK/lfc-source-statschema/scripts/ddl.py" "$W/model.yaml" --dialect tsql > "$W/model.sql" 2>"$W/ddl.err" \
-  || { echo "ddl.py failed: $(tail -2 "$W/ddl.err")"; exit 2; }
-TB=$(grep -o -E '^CREATE TABLE \[[a-z_0-9]+\]' "$W/model.sql" | sed -E 's/.*\[(.*)\]/\1/')
-NT=$(echo "$TB" | wc -l | tr -d ' '); RE=$(echo "$TB" | paste -sd'|' -)
+# --- the model's tables, from the workload file (its DDL is WL_DDL) -----------------------------------------------------
+NT=$WL_NTABLES
 echo "$MODEL at SF $SF: $NT tables per copy, $COPIES copies = $((NT * COPIES)) tables"
 
 # --- source: reuse the kept database, or restore its backup, or build it ----------------------------------------------
@@ -60,25 +61,26 @@ fi
 if [ "$REUSED" = 0 ]; then
 # one schema per copy, filled inside SQL Server --------------------------------------------------------------
 echo "SELECT 1;" | src_db
-# The build runs on the database's VM (lfc-source-datagen bundle.sh + copies.sh), not as hundreds of SSH calls from
+# The build runs on the database's VM (the workload's bundle and fill commands), not as hundreds of SSH calls from
 # here: a laptop's network drop then only delays the polling below. BUILD_HERE=1 builds from this machine instead.
 T0=$(date +%s); RUN=/tmp/lfc-build-$DB
 if [ "${BUILD_HERE:-0}" = 1 ]; then
-  MSSQL="env SQLCMD_FLAGS=-b\ -y\ 0 $SRC_SQL $DB" bash "$SK/lfc-source-datagen/scripts/copies.sh" ms "$W/model.sql" "$MODEL" 1 "$COPIES" "$FILLS" \
+  MSSQL="env SQLCMD_FLAGS=-b\ -y\ 0 $SRC_SQL $DB" $WL_FILL "$WL_DDL" "$MODEL" 1 "$COPIES" "$FILLS" \
     | tee "$W/build.log" | grep -v '^done' || { echo "source build failed"; exit 2; }
 else
   : "${VM_IP:?BUILD_HERE=0 builds on the VM: set VM_IP and MSSQL_CONTAINER}" "${MSSQL_CONTAINER:?}"
+  : "${WL_BUNDLE:?the workload file has no bundle_cmd: the VM build needs one (or set BUILD_HERE=1)}"
   SSHV=(ssh -i "${SSH_KEY:-$HOME/.ssh/lfc_test_rsa}" -o BatchMode=yes -o ConnectTimeout=15 "${VM_USER:-azureuser}@$VM_IP")
   SCPV=(scp -q -i "${SSH_KEY:-$HOME/.ssh/lfc_test_rsa}" -o BatchMode=yes -o ConnectTimeout=15)
-  bash "$SK/lfc-source-datagen/scripts/bundle.sh" "$W/datagen.tgz" >/dev/null
+  $WL_BUNDLE "$W/datagen.tgz" >/dev/null
   # the VM-side client: SQL on stdin into sqlcmd in the container, the sa password read inside it
   cat > "$W/sq" <<SQ
 #!/usr/bin/env bash
 podman --remote --url unix:///run/podman/podman.sock exec -i $MSSQL_CONTAINER sh -c 'f=\$(mktemp); cat > \$f; /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "\$MSSQL_SA_PASSWORD" -b -y 0 -d $DB -i \$f; rc=\$?; rm -f \$f; exit \$rc'
 SQ
-  "${SSHV[@]}" "rm -rf $RUN && mkdir -p $RUN" && "${SCPV[@]}" "$W/datagen.tgz" "$W/model.sql" "$W/sq" "${VM_USER:-azureuser}@$VM_IP:$RUN/" \
+  "${SSHV[@]}" "rm -rf $RUN && mkdir -p $RUN" && "${SCPV[@]}" "$W/datagen.tgz" "$WL_DDL" "$W/sq" "${VM_USER:-azureuser}@$VM_IP:$RUN/" \
     || { echo "copy to the VM failed"; exit 2; }
-  "${SSHV[@]}" "cd $RUN && tar xzf datagen.tgz && chmod +x sq && MSSQL=$RUN/sq nohup bash copies.sh ms model.sql $MODEL 1 $COPIES $FILLS > build.log 2>&1 < /dev/null &" \
+  "${SSHV[@]}" "cd $RUN && tar xzf datagen.tgz && chmod +x sq && MSSQL=$RUN/sq nohup $WL_FILL_IN_BUNDLE $(basename "$WL_DDL") $MODEL 1 $COPIES $FILLS > build.log 2>&1 < /dev/null &" \
     || { echo "starting the build on the VM failed"; exit 2; }
   echo "building on the VM: $RUN/build.log"
   last=""
@@ -128,7 +130,7 @@ else
   done < "$W/src.tsv"
 fi
 # the extra destination schemas go with the rest at cleanup
-trap 'for d in "${DEST[@]}"; do dbx schemas delete "$CATALOG.$d" --force 2>/dev/null; done; cleanup' EXIT
+trap 'for d in ${DEST[@]+"${DEST[@]}"}; do dbx schemas delete "$CATALOG.$d" --force 2>/dev/null; done; cleanup' EXIT
 dest() {   # dest <schema.table> -> its destination table
   local s=${1%%.*} t=${1#*.}
   if [ "$OBJECTS" = schema ]; then echo "\`$CATALOG\`.${S}_$s.$t"; else echo "$T.${t}_${s##*_}"; fi
@@ -162,7 +164,7 @@ ALLERRS=$(echo $ALLERRS | tr ' ' '\n' | sort -u | grep -v '^$' | paste -sd' ' -)
 
 # --- then one change per copy: update one row of the first table (a column that isn't in the key, set to itself; change
 # tracking and CDC still record it), and see the destination table of the first and the last copy get a new version -----
-FIRST=$(head -1 <<< "$TB")
+FIRST=${WL_TABLES%% *}
 COL=$(printf "SET NOCOUNT ON; SELECT TOP 1 c.name FROM sys.columns c WHERE c.object_id = OBJECT_ID('%s.%s') AND c.column_id NOT IN (SELECT ic.column_id FROM sys.index_columns ic JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id WHERE i.is_primary_key = 1 AND ic.object_id = c.object_id) ORDER BY c.column_id;\n" "$(copy 1)" "$FIRST" | src | tr -d '[:space:]')
 ver() { q "SELECT MAX(version) FROM (DESCRIBE HISTORY $(dest "$1"))" 2>&1 | tr -d '[:space:]'; }
 A0=$(ver "$(copy 1).$FIRST"); Z0=$(ver "$(copy "$COPIES").$FIRST")
