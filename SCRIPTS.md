@@ -47,6 +47,10 @@ line of its usage. Run a script with no arguments for its full usage instead of 
 - `skills/lfc-meta-ads/scripts/schema-diff.py` --lfc lfc.tsv [--fivetran fivetran.tsv] (--mapping map.yaml | --tables-map tables.tsv) [--out diff.tsv]
 - `skills/lfc-meta-ads/scripts/schema.sh` <profile> <catalog>.<schema> [--warehouse <id>] [--tables t1,t2] > columns.tsv Every column of every table in a Unity...
 
+## lfc-pipeline-diagram
+
+- `skills/lfc-pipeline-diagram/scripts/pipeline-diagram.py` draw a Lakeflow Connect database pipeline as text and/or Mermaid.
+
 ## lfc-saas-answer
 
 - `skills/lfc-saas-answer/scripts/connector-index.sh` [--check]: the Lakeflow Connect connectors on docs.databricks.com, each with its doc pages and, for SaaS connectors, ...

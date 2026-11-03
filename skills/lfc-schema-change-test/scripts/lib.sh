@@ -162,6 +162,23 @@ pipelines_create() {
   # Postgres: the slot after the pipelines exist, so a refused create leaves none holding WAL
   [ "$ENGINE" = postgres ] && { echo "SELECT pg_create_logical_replication_slot('$SLOT', 'pgoutput');" | src >/dev/null || { echo "slot create failed"; exit 2; }; }
   echo "LINK pipeline $(dbx auth describe -o json 2>/dev/null | yq -r '.details.host // ""')/pipelines/$AP"
+  # the pipeline as a diagram (lfc-pipeline-diagram): text on stdout, text + Mermaid in $W/diagram.md; DIAGRAM=0 skips it
+  [ "${DIAGRAM:-1}" = 1 ] && pipeline_diagram
+  return 0
+}
+pipeline_diagram() {
+  local d; d="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../lfc-pipeline-diagram/scripts" && pwd)/pipeline-diagram.py"
+  local fl=(--pipeline "$AP")
+  fl+=(--profile "$PROFILE")
+  [ -n "${SRC_CLOUD:-}" ] && fl+=(--source-cloud "$SRC_CLOUD")
+  [ -n "${SRC_HOST:-}" ] && fl+=(--source-host "$SRC_HOST")
+  [ -n "${SRC_PRIMARY:-}" ] && fl+=(--primary "$SRC_PRIMARY")
+  [ -n "${SRC_SECONDARY:-}" ] && fl+=(--secondary "$SRC_SECONDARY")
+  [ -n "${SRC_FIREWALL:-}" ] && fl+=(--firewall "$SRC_FIREWALL")
+  [ -n "${SECRET_STORE:-}" ] && fl+=(--secret-store "$SECRET_STORE")
+  [ -n "${SECRET_KIND:-}" ] && fl+=(--secret-kind "$SECRET_KIND")
+  python3 "$d" ${fl[@]+"${fl[@]}"} -o "$W/diagram.md" 2>/dev/null && python3 "$d" ${fl[@]+"${fl[@]}"} --format text 2>/dev/null \
+    || echo "(diagram skipped: pipeline-diagram.py failed)"
 }
 # set_objects <objs>: replace the ingestion pipeline's table list (pipelines update needs the whole spec)
 set_objects() {
