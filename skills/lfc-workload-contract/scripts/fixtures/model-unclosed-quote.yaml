@@ -1,0 +1,10 @@
+version: "1.0"
+tables:
+  - name: t
+    description: 'starts here
+      and never closes
+    row_count: 1
+    columns:
+      - name: id
+        type: integer
+        primary_key: true
