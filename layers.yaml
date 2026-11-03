@@ -64,7 +64,6 @@ layers:
       - zerobus-workspace-setup
       - zerobus-debezium-test
       - mautic-source
-    pending:
       - lfc-pipeline-diagram
       - lfc-sqlserver-secondary
     bin:
