@@ -13,14 +13,14 @@ A skill or bin script may reference another one only if the other one's layer is
       |               ^             ^
       +-----------> sources ---------+   sources also uses shape
                         |
-                      shape --------> common
+                      shape --------> contract, common
 ```
 
 | Layer | May use | What it holds | Skills and bin scripts |
 |---|---|---|---|
 | **common** | nothing | Helpers any layer may use: credentials, CLI JSON, long waits, token and tool checks, the rules for writing skills and branches | `account-token-fallback`, `options-first`, `podman-desktop-remove`, `secret-handling`, `cli-setup`, `shell-json-scripting`, `watch-progress`, `skill-token-budget`, `git-topic-branches` |
-| **shape** | common | Data shaped like a customer's or a benchmark's, engine-agnostic: the schema and statistics, and the data generated inside any database | `lfc-source-statschema`, `lfc-source-datagen` |
-| **contract** | common | The source contract: what a source provides and what a consumer may rely on (producers and consumers both use it) | `lfc-source-contract` |
+| **shape** | contract, common | Data shaped like a customer's or a benchmark's, engine-agnostic: the schema and statistics, and the data generated inside any database. Its producer writes the workload file | `lfc-source-statschema`, `lfc-source-datagen` |
+| **contract** | common | The contracts between a producer and its consumers: the source contract (what a source provides), and the workload contract (a model's tables and the commands that build them) | `lfc-source-contract`, `lfc-workload-contract` |
 | **sources** | shape, contract, common | Source databases on demand: provisioning, reaching and opening them | `lfc-source-podman`, `lfc-source-cloud-vm`, `lfc-source-azure-sql`, `lfc-source-azure-flexserver`, `lfc-source-gcp-cloudsql`, `lfc-source-aws-rds`, `lfc-source-aws-aurora`, `lfc-source-firewall` |
 | **lakeflow** | contract, common | Lakeflow Connect tests and demos, and the prep and checks around them | every other skill, and the `bin/` scripts `lfc-events.sh`, `lfc-runtime.sh`, `compute_report.sh`, `stop_after.sh` |
 | **repo** | all | This repo's own tooling: checks, the test runners, the plugin hook | `public-skill-conventions` (contributor skill), `bin/` checks and runners (`check_links.py`, `check_layers.py`, `lint_scripts.py`, `scripts_index.py`, `run_batch.sh`, `run_matrix.sh`, `plugin-session.sh`, `test_*`) |
@@ -43,8 +43,9 @@ One line per skill: what it does, which decides its layer.
 | `skill-token-budget` | common | How to write any skill so it loads few tokens; the rule applies to every layer. Its check commands are repo tooling (baseline). |
 | `git-topic-branches` | common | The branch rule for contributors; a workflow, no code. |
 | `lfc-source-statschema` | shape | Builds a source shaped like a customer's or a TPC schema from statschema's format; engine-agnostic. |
-| `lfc-source-datagen` | shape | Fills any database with generated rows, from the database itself; engine SQL only. |
+| `lfc-source-datagen` | shape | Fills any database with generated rows, from the database itself; engine SQL only. Its `workload.sh` writes a model's workload file (`workload.json`) for the tests. |
 | `lfc-source-contract` | contract | The contract between a source and its consumers. |
+| `lfc-workload-contract` | contract | The contract between a model (statschema's format) and the tests that build its tables: the model file's format and the workload file. A validator and an export script; no database. |
 | `lfc-source-podman` | sources | Runs source databases in Podman containers. |
 | `lfc-source-cloud-vm` | sources | Provisions databases on cloud VMs (`slot.sh`, VM setup, masters). |
 | `lfc-source-azure-sql` | sources | Provisions Azure SQL Database and Managed Instance. |
@@ -56,7 +57,7 @@ One line per skill: what it does, which decides its layer.
 | `lfc-source-setup` | lakeflow | Lakeflow source prep: utility objects, CDC and change tracking, grants (per engine). Its per-engine pages are what the source skills point to (baseline). |
 | `lfc-source-log-state` | lakeflow | Reads where a SQL Server source's change tracking and CDC stand, for a Lakeflow pipeline. |
 | `lfc-source-sizing` | lakeflow | How much of a source Lakeflow Connect moves. |
-| `lfc-schema-change-test` | lakeflow | Runs Lakeflow schema-change tests end to end (builds its source with shape and sources: baseline). |
+| `lfc-schema-change-test` | lakeflow | Runs Lakeflow schema-change tests end to end. Its many-table build takes a workload file (contract); the cloud VM's container script is sources: baseline. |
 | `lfc-downstream-history` | lakeflow | Keeps history downstream of a Lakeflow destination. |
 | `lfc-connection-sync` | lakeflow | Creates the same Unity Catalog connections in several workspaces. |
 | `lfc-workspace-setup` | lakeflow | Prepares a workspace for Lakeflow tests (previews, catalogs). |
@@ -84,12 +85,12 @@ Nothing was moved that the internal tool uses. The internal tool uses `skills/ac
 
 ## The baseline
 
-[`layers-baseline.txt`](../layers-baseline.txt) lists the references that break the rule today: `<from> -> <to>: <file>:<pattern>`, one per line. The check fails on any reference that breaks the rule and has no line there, and on any line that matches no reference, so the baseline only shrinks: delete a line when its reference goes. Today it holds 50 references in 42 lines (of 169 references in all; 119 allowed).
+[`layers-baseline.txt`](../layers-baseline.txt) lists the references that break the rule today: `<from> -> <to>: <file>:<pattern>`, one per line. The check fails on any reference that breaks the rule and has no line there, and on any line that matches no reference, so the baseline only shrinks: delete a line when its reference goes. Today it holds 45 references in 37 lines (of 173 references in all; 128 allowed).
 
 | Pair (layer) | References | Main offenders | What it would take |
 |---|---|---|---|
 | sources -> lakeflow | 19 | The source skills link to `lfc-source-setup`'s per-engine pages (Lakeflow prep: CDC, grants) as the next step, and `lfc-source-firewall` cites a Lakeflow script and test matrix in its references. | Split `lfc-source-setup` into engine provisioning (sources) and Lakeflow prep (lakeflow); the source skills then link only to their own layer. |
-| lakeflow -> shape | 10 | `lfc-schema-change-test` builds its source with statschema's `shape.py`, `ddl.py` and the datagen bundle; `cdc-table-plan` uses statschema's collection SQL; `zerobus-debezium-test` uses statschema and datagen. | Lakeflow tests take a built source (a schema file or a database) from the shape layer's output rather than calling its scripts. |
+| lakeflow -> shape | 5 | `cdc-table-plan` uses statschema's collection SQL; `zerobus-debezium-test` uses statschema and datagen. (`lfc-schema-change-test` takes a workload file instead.) | Lakeflow tests take a built source (a schema file or a database) from the shape layer's output rather than calling its scripts. |
 | lakeflow -> sources | 8 | `lfc-schema-change-test` calls the cloud VM's container script; `zerobus-debezium-test` runs the VM, Podman and cloud-links scripts (it provisions a CockroachDB source). | Move the provisioning to the caller's configuration, or let the test skill own a source-side wrapper in sources. |
 | common -> repo | 7 | `skill-token-budget` and `account-token-fallback` name the repo's checks and runner in their text. | Keep as contributor guidance, or reword to the repo's CONTRIBUTING; this is the only edge a split must rewrite in a common skill. |
 | lakeflow -> repo | 4 | `lfc-test-results` and `lfc-workspace-setup` name `bin/test_scripts.sh` and `bin/run_batch.sh`. | Same as above: repo tooling is referenced by name, not run by path. |
@@ -117,7 +118,7 @@ A new skill must be added to `layers.yaml`, under the layer it belongs to, or th
 
 The split is three repositories: **shared** (common, contract, shape: everything the other two use), **sources**, and **lakeflow**. Each keeps the paths of its layers, and each runs the same check on its own `layers.yaml`.
 
-It is ready when the baseline has no line across the split. Today 40 references cross it (sources to lakeflow 20, lakeflow to shape 10, lakeflow to sources 8, shape to lakeflow 2), so those go first. The common-to-repo and lakeflow-to-repo lines stay, for each repo's own tooling. The references that stay allowed (sources to shape, contract and common; lakeflow to contract and common) become dependencies on the shared repo: each consumer pins a revision of it, by checkout or by the plugin's dependency, and the internal tool does the same.
+It is ready when the baseline has no line across the split. Today 34 references cross it (sources to lakeflow 19, lakeflow to shape 5, lakeflow to sources 8, shape to lakeflow 2), so those go first. The common-to-repo and lakeflow-to-repo lines stay, for each repo's own tooling. The references that stay allowed (sources to shape, contract and common; shape to contract and common; lakeflow to contract and common) become dependencies on the shared repo: each consumer pins a revision of it, by checkout or by the plugin's dependency, and the internal tool does the same.
 
 ```bash
 # one clone per target repo; each keeps only its layers' paths
