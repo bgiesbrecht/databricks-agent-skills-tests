@@ -85,7 +85,7 @@ Nothing was moved that the internal tool uses. The internal tool uses `skills/ac
 
 ## The baseline
 
-[`layers-baseline.txt`](../layers-baseline.txt) lists the references that break the rule today: `<from> -> <to>: <file>:<pattern>`, one per line. The check fails on any reference that breaks the rule and has no line there, and on any line that matches no reference, so the baseline only shrinks: delete a line when its reference goes. Today it holds 45 references in 37 lines (of 173 references in all; 128 allowed).
+[`layers-baseline.txt`](../layers-baseline.txt) lists the references that break the rule today: `<from> -> <to>: <file>:<pattern>`, one per line. The check fails on any reference that breaks the rule and has no line there, and on any line that matches no reference, so the baseline only shrinks: delete a line when its reference goes. Today it holds 45 references in 37 lines (of 175 references in all; 130 allowed).
 
 | Pair (layer) | References | Main offenders | What it would take |
 |---|---|---|---|
