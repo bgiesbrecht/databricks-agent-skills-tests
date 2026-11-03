@@ -9,12 +9,18 @@
 #   Optional: SRC_ENV     command that prints the source environment (host, Podman, image), one fact per line
 #                         (for a VM container: scripts/vm-mssql.sh)
 #             CONN_USER   the connection's login on the source
-#   Optional: PREFIX (default: the CLI user's firstnamelastname), WAREHOUSE (default: first serverless one),
+#   Optional: SOURCE_JSON (a source contract, lfc-source-contract: gives SRC_SQL, CONN_USER, CONNECTION
+#             instead of the variables above), PREFIX (default: the CLI user's firstnamelastname), WAREHOUSE (default: first serverless one),
 #             GATEWAY_WAIT seconds after each source change (default 90), KEEP=1 to keep everything, OUT=<file.md>
 #
 # Prints one row per claim (PASS / FAIL with what was seen) and exits 1 if any claim failed.
 set -uo pipefail
 export PATH=/opt/homebrew/bin:$PATH
+# SOURCE_JSON=<contract file> (lfc-source-contract) gives the source instead of SRC_SQL, CONN_USER and CONNECTION
+if [ -n "${SOURCE_JSON:-}" ]; then
+  SE=$("${LFC_SOURCE_ENV:-$(dirname "$0")/../../lfc-source-contract/scripts/source-env.sh}" "$SOURCE_JSON") || exit 2
+  eval "$SE"
+fi
 : "${PROFILE:?}" "${CONNECTION:?}" "${CATALOG:?}" "${SRC_SQL:?}" "${CONN_USER:?}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 WAIT=${GATEWAY_WAIT:-90}

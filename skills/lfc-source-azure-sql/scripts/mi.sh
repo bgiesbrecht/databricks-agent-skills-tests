@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # mi.sh plan|create|wait|status|endpoint|stop|start|delete: an Azure SQL Managed Instance behind its own NSG.
 #   Needs RG (resource group), VNET (an existing VNet in RG), MI_NAME. Identity: SUBSCRIPTION, required for every command
-#   but plan/create (those take az's current one, pin it and print its IDENTITY line; see lfc-source-setup cloud-identity.sh).
+#   but plan/create (those take az's current one, pin it and print its IDENTITY line; see cli-setup cloud-identity.sh).
 #   Optional: TENANT_ID (checked against the login),
 #   LOCATION (the VNet's), SUBNET (<VNET>-mi-subnet), SUBNET_CIDR (10.10.200.0/27; /27 or larger, unused in the VNet),
 #   VCORES (4), STORAGE_GB (32), PRICING (Freemium: the free offer, one per subscription; else Regular), OWNER ($USER).
@@ -14,11 +14,11 @@
 #   endpoint: prints <name>.public.<dns zone>.database.windows.net,3342. stop/start: pause and resume compute (General
 #   Purpose). delete: the instance only (the subnet stays until Azure removes its virtual cluster, which takes hours).
 set -euo pipefail
-. "$(dirname "${BASH_SOURCE[0]}")/../../lfc-source-setup/scripts/pw.sh"   # pw/pw_check: a password file or keyring:<name>
+. "$(dirname "${BASH_SOURCE[0]}")/../../secret-handling/scripts/pw.sh"   # pw/pw_check: a password file or keyring:<name>
 CMD=${1:?plan|create|wait|status|endpoint|stop|start|delete}
 : "${RG:?}" "${VNET:?}" "${MI_NAME:?}"
 SUBNET=${SUBNET:-$VNET-mi-subnet}; SUBNET_CIDR=${SUBNET_CIDR:-10.10.200.0/27}
-. "$(dirname "$0")/../../lfc-source-setup/scripts/cloud-identity.sh"
+. "$(dirname "$0")/../../cli-setup/scripts/cloud-identity.sh"
 case $CMD in   # plan/create take az's current subscription and pin it; the other commands need the one the instance was made in
 plan|create) SUBSCRIPTION=${SUBSCRIPTION:-$(az account show --query id -o tsv)} ;;
 *) : "${SUBSCRIPTION:?the subscription_id from the create IDENTITY line (the az default is not used)}" ;;
