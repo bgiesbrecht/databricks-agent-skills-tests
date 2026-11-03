@@ -19,7 +19,6 @@ lfc-source-aws-rds -> lfc-source-setup: skills/lfc-source-aws-rds/SKILL.md:lfc-s
 lfc-source-azure-flexserver -> lfc-source-setup: skills/lfc-source-azure-flexserver/SKILL.md:lfc-source-setup/references/engine-mysql.md
 lfc-source-azure-flexserver -> lfc-source-setup: skills/lfc-source-azure-flexserver/SKILL.md:lfc-source-setup/references/engine-postgres.md
 lfc-source-azure-sql -> lfc-source-setup: skills/lfc-source-azure-sql/SKILL.md:lfc-source-setup/references/engine-sqlserver.md
-lfc-source-cloud-vm -> lfc-schema-change-test: skills/lfc-source-cloud-vm/references/shared-vm-slots.md:lfc-schema-change-test/scripts/slot-sql.sh
 lfc-source-cloud-vm -> lfc-source-setup: skills/lfc-source-cloud-vm/SKILL.md:lfc-source-setup/SKILL.md
 lfc-source-cloud-vm -> lfc-source-setup: skills/lfc-source-cloud-vm/references/shared-vm-slots.md:lfc-source-setup/references/engine-db2.md
 lfc-source-cloud-vm -> lfc-source-setup: skills/lfc-source-cloud-vm/references/shared-vm-slots.md:lfc-source-setup/references/engine-oracle.md

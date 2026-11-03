@@ -31,8 +31,7 @@ layers:
 
   contract:
     may_use: [common]
-    skills: []
-    pending:
+    skills:
       - lfc-source-contract
 
   sources:
