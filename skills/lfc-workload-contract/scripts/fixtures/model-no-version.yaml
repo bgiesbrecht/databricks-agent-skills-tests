@@ -1,0 +1,6 @@
+tables:
+  - name: branch
+    row_count: 1
+    columns:
+      - name: bid
+        type: integer

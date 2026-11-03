@@ -2,7 +2,8 @@
 # bin/test_scripts.sh: regression tests for the skills' scripts.
 #   Offline (always): shell syntax (also under bash 3.2 when /bin/bash is 3.2, or BASH32=<path>), every markdown link, the script rules (bin/lint_scripts.py), SCRIPTS.md, the layers (bin/check_layers.py: layers.yaml and layers-baseline.txt), the six TPC schemas through shape.py and ddl.py for seven
 #   dialects, every TPC workload from tpc-schema.sh through ddl-to-schema.py and ddl.py for seven dialects, a DDL import
-#   round trip, the Python fill planner compiles, and the shared DuckDB runners.
+#   round trip, the Python fill planner compiles, the shared DuckDB runners, and the workload contract (model format 1 on
+#   every schema, workload-env.sh on its fixtures, one workload.sh run).
 #   With databases (PSQL and/or MYSQL set, e.g. PSQL="podman exec -i dg-pg psql -U postgres",
 #   MYSQL="podman exec -i dg-my mysql -uroot"): fill each of the six workloads from tpc-schema.sh at a small scale (TPC-C 1
 #   warehouse, TPC-H SF 0.1, TPC-B SF 1 (its smallest), TPC-DS, TPC-E, TPC-DI SF 0.01) on each, and check every table is at its
@@ -62,6 +63,16 @@ check "secret-handling scripts on a fake secret" sh -c "'$SK/secret-handling/scr
 check "keep-catalogs.sh on a fake CLI" sh -c "'$SK/lfc-workspace-setup/scripts/test-keep-catalogs.sh' > /dev/null"
 check "slot.sh limits and --park on a fake podman" sh -c "'$SK/lfc-source-cloud-vm/scripts/test-slot-limits.sh' > /dev/null"
 check "source contract: source-env.sh on the fixtures and the default clients" sh -c "'$SK/lfc-source-contract/scripts/test-source-env.sh' > /dev/null"
+WC=$SK/lfc-workload-contract/scripts
+check "workload contract: every statschema schema is model format 1 (validate-model.py)" python3 "$WC/validate-model.py" "$SK"/lfc-source-statschema/schemas/*.yaml
+check "workload contract: workload-env.sh and validate-model.py on their fixtures" sh -c "'$WC/test-workload-env.sh' > /dev/null"
+wl_offline() {   # workload.sh writes a tpcb workload that workload-env.sh accepts (4 tables); a postgres dialect is refused
+  bash "$DG/workload.sh" --model tpcb --sf 0.01 --dialect tsql --out "$T/wl" > /dev/null 2>&1 || return 1
+  ( eval "$(bash "$WC/workload-env.sh" "$T/wl/workload.json")" && [ "$WL_NTABLES" = 4 ] && [ "$WL_MODEL" = tpcb ] && [ -f "$WL_DDL" ] ) || return 1
+  bash "$DG/workload.sh" --model tpcb --sf 1 --dialect postgres --out "$T/wl2" > /dev/null 2>&1 && return 1
+  return 0
+}
+check "workload.sh: a tpcb workload at SF 0.01 that workload-env.sh accepts; a postgres dialect refused" wl_offline
 check "slot-source.sh: a slot's contract, and its SRC_SQL through slot-sql.sh and a fake ssh" sh -c "'$SK/lfc-source-cloud-vm/scripts/test-slot-source.sh' > /dev/null"
 check "masters-export, slot-vm-setup masters, and the clone admin password change (fake podman, local Blob server)" sh -c "'$SK/lfc-source-cloud-vm/scripts/test-slot-masters.sh' > /dev/null"
 check "moved-lines.py on a throwaway repo" sh -c "'$R/.claude/skills/public-skill-conventions/scripts/test-moved-lines.sh' > /dev/null"
