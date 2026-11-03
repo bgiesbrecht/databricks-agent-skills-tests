@@ -71,6 +71,6 @@ scripts/secondary.sh refresh dbo.orders orders       # full refresh, snapshot fr
 
 ## Test it yourself
 
-`scripts/ag-up.sh <utility_script.sql>` builds a two-node availability group in containers with CDC and a readable secondary, `scripts/ag-sql.sh` runs SQL on a node (and `--xe` shows the gateway's statements and errors per node), `scripts/ag-down.sh` removes it. The cases to run and what each should show: [references/ag-test.md](references/ag-test.md).
+The source comes from the lfc-source-podman skill: its `ag-up.sh <utility_script.sql>` builds a two-node availability group in containers with CDC and a readable secondary, `ag-sql.sh` runs SQL on a node (and `--xe` shows the gateway's statements and errors per node), `ag-down.sh` removes it. The cases to run and what each should show: [references/ag-test.md](references/ag-test.md).
 
 Related: `lfc-source-log-state` (where CDC stands on the source), `lfc-source-setup` (utility objects and CDC setup).

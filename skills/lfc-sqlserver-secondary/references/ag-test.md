@@ -5,11 +5,11 @@ Two SQL Server 2022 containers form a read-scale availability group (`CLUSTER_TY
 ## Build the source
 
 ```bash
-# on the podman host (a source VM whose firewall lets the workspace reach the two ports)
-AG_NAME=lfc-ag PORT_P=<port> PORT_S=<port> scripts/ag-up.sh <utility_script.sql>
-AG_NAME=lfc-ag scripts/ag-sql.sh s lfcag < check.sql          # T-SQL on a node as sa
-AG_NAME=lfc-ag scripts/ag-sql.sh s --xe <since> writes       # the gateway's writes and errors on a node
-AG_NAME=lfc-ag scripts/ag-down.sh                            # remove (add --keep-data to keep the files)
+# on the podman host (a source VM whose firewall lets the workspace reach the two ports), from lfc-source-podman's scripts
+AG_NAME=lfc-ag PORT_P=<port> PORT_S=<port> ag-up.sh <utility_script.sql>
+AG_NAME=lfc-ag ag-sql.sh s lfcag < check.sql          # T-SQL on a node as sa
+AG_NAME=lfc-ag ag-sql.sh s --xe <since> writes       # the gateway's writes and errors on a node
+AG_NAME=lfc-ag ag-down.sh                            # remove (add --keep-data to keep the files)
 ```
 
 `ag-up.sh` creates both nodes, the endpoint certificate, the availability group with automatic seeding, a database with keyed tables, the connection's login with the same SID on both nodes, the utility objects and CDC on the primary, the server-scoped grants in `master` on both nodes (the availability group doesn't copy `master`), and an Extended Events session `lfc_watch` on each node that records every statement and error from a session whose application name starts with `lakeflow-connect`. The passwords are in `$AG_DIR/ag.env` (mode 600).

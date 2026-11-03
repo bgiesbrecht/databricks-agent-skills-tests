@@ -142,6 +142,10 @@ For per-engine startup commands, environment variables, readiness timing, and me
 
 Reusable master database on local storage (load once, clone for each test): [references/master.md](references/master.md).
 
+## SQL Server availability group
+
+[`scripts/ag-up.sh <utility_script.sql>`](scripts/ag-up.sh) runs two SQL Server 2022 containers as an Always On availability group with a readable secondary (`CLUSTER_TYPE = NONE`, synchronous commit), CDC and the utility objects on the primary, the same login and SID on both nodes, and an Extended Events session per node for the gateway's statements and errors. [`scripts/ag-sql.sh p|s [db] [--xe ...]`](scripts/ag-sql.sh) runs T-SQL on a node; [`scripts/ag-down.sh`](scripts/ag-down.sh) removes it. Each script prints its usage with no arguments. The Lakeflow test that uses it is the lfc-sqlserver-secondary skill.
+
 ## Configure the database for LFC
 
 LFC requires:
