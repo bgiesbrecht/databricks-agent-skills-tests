@@ -24,7 +24,7 @@ UP=$(tail -n 1)
 NAME=$(printf '%s' "$UP" | jq -r '.name // ""')
 [[ $NAME =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || { echo "slot-source: the up JSON has no database name" >&2; exit 2; }
 HERE=$(cd "$(dirname "$0")" && pwd)
-SQL_CLIENT=$(cd "$HERE/../../lfc-schema-change-test/scripts" && pwd)/slot-sql.sh
+SQL_CLIENT=$HERE/slot-sql.sh
 [ -x "$SQL_CLIENT" ] || { echo "slot-source: no slot-sql.sh at $SQL_CLIENT" >&2; exit 2; }
 SQL_CMD="env SLOT_HOST=$SLOT_HOST SLOT_NAME=$NAME"
 if [ -n "${SLOT_KEY:-}" ]; then
