@@ -15,9 +15,12 @@ med = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(med)
 
 
+HERMETIC = {**os.environ, "LFC_SAAS_TABLES": os.devnull + ".none", "LFC_FACTS_DIR": os.devnull + ".none"}
+
+
 def diagram(*args):
     return subprocess.run([sys.executable, os.path.join(SCRIPTS, "pipeline-diagram.py"), *args],
-                          check=True, capture_output=True, text=True).stdout
+                          check=True, capture_output=True, text=True, env=HERMETIC).stdout
 
 
 class Classify(unittest.TestCase):
@@ -47,6 +50,59 @@ class Classify(unittest.TestCase):
         self.assertEqual((lay["tables"], lay["materialized"], lay["not_materialized"]), (4, 3, 1))
         self.assertEqual(med.layer_line(lay), "4 tables: 3 materialized (1 SCD 1, 1 SCD 2, 1 recomputed (MV)), "
                                               "1 not materialized (1 view)")
+
+
+class Workspace(unittest.TestCase):
+    """The workspace-reading paths, on canned CLI output (med.cli patched)."""
+
+    def setUp(self):
+        self.calls = []
+        self.real = med.cli
+
+    def tearDown(self):
+        med.cli = self.real
+
+    def fake(self, responses):
+        def cli(args, profile):
+            self.calls.append(args)
+            for prefix, value in responses:
+                if args[:len(prefix)] == prefix:
+                    if isinstance(value, Exception):
+                        raise value
+                    return value
+            raise AssertionError(f"unexpected call {args}")
+        med.cli = cli
+
+    def test_flow_types_newest_first_error_and_cache(self):
+        ev = {"events": [{"details": {"flow_definition": {"output_dataset": "c.s.t", "flow_type": "CHANGE"}}},
+                         {"details": {"flow_definition": {"output_dataset": "c.s.t", "flow_type": "APPEND"}}},
+                         {"details": {"other": {}}}]}
+        self.fake([(["api", "get"], ev)])
+        cache = {}
+        self.assertEqual(med.flow_types("p1", None, cache), {"c.s.t": "CHANGE"})   # the newest event wins
+        med.flow_types("p1", None, cache)
+        self.assertEqual(len(self.calls), 1)                                       # cached per pipeline
+        self.fake([(["api", "get"], subprocess.CalledProcessError(1, "databricks"))])
+        self.assertEqual(med.flow_types("p2", None, {}), {})                       # an API error: no flow types
+
+    def test_count_layer(self):
+        cols = lambda *n: [{"name": x} for x in n]
+        tables = [
+            {"name": "lfc_t", "table_type": "STREAMING_TABLE", "columns": cols("id"),
+             "properties": {"__managed_ingestion.source.type": "cdc"}},
+            {"name": "hist", "table_type": "STREAMING_TABLE", "columns": cols("id", "__START_AT", "__END_AT"),
+             "properties": {"pipelines.pipelineId": "p1"}},
+            {"name": "mv", "table_type": "MATERIALIZED_VIEW", "columns": cols("id"), "properties": {"pipelines.pipelineId": "p1"}},
+            {"name": "v", "table_type": "VIEW", "columns": cols("id")},
+            {"name": "skipped", "table_type": "MANAGED", "columns": cols("id")},
+        ]
+        ev = {"events": [{"details": {"flow_definition": {"output_dataset": "c.s.hist", "flow_type": "SNAPSHOT_CHANGE"}}},
+                         {"details": {"flow_definition": {"output_dataset": "c.s.mv", "flow_type": "MATERIALIZED_VIEW"}}}]}
+        self.fake([(["tables", "list"], tables), (["api", "get"], ev)])
+        lay = med.count_layer("silver", ["c.s"], None, only={"lfc_t", "hist", "mv", "v"})
+        self.assertEqual((lay["tables"], lay["materialized"], lay["not_materialized"]), (4, 3, 1))
+        self.assertEqual(lay["by_kind"], {"scd1": 1, "scd2": 1, "recomputed": 1, "view": 1})
+        self.assertEqual(sum(1 for c in self.calls if c[:2] == ["api", "get"]), 1)  # one events read for pipeline p1
 
 
 class Drawing(unittest.TestCase):

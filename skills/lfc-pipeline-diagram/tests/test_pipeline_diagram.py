@@ -8,8 +8,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "..", "scripts", "pipeline-diagram.py")
 
 
+# the files the script reads from this machine by default (~/.config/lfc) point at nothing, so the tests don't depend on them
+HERMETIC = {**os.environ, "LFC_SAAS_TABLES": os.devnull + ".none", "LFC_FACTS_DIR": os.devnull + ".none"}
+
+
 def run(*args):
-    return subprocess.run([sys.executable, SCRIPT, *args], check=True, capture_output=True, text=True).stdout
+    return subprocess.run([sys.executable, SCRIPT, *args], check=True, capture_output=True, text=True, env=HERMETIC).stdout
 
 
 def f(name):
@@ -70,7 +74,7 @@ class Facts(unittest.TestCase):
             json.dump(facts, open(os.path.join(d, "my_sqlserver_conn.json"), "w"))
             out = subprocess.run([sys.executable, SCRIPT, "--pipeline-json", f("integrated-pipeline.json"),
                                   "--connection-json", f("integrated-connection.json"), "--format", "text"],
-                                 check=True, capture_output=True, text=True, env={**os.environ, "LFC_FACTS_DIR": d}).stdout
+                                 check=True, capture_output=True, text=True, env={**HERMETIC, "LFC_FACTS_DIR": d}).stdout
         finally:
             shutil.rmtree(d)
         self.assertIn("Azure: VM + Podman, SQL Server", out)   # cloud and host from the facts
@@ -186,7 +190,7 @@ class Saas(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as t:
             json.dump({"version": 1, "connectors": {"JIRA": {"tables": 29, "incremental": 6, "full": 23, "inventory": "finite"},
                                                     "SALESFORCE": {"inventory": "runtime"}}}, t)
-        env = {**os.environ, "LFC_SAAS_TABLES": t.name}
+        env = {**HERMETIC, "LFC_SAAS_TABLES": t.name}
         try:
             for ctype, want in (("JIRA", "connector tables: 29 tables: 6 incremental, 23 full refresh"),
                                 ("SALESFORCE", "connector tables: objects discovered from the source")):
