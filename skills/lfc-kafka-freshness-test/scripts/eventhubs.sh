@@ -8,7 +8,7 @@
 #   choose for all your test resources): it's never created, re-tagged or deleted. The namespace is tagged CreatedBy=lfc-kafka-freshness-test;
 #   one of that name without the tag is left alone (up stops). AZ_SUBSCRIPTION, if set, goes on every az call.
 #   down: deletes the namespace (its hubs and rules) only when its CreatedBy tag says this script made it; never the
-#   group. Prints the plan; changes nothing without --apply.
+#   group. A failed lookup (login, subscription) exits 1, not 0. Prints the plan; changes nothing without --apply.
 set -uo pipefail
 CMD=${1:-}; RG=${2:-}; NS=${3:-}
 [ -n "$CMD" ] && [ -n "$RG" ] && [ -n "$NS" ] || { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
@@ -42,8 +42,12 @@ down)
   APPLY=no; [ "${1:-}" = --apply ] && APPLY=yes
   echo "plan: delete namespace $NS in $RG if this script made it (CreatedBy=$MINE; its hubs and rules; the group stays)"
   [ $APPLY = yes ] || { echo "plan only: run again with --apply"; exit 0; }
-  by=$(az eventhubs namespace show ${AZ_SUBSCRIPTION:+--subscription "$AZ_SUBSCRIPTION"} -g "$RG" -n "$NS" --query tags.CreatedBy -o tsv 2>/dev/null) \
-    || { echo "namespace $NS not found in $RG: nothing to delete"; exit 0; }
+  E=$(mktemp); trap 'rm -f "$E"' EXIT
+  if ! by=$(az eventhubs namespace show ${AZ_SUBSCRIPTION:+--subscription "$AZ_SUBSCRIPTION"} -g "$RG" -n "$NS" --query tags.CreatedBy -o tsv 2>"$E"); then
+    # only a namespace that isn't there is nothing to delete; an expired login or a wrong subscription is a failure
+    grep -q -E 'ResourceNotFound|ResourceGroupNotFound' "$E" && { echo "namespace $NS not found in $RG: nothing to delete"; exit 0; }
+    echo "couldn't look up namespace $NS in $RG; nothing deleted:"; cat "$E"; exit 1
+  fi
   [ "$by" = "$MINE" ] || { echo "namespace $NS wasn't created by this script (CreatedBy=${by:-none}): not deleted"; exit 2; }
   az eventhubs namespace delete ${AZ_SUBSCRIPTION:+--subscription "$AZ_SUBSCRIPTION"} -g "$RG" -n "$NS" && echo "deleted";;
 *) echo "up or down, not $CMD"; exit 2;;

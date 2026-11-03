@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # test-eventhubs.sh: eventhubs.sh with a fake az on PATH (it logs every call; FA_GROUP=1: the group exists; FA_NS=<tag>:
 #   the namespace exists with that CreatedBy tag, "none" for no tag). Checks that the group is never created, re-tagged or
-#   deleted, that a namespace this script didn't make is left alone by up and down, and that its own is created tagged
+#   deleted, that a failed lookup isn't read as "nothing there", that a namespace this script didn't make is left alone by up and down, and that its own is created tagged
 #   and deleted. One PASS/FAIL line per check; exit 1 on any FAIL.
 set -uo pipefail
 S=$(cd "$(dirname "$0")" && pwd); fail=0
@@ -12,7 +12,10 @@ cat > "$T/bin/az" <<'FA'
 echo "$*" >> "$FA_LOG"
 case "$*" in
   "group show"*) [ -n "${FA_GROUP:-}" ] ;;
-  "eventhubs namespace show"*) [ -n "${FA_NS:-}" ] || exit 3; [ "$FA_NS" = none ] && echo "" || echo "$FA_NS" ;;
+  "eventhubs namespace show"*)
+    [ -z "${FA_LOOKUP_FAILS:-}" ] || { echo "ERROR: AADSTS700082: The refresh token has expired" >&2; exit 1; }
+    [ -n "${FA_NS:-}" ] || { echo "ERROR: (ResourceNotFound) The Resource was not found" >&2; exit 3; }
+    [ "$FA_NS" = none ] && echo "" || echo "$FA_NS" ;;
   *"authorization-rule keys list"*) echo "Endpoint=sb://x.servicebus.windows.net/;SharedAccessKeyName=kafka-test;SharedAccessKey=k" ;;
   *) : ;;
 esac
@@ -38,4 +41,6 @@ FA_NS=lfc-kafka-freshness-test eh down rg1 ns1 --apply; rc=$?
 ok "down, its own: the namespace deleted, never the group" '[ $rc = 0 ] && calls | grep -q "namespace delete" && ! calls | grep -q "group delete"'
 FA_NS= eh down rg1 ns1 --apply; rc=$?
 ok "down, nothing there: rc 0, no delete" '[ $rc = 0 ] && ! calls | grep -q delete'
+FA_LOOKUP_FAILS=1 FA_NS=lfc-kafka-freshness-test eh down rg1 ns1 --apply; rc=$?
+ok "down, the lookup fails (expired login): rc 1, no delete, the error shown" '[ $rc = 1 ] && ! calls | grep -q delete && grep -q AADSTS "$T/out"'
 exit $fail
