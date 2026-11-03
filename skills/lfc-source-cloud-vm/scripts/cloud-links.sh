@@ -5,7 +5,7 @@
 #   record). Azure: SUBSCRIPTION or --subscription (else every enabled subscription, by id). AWS: AWS_PROFILE or
 #   --aws-profile, and AWS_REGION or --region. GCP: GCP_ACCOUNT or --gcp-account, and GCP_PROJECT or --gcp-project. A cloud
 #   with no identity is skipped with the flag to give. One line per resource: "LINK <what>: <url>". Where the VM is found,
-#   one "IDENTITY <cloud> ..." line: the record to keep for later calls (see lfc-source-setup cloud-identity.sh).
+#   one "IDENTITY <cloud> ..." line: the record to keep for later calls (see cli-setup cloud-identity.sh).
 #     Azure: the VM, its NIC, the network security group (on the NIC or its subnet), the public IP, the OS and data disks
 #     AWS:   the instance, its security groups, its EBS volumes
 #     GCP:   the instance, its disks, and the VPC firewall rules
@@ -25,7 +25,7 @@ while [ $# -gt 0 ]; do case $1 in
   *) echo "unknown $1" >&2; exit 2;;
 esac; done
 export AZURE_DEFAULTS_GROUP=
-. "$(dirname "$0")/../../lfc-source-setup/scripts/cloud-identity.sh"
+. "$(dirname "$0")/../../cli-setup/scripts/cloud-identity.sh"
 found=0
 link() { echo "LINK $1: $2"; found=1; }
 skip() { echo "skip $1: $2" >&2; }

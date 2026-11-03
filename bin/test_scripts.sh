@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # bin/test_scripts.sh: regression tests for the skills' scripts.
-#   Offline (always): shell syntax (also under bash 3.2 when /bin/bash is 3.2, or BASH32=<path>), every markdown link, the script rules (bin/lint_scripts.py) and SCRIPTS.md, the six TPC schemas through shape.py and ddl.py for seven
+#   Offline (always): shell syntax (also under bash 3.2 when /bin/bash is 3.2, or BASH32=<path>), every markdown link, the script rules (bin/lint_scripts.py), SCRIPTS.md, the layers (bin/check_layers.py: layers.yaml and layers-baseline.txt), the six TPC schemas through shape.py and ddl.py for seven
 #   dialects, every TPC workload from tpc-schema.sh through ddl-to-schema.py and ddl.py for seven dialects, a DDL import
 #   round trip, the Python fill planner compiles, and the shared DuckDB runners.
 #   With databases (PSQL and/or MYSQL set, e.g. PSQL="podman exec -i dg-pg psql -U postgres",
@@ -32,6 +32,8 @@ check "script rules: headers, SKILL.md size, rm guards, first-argument flags, jq
 check "lint rule bash32 on fixed bad and good lines" python3 -m unittest -q "$R/bin/test_lint_bash32.py"
 check "results dir: checkout, LFC_TESTS_RESULTS, an installed plugin copy" python3 -m unittest -q "$R/bin/test_results_dir.py"
 check "SCRIPTS.md is current" python3 "$R/bin/scripts_index.py" --check
+check "layers: every skill and bin script is in layers.yaml, every cross-skill reference is allowed or in layers-baseline.txt" python3 "$R/bin/check_layers.py"
+check "check_layers: unit tests on a fixture tree" python3 -m unittest -q "$R/bin/test_check_layers.py"
 for w in tpcb tpcc tpch tpcdi tpcds tpce; do
   check "shape.py $w" sh -c "uv run -q '$SS/shape.py' '$SK/lfc-source-statschema/schemas/$w.yaml' --sf 0.1 --expected '$T/$w.exp.json' > '$T/$w.yaml'"
   for d in postgres mysql tsql oracle db2 informix databricks; do
@@ -59,6 +61,8 @@ check "recall.py runs" sh -c "python3 '$SK/lfc-test-results/scripts/recall.py' >
 check "secret-handling scripts on a fake secret" sh -c "'$SK/secret-handling/scripts/test-secret-scripts.sh' > /dev/null"
 check "keep-catalogs.sh on a fake CLI" sh -c "'$SK/lfc-workspace-setup/scripts/test-keep-catalogs.sh' > /dev/null"
 check "slot.sh limits and --park on a fake podman" sh -c "'$SK/lfc-source-cloud-vm/scripts/test-slot-limits.sh' > /dev/null"
+check "source contract: source-env.sh on the fixtures and the default clients" sh -c "'$SK/lfc-source-contract/scripts/test-source-env.sh' > /dev/null"
+check "slot-source.sh: a slot's contract, and its SRC_SQL through slot-sql.sh and a fake ssh" sh -c "'$SK/lfc-source-cloud-vm/scripts/test-slot-source.sh' > /dev/null"
 check "masters-export, slot-vm-setup masters, and the clone admin password change (fake podman, local Blob server)" sh -c "'$SK/lfc-source-cloud-vm/scripts/test-slot-masters.sh' > /dev/null"
 check "moved-lines.py on a throwaway repo" sh -c "'$R/.claude/skills/public-skill-conventions/scripts/test-moved-lines.sh' > /dev/null"
 check "ws-token.sh: TO (perl alarm timeout)" sh -c "'$SK/account-token-fallback/scripts/test-ws-token.sh' > /dev/null"
