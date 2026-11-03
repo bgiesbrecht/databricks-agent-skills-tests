@@ -13,17 +13,26 @@ pipeline:
 
 | Script | Does | Changes anything |
 |---|---|---|
-| [`scripts/eventhubs.sh`](scripts/eventhubs.sh) | `up`: an Event Hubs namespace (Standard, Kafka on, auto-inflate), one event hub as the topic, a Listen+Send rule; its connection string into a 0600 file. `down`: deletes the namespace | Only with `--apply` |
+| [`scripts/eventhubs.sh`](scripts/eventhubs.sh) | `up`: an Event Hubs namespace (Standard, Kafka on, auto-inflate) in an existing resource group, tagged `CreatedBy`, one event hub as the topic, a Listen+Send rule; its connection string into a 0600 file. `down`: deletes the namespace only when the tag says `up` made it; never the group | Only with `--apply` |
 | [`scripts/connection.sh`](scripts/connection.sh) | A UC connection of type `KAFKA` (`bootstrap_servers`, `sasl_mechanism`, `user`, `password`); the password from the file into a 0600 request body, deleted after | Only with `--apply` |
-| [`scripts/pipeline.sh`](scripts/pipeline.sh) | A serverless, continuous ingestion pipeline on channel `PREVIEW` into one table: key `STRING`, value `VARIANT` | Only with `--apply` |
+| [`scripts/pipeline.sh`](scripts/pipeline.sh) | A serverless, continuous ingestion pipeline on channel `PREVIEW` into one table: key `STRING`, value `VARIANT`; then the diagram of what was made (**lfc-pipeline-diagram**) | Only with `--apply` |
+| [`scripts/test-eventhubs.sh`](scripts/test-eventhubs.sh) | `eventhubs.sh` against a fake `az`: the group is never created, re-tagged or deleted; only its own namespace is | No |
 
 Run any script with no arguments for its usage. Any Kafka broker with SASL PLAIN works for `connection.sh` and
 `pipeline.sh`; `eventhubs.sh` is the Azure one.
 
 ## Workflow
 
-1. **Broker:** `eventhubs.sh up <resource group> <namespace> <region> --password-file <0600 file> --apply`. Size it for
-   the burst: about 1 throughput unit per 1,000 events/s or 1 MB/s, and enough partitions (`--partitions`) to spread it.
+0. **Plan and draw it.** Pass the cloud identity on every call (`AZ_SUBSCRIPTION` goes on each `az` call of
+   `eventhubs.sh`; `--profile` on each Databricks call). An expired workspace login often still works through
+   **account-token-fallback** (`ws-token.sh`). Draw the plan before creating anything: `pipeline.sh` without `--apply`
+   prints the spec; give it to **lfc-pipeline-diagram**'s `pipeline-diagram.py --pipeline-json` with a `KAFKA`
+   connection JSON. The probe needs a SQL warehouse: create a Small serverless one if the workspace has none (tagged,
+   auto-stop), and delete it at the end.
+1. **Broker:** `eventhubs.sh up <resource group> <namespace> <region> --password-file <0600 file> --tags "Owner=<you> RemoveAfter=<date>" --apply`.
+   The group must exist; the script never creates, re-tags or deletes one. Size it for the burst: about 1 throughput
+   unit per 1,000 events/s or 1 MB/s (`--tu 4 --max-tu 40` for a 30,000/s burst; the default 2-20 is short of it), and
+   enough partitions (`--partitions`) to spread it.
    With Event Hubs the SASL user is the literal `$ConnectionString` and the password is the connection string.
 2. **Connection:** `connection.sh <PROFILE> <name> --bootstrap <namespace>.servicebus.windows.net:9093 --user '$ConnectionString' --password-file <file> --apply`.
 3. **Pipeline:** create the schema first, then
@@ -46,11 +55,12 @@ Run any script with no arguments for its usage. Any Kafka broker with SASL PLAIN
 
    ```bash
    uv run $Z/report.py $P --warehouse <warehouse-id> --table $T --run run.json --probe probe.json \
-     --column 'timestamp_micros(value:producer_time::bigint)'
+     --column 'timestamp_micros(value:producer_time::bigint)' --id-column 'value:event_id::string'
    ```
 
-6. **Stop the pipeline** (it runs until stopped): `databricks pipelines stop <pipeline-id> --profile <PROFILE>`, and
-   `eventhubs.sh down <resource group> <namespace> --apply` when done.
+6. **Tear down only what this run made**, after recording (step 7): stop and delete the pipeline (it runs until
+   stopped), drop the schema, delete the connection and the probe's warehouse if the run created it, then
+   `eventhubs.sh down <resource group> <namespace> --apply` (it checks the `CreatedBy` tag), and the password file.
 7. **Record** with **lfc-test-results** `record.py`: `test: load`, `setup.route: lfc-kafka`, `compute` as for any
    pipeline test, and the runtime from `bin/lfc-runtime.sh --summary <PROFILE> <pipeline-id>`.
 
@@ -75,8 +85,12 @@ Run any script with no arguments for its usage. Any Kafka broker with SASL PLAIN
 
 ## Tested
 
-`recall.py --test load --all` and `results/2026-10-29-lfc-kafka-freshness.md`: one 15-minute run with a burst on Azure,
-Zerobus and Kafka written by the same process. That run used an earlier version of the producer with the same event
-shape and the pipeline spec `pipeline.sh` writes. As committed, `connection.sh` and `pipeline.sh` created a connection
-and a pipeline that started on its own, against a bootstrap that doesn't exist. `eventhubs.sh` reproduces the commands
-of that run and hasn't been run as committed: no Azure resource group was available for a new namespace on 2026-10-29.
+`recall.py --test load --all`:
+
+- `results/2026-11-03-lfc-kafka-laptop.md`: the scripts as committed here, end to end on Azure (centralus), producer on
+  a laptop, Kafka only: 3,000/s for 15 minutes with a 10x burst that reached 29,938/s on average; freshness p50 3.9 s,
+  p90 5.3 s; 330 more rows than sent, each an extra copy (no event id more than twice).
+  That run's producer didn't yet count the duplicates it sends on purpose (`dups_sent`), so loss isn't ruled out exactly. Teardown
+  removed only what the run made.
+- `results/2026-10-29-lfc-kafka-freshness.md`: an earlier producer in a Databricks job, writing Zerobus and Kafka from
+  one process: the burst reached about 21,000/s.
