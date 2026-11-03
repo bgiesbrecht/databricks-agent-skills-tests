@@ -1,0 +1,8 @@
+version: "1.0"
+tables:
+  - name: branch
+    row_count: 1
+    row_count_per_sf: 1
+    columns:
+      - name: bid
+        type: integer

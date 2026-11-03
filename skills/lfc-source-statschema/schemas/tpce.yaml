@@ -24,6 +24,7 @@
 # ZIP reference
 #   ZIP_CODE — builtin_generator for 14,741 US ZIP-code rows
 
+version: "1.0"
 tables:
 
 # ── Reference tables ────────────────────────────────────────────────────────
